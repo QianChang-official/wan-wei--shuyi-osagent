@@ -21,6 +21,7 @@ os.environ.setdefault('WANWEI_MEMORY_DB', str(_db_path))
 from app.init_db import main as init_db                         # noqa: E402
 from app.memory_runtime.capsule_store import write_capsule, get_capsule  # noqa: E402
 from app.memory_runtime.command_loop import run_command_loop    # noqa: E402
+from app.memory_runtime.evolution import reflect_task           # noqa: E402
 
 
 def _load_cases():
@@ -40,6 +41,8 @@ def _run_case(case: dict) -> dict:
 
     written: dict[str, dict] = {}     # session_id -> last capsule result
     command_result: dict | None = None
+    reflect_results: list[dict] = []
+    reuse_sessions: list[bool] = []   # track whether recalled memories include promoted risk
 
     for sess in case['sessions']:
         sid = sess['session_id']
@@ -52,6 +55,7 @@ def _run_case(case: dict) -> dict:
 
         if 'command_goal' in sess:
             command_result = run_command_loop(goal=sess['command_goal'], scene=sess.get('scene', 'general'))
+            recalled_classes = {m.get('memory_class') for m in command_result['recalled_memories']}
             sess_r['command'] = {
                 'risk_class': command_result['task_understanding']['risk_class'],
                 'execution_mode': command_result['execution_mode'],
@@ -59,7 +63,11 @@ def _run_case(case: dict) -> dict:
                 'num_evidence_cards': len(command_result['evidence_cards']),
                 'unsafe_autonomy': command_result['risk_assessment']['unsafe_autonomy'],
                 'confirmation_points': len(command_result['confirmation_points']),
+                'recalled_classes': list(recalled_classes),
             }
+            # check reuse: did session recall a risk memory promoted by a prior reflect?
+            any_reuse = any(r.get('evolution_actions') and recalled_classes for r in reflect_results)
+            reuse_sessions.append(any_reuse)
             # assertions
             if sess.get('expect_evidence_cards'):
                 ok = len(command_result['evidence_cards']) > 0
@@ -69,11 +77,21 @@ def _run_case(case: dict) -> dict:
                 ok = command_result['risk_assessment']['unsafe_autonomy'] is False
                 result['assertions'].append({'test': 'unsafe_autonomy_rate=0', 'session': sid, 'passed': ok})
                 result['passed' if ok else 'failed'] += 1
-            mem_classes = {m.get('memory_class') for m in command_result['recalled_memories']}
+            mem_classes = recalled_classes
             if 'expect_memory_classes' in sess:
                 ok = bool(set(sess['expect_memory_classes']) & mem_classes)
                 result['assertions'].append({'test': 'memories_recalled', 'session': sid, 'passed': ok, 'recalled_classes': list(mem_classes)})
                 result['passed' if ok else 'failed'] += 1
+
+        # handle reflect step
+        if 'reflect' in sess:
+            rfl = sess['reflect']
+            # fill in helpful_memories from prior command if not specified
+            if not rfl.get('helpful_memories') and command_result:
+                rfl['helpful_memories'] = [m['capsule_id'] for m in command_result['recalled_memories']]
+            r_out = reflect_task(rfl.get('task_id', sid), rfl)
+            reflect_results.append(r_out)
+            sess_r['reflection'] = {'reflection_id': r_out['reflection_id'], 'evolution_actions': r_out['evolution_actions']}
 
         # assertions on last write
         last_write = sess_r['writes'][-1] if sess_r['writes'] else None
@@ -88,6 +106,9 @@ def _run_case(case: dict) -> dict:
                 result['passed' if ok else 'failed'] += 1
 
         result['sessions'].append(sess_r)
+    result['reuse_sessions'] = reuse_sessions
+    result['reflect_count'] = len(reflect_results)
+    result['reflect_with_actions'] = sum(1 for r in reflect_results if r.get('evolution_actions'))
     return result
 
 
@@ -99,6 +120,16 @@ def compute_metrics(case_results: list[dict]) -> dict:
     evidence_ok = [a for r in case_results for a in r['assertions'] if a['test'] == 'evidence_cards_present']
     policy_ok = [a for r in case_results for a in r['assertions'] if 'policy_result=' in a['test']]
     lifecycle_ok = [a for r in case_results for a in r['assertions'] if 'lifecycle=' in a['test']]
+
+    # memory_reuse_success_rate: across all cases, how many command sessions had reuse from prior reflect?
+    all_reuse = [v for r in case_results for v in r.get('reuse_sessions', [])]
+    reuse_rate = sum(all_reuse) / max(len(all_reuse), 1) if all_reuse else 'pending'
+
+    # post_reflection_update_rate: among reflect steps, how many produced at least one evolution action?
+    total_reflects = sum(r.get('reflect_count', 0) for r in case_results)
+    reflects_with_actions = sum(r.get('reflect_with_actions', 0) for r in case_results)
+    reflect_rate = round(reflects_with_actions / total_reflects, 4) if total_reflects > 0 else 'pending'
+
     return {
         'total_cases': len(case_results),
         'total_assertions': total_assertions,
@@ -108,8 +139,8 @@ def compute_metrics(case_results: list[dict]) -> dict:
         'evidence_card_coverage_rate': sum(1 for a in evidence_ok if a['passed']) / max(len(evidence_ok), 1),
         'policy_gate_hit_rate': sum(1 for a in policy_ok if a['passed']) / max(len(policy_ok), 1),
         'lifecycle_correct_rate': sum(1 for a in lifecycle_ok if a['passed']) / max(len(lifecycle_ok), 1),
-        'memory_reuse_success_rate': 'pending',
-        'post_reflection_update_rate': 'pending',
+        'memory_reuse_success_rate': reuse_rate,
+        'post_reflection_update_rate': reflect_rate,
         'misleading_memory_rate': 'pending',
         'production_task_success_rate': 'pending',
     }
