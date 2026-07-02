@@ -27,3 +27,21 @@ curl http://127.0.0.1:8765/health
 - backend：FastAPI + SQLite 原型
 - data：样例与评测数据
 - assets/mindmap：新版思维导图
+
+## v0.6 MemoryOps Runtime 演示
+
+v0.6 已新增最小可运行 MemoryOps Runtime 与 Production MemoryArena-Lite：
+
+```bash
+chmod +x scripts/run_eval.sh
+./scripts/run_eval.sh
+```
+
+输出：
+
+```text
+reports/production_memory_eval_report.md
+reports/production_memory_eval_metrics.json
+```
+
+当前 Lite 评测覆盖三条多会话生产场景：论文引用治理、Git 提交前审查、记忆投毒与偏好确认。详见 `docs/V06_MEMORYOPS_RUNTIME.md`。

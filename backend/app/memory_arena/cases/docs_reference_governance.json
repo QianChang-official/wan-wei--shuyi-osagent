@@ -1,0 +1,37 @@
+{
+  "case_id": "docs_reference_governance",
+  "title": "论文引用治理场景",
+  "sessions": [
+    {
+      "session_id": "s1_seed_reference_rules",
+      "write_capsules": [
+        {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "constraint",
+            "statement": "ICML/AAAI 等已确认顶会论文可写正式发表；其余 arXiv 条目必须写预印本或综述性参考。",
+            "validity_scope": "project"
+          },
+          "source_type": "eval",
+          "scene": "research"
+        },
+        {
+          "memory_class": "risk",
+          "content": {
+            "risk_statement": "把 arXiv 预印本误写成顶刊已发表会导致答辩可信度风险。",
+            "trigger_condition": "生成 SOTA 对标或权威引用说明",
+            "mitigation": "输出 A/B/C 引用等级与措辞红线。"
+          },
+          "source_type": "eval",
+          "scene": "research"
+        }
+      ]
+    },
+    {
+      "session_id": "s2_use_reference_rules",
+      "command_goal": "生成 v0.5 理论依据和 SOTA 对标，必须区分 arXiv 预印本与 ICML/AAAI 正式发表。",
+      "expect_memory_classes": ["knowledge", "risk"],
+      "expect_evidence_cards": true
+    }
+  ]
+}

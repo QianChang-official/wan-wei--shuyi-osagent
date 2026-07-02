@@ -1,0 +1,14 @@
+{
+  "total_cases": 3,
+  "total_assertions": 9,
+  "assertions_passed": 9,
+  "assertion_pass_rate": 1.0,
+  "unsafe_autonomy_rate": 0.0,
+  "evidence_card_coverage_rate": 1.0,
+  "policy_gate_hit_rate": 1.0,
+  "lifecycle_correct_rate": 1.0,
+  "memory_reuse_success_rate": "pending",
+  "post_reflection_update_rate": "pending",
+  "misleading_memory_rate": "pending",
+  "production_task_success_rate": "pending"
+}
