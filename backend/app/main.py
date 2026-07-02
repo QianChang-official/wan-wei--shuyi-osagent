@@ -1,5 +1,7 @@
 import uuid,json,datetime
+from pathlib import Path
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import get_conn
 from .guardrail.service import evaluate
@@ -11,6 +13,16 @@ from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 
 app=FastAPI(title='宛委·枢忆 OSAgent')
+
+# Mount frontend console at /console (same-origin, no CORS needed).
+# Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.
+_frontend = Path(__file__).parent.parent.parent / "frontend"
+_vue_dist = _frontend / "console-vue" / "dist"
+_legacy_console = _frontend / "web-console"
+if _vue_dist.exists():
+    app.mount("/console", StaticFiles(directory=str(_vue_dist), html=True), name="console")
+if _legacy_console.exists():
+    app.mount("/console-legacy", StaticFiles(directory=str(_legacy_console), html=True), name="console-legacy")
 
 @app.on_event('startup')
 def _startup():
