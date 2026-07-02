@@ -1,0 +1,138 @@
+{
+  "generated_for": "宛委·枢忆 OSAgent / ASI-Memory Environment",
+  "scope": "v0.4 安全治理 + v0.5 ASI-Oriented 记忆基座",
+  "verification_note": "所有 arXiv 条目均通过 arXiv API 逐条核验存在（ID/标题/日期一致）。PDF 全文保存在本地 research 包，未提交进主仓库。用户外部资料中的 cn.dubbo.apache.org / toutiao.com / bing.com 链接为不可靠转述来源，已剔除。",
+  "ambition_disclaimer": "本项目不声称实现 ASI，仅面向 ASI-Oriented Agent 的偏好与知识记忆优化问题设计可治理、可追溯、可演化的长期记忆基座。",
+  "grade_legend": {
+    "A": "顶会已正式发表，可写发表于 ICML/AAAI 2024",
+    "B": "arXiv 前沿预印本 / 大机构综述，写预印本或综述性参考",
+    "C": "行业治理 / 标准化资料，非论文"
+  },
+  "references": [
+    {
+      "id": "2604.16548",
+      "title": "A Survey on Long-Term Memory Security in LLM Agents",
+      "grade": "B",
+      "track": "v0.4",
+      "published": "2026-04-17",
+      "abs": "https://arxiv.org/abs/2604.16548",
+      "verified": true,
+      "project_landing": "司契护栏 / 忘机机制 / 兰台鉴证 / VMG provenance"
+    },
+    {
+      "id": "2601.05504",
+      "title": "Memory Poisoning Attack and Defense on Memory Based LLM-Agents",
+      "grade": "B",
+      "track": "v0.4",
+      "abs": "https://arxiv.org/abs/2601.05504",
+      "verified": true,
+      "project_landing": "司契护栏投毒防御 / trust-aware retrieval"
+    },
+    {
+      "id": "2605.17830",
+      "title": "Remembering More, Risking More: Longitudinal Safety Risks",
+      "grade": "B",
+      "track": "v0.4",
+      "abs": "https://arxiv.org/abs/2605.17830",
+      "verified": true,
+      "project_landing": "兰台鉴证纵向安全评测 / NullMemory 对照"
+    },
+    {
+      "id": "owasp-agent-memory-guard",
+      "title": "OWASP Agent Memory Guard",
+      "grade": "C",
+      "track": "v0.4",
+      "url": "https://owasp.org/www-project-agent-memory-guard/",
+      "verified": true,
+      "project_landing": "司契护栏 3.0 / Snapshot & Rollback / Policy Engine"
+    },
+    {
+      "id": "owasp-asi",
+      "title": "OWASP Agentic Security Initiative",
+      "grade": "C",
+      "track": "v0.4",
+      "url": "https://genai.owasp.org/initiatives/agentic-security-initiative/",
+      "verified": true,
+      "project_landing": "ASI 风险映射 ASI01/02/03/06/07"
+    },
+    {
+      "id": "ms-agentic-memory-safety",
+      "title": "Microsoft: Manage AI memory safety in agentic systems",
+      "grade": "C",
+      "track": "v0.4",
+      "url": "https://learn.microsoft.com/en-us/security/zero-trust/sfi/manage-agentic-memory-safety",
+      "verified": true,
+      "project_landing": "Memory Ingress Gateway / intent+provenance gate / control plane"
+    },
+    {
+      "id": "2412.16468",
+      "title": "The Road to Artificial SuperIntelligence: Survey of Superalignment",
+      "grade": "B",
+      "track": "v0.5",
+      "published": "2024-12-21",
+      "abs": "https://arxiv.org/abs/2412.16468",
+      "verified": true,
+      "project_landing": "v0.5 顶层理论：scalable supervision + robust governance"
+    },
+    {
+      "id": "2311.14125",
+      "title": "Scalable AI Safety via Doubly-Efficient Debate",
+      "grade": "A",
+      "venue": "ICML 2024 (PMLR v235)",
+      "track": "v0.5",
+      "abs": "https://arxiv.org/abs/2311.14125",
+      "pmlr": "https://proceedings.mlr.press/v235/brown-cohen24a.html",
+      "verified": true,
+      "project_landing": "监督指挥层多方案互证 / 批评者机制"
+    },
+    {
+      "id": "2212.08073",
+      "title": "Constitutional AI: Harmlessness from AI Feedback",
+      "grade": "B",
+      "track": "v0.5",
+      "published": "2022-12-15",
+      "abs": "https://arxiv.org/abs/2212.08073",
+      "verified": true,
+      "project_landing": "偏好与规则记忆层 / policy memory / AI critique"
+    },
+    {
+      "id": "1811.07871",
+      "title": "Scalable agent alignment via reward modeling",
+      "grade": "B",
+      "track": "v0.5",
+      "published": "2018-11-19",
+      "abs": "https://arxiv.org/abs/1811.07871",
+      "verified": true,
+      "project_landing": "人类/组织意图抽象为可更新 reward/preference memory"
+    },
+    {
+      "id": "2507.03724",
+      "title": "MemOS: A Memory OS for AI System",
+      "grade": "B",
+      "track": "v0.5",
+      "abs": "https://arxiv.org/abs/2507.03724",
+      "verified": true,
+      "project_landing": "MemoryCapsule / MemCube / 记忆调度与演化"
+    },
+    {
+      "id": "2603.07670",
+      "title": "Memory for Autonomous LLM Agents: Mechanisms, Evaluation, Frontiers",
+      "grade": "B",
+      "track": "v0.5",
+      "published": "2026-03-08",
+      "abs": "https://arxiv.org/abs/2603.07670",
+      "verified": true,
+      "project_landing": "Write-Manage-Read 生产记忆闭环 / 评测 / 隐私治理"
+    },
+    {
+      "id": "2305.10250",
+      "title": "MemoryBank: Enhancing LLMs with Long-Term Memory",
+      "grade": "A",
+      "venue": "AAAI 2024",
+      "track": "v0.5",
+      "abs": "https://arxiv.org/abs/2305.10250",
+      "verified": true,
+      "project_landing": "retention_score / 遗忘曲线 / 长期用户画像"
+    }
+  ]
+}
