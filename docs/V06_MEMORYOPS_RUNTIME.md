@@ -136,3 +136,28 @@ state.db 命中主要来自 Agent 自身的告警描述与正常内容（firewal
 投毒防御不只要测漏报（false negative），也要测误报（false positive）。
 一个把自己的告警当证据的安全系统，和一个漏报的安全系统，同样危险。
 ```
+
+### 5.1 Source Layer 溯源原则
+
+误报回声的根因是溯源时未区分内容来自哪一层。安全溯源必须区分 source_layer：
+
+```text
+chat_render   聊天展示层，可能包含富文本渲染噪声
+copied_text   用户从富文本界面复制来的内容，可能包含 HTML/UI/base64 噪声
+tool_display  工具结果展示层，可能与真实文件内容不同
+file_content  文件真实落盘内容
+git_tracked   Git 跟踪文件内容，作为仓库污染判断依据
+runtime_log   运行时日志（gateway/agent/mcp），作为工具链行为证据
+```
+
+判断原则：
+
+```text
+关键词命中 != 注入证据
+富文本噪声 != 文件污染
+聊天渲染   != 仓库落盘
+工具展示   != 源文件真相
+```
+
+只有在 file_content / git_tracked / runtime_log 层真实命中，才能判定为仓库污染或外部注入；
+chat_render / copied_text / tool_display 层的命中一律先视为展示或复制噪声，需下沉到落盘层复核后方可定性。

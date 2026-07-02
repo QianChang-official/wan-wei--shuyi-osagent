@@ -31,7 +31,7 @@
             "risk_statement": "Prompt injection 检测可能形成误报回声：Agent 首次误判后反复输出告警话术，这些告警被会话存储记录，后续检索又把自身告警当成外部注入证据（我说有鬼→搜到我说有鬼→更确认有鬼）。",
             "trigger_condition": "溯源时仅通过 strings/grep 搜到 ruLes / TOOL RESULTS INCLUDED / prompt injection 等关键词，但未区分 source_role、source_channel 与原始来源。",
             "impact": "正常文件、日志、代码注释或 Agent 自身告警文本被误判为外部投毒，造成错误隔离、错误审计结论或评测失真。",
-            "mitigation": "溯源必须区分用户消息、工具结果、Agent 回复、系统日志、仓库文件与生成报告；不得仅凭关键词命中判定真实注入；必须先过滤 Agent 自身告警描述再判断。",
+            "mitigation": "溯源必须区分 source_layer 与 origin。chat_render（聊天展示层）/ copied_text（富文本复制层）/ tool_display（工具结果展示层）属于展示或复制噪声，不等于文件落盘；file_content / git_tracked / runtime_log 才能作为仓库污染或运行时行为的判断依据。不得仅凭关键词命中判定真实注入或文件污染；必须先过滤 Agent 自身告警描述与富文本复制噪声，再判断是否存在外部注入或仓库污染。",
             "verification": "检查 git tracked 文件、reports、metadata 及 gateway/agent/mcp 日志；若命中仅出现在 Agent 自身回复中，则判定为 false positive echo，而非真实注入。"
           }
         ]
