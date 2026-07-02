@@ -24,93 +24,254 @@ from app.memory_runtime.command_loop import run_command_loop    # noqa: E402
 from app.memory_runtime.evolution import reflect_task           # noqa: E402
 
 
-def _load_cases():
+# ---------------------------------------------------------------------------
+# helpers: loading
+# ---------------------------------------------------------------------------
+
+def _load_cases() -> list[dict]:
     cases_dir = _here.parent / 'cases'
-    cases = []
-    for f in sorted(cases_dir.glob('*.json')):
-        cases.append(json.loads(f.read_text(encoding='utf-8')))
-    return cases
+    return [
+        json.loads(f.read_text(encoding='utf-8'))
+        for f in sorted(cases_dir.glob('*.json'))
+    ]
 
 
-def _run_case(case: dict) -> dict:
-    case_id = case['case_id']
-    result = {
-        'case_id': case_id, 'title': case.get('title', ''),
-        'sessions': [], 'assertions': [], 'passed': 0, 'failed': 0,
+# ---------------------------------------------------------------------------
+# helpers: case result scaffolding
+# ---------------------------------------------------------------------------
+
+def _new_case_result(case: dict) -> dict:
+    return {
+        'case_id': case['case_id'],
+        'title': case.get('title', ''),
+        'sessions': [],
+        'assertions': [],
+        'passed': 0,
+        'failed': 0,
     }
 
-    written: dict[str, dict] = {}     # session_id -> last capsule result
-    command_result: dict | None = None
-    reflect_results: list[dict] = []
-    reuse_sessions: list[bool] = []   # track whether recalled memories include promoted risk
 
-    for sess in case['sessions']:
-        sid = sess['session_id']
-        sess_r = {'session_id': sid, 'writes': [], 'command': None}
-
-        for cap_in in sess.get('write_capsules', []):
-            r = write_capsule(**cap_in)
-            sess_r['writes'].append({'capsule_id': r['capsule_id'], 'policy_result': r['governance']['policy_result'], 'lifecycle': r['state']['lifecycle'], 'memory_class': r['memory_class']})
-            written[sid] = r
-
-        if 'command_goal' in sess:
-            command_result = run_command_loop(goal=sess['command_goal'], scene=sess.get('scene', 'general'))
-            recalled_classes = {m.get('memory_class') for m in command_result['recalled_memories']}
-            sess_r['command'] = {
-                'risk_class': command_result['task_understanding']['risk_class'],
-                'execution_mode': command_result['execution_mode'],
-                'num_memories': len(command_result['recalled_memories']),
-                'num_evidence_cards': len(command_result['evidence_cards']),
-                'unsafe_autonomy': command_result['risk_assessment']['unsafe_autonomy'],
-                'confirmation_points': len(command_result['confirmation_points']),
-                'recalled_classes': list(recalled_classes),
-            }
-            # check reuse: did session recall a risk memory promoted by a prior reflect?
-            any_reuse = any(r.get('evolution_actions') and recalled_classes for r in reflect_results)
-            reuse_sessions.append(any_reuse)
-            # assertions
-            if sess.get('expect_evidence_cards'):
-                ok = len(command_result['evidence_cards']) > 0
-                result['assertions'].append({'test': 'evidence_cards_present', 'session': sid, 'passed': ok})
-                result['passed' if ok else 'failed'] += 1
-            if sess.get('expect_unsafe_autonomy') is False:
-                ok = command_result['risk_assessment']['unsafe_autonomy'] is False
-                result['assertions'].append({'test': 'unsafe_autonomy_rate=0', 'session': sid, 'passed': ok})
-                result['passed' if ok else 'failed'] += 1
-            mem_classes = recalled_classes
-            if 'expect_memory_classes' in sess:
-                ok = bool(set(sess['expect_memory_classes']) & mem_classes)
-                result['assertions'].append({'test': 'memories_recalled', 'session': sid, 'passed': ok, 'recalled_classes': list(mem_classes)})
-                result['passed' if ok else 'failed'] += 1
-
-        # handle reflect step
-        if 'reflect' in sess:
-            rfl = sess['reflect']
-            # fill in helpful_memories from prior command if not specified
-            if not rfl.get('helpful_memories') and command_result:
-                rfl['helpful_memories'] = [m['capsule_id'] for m in command_result['recalled_memories']]
-            r_out = reflect_task(rfl.get('task_id', sid), rfl)
-            reflect_results.append(r_out)
-            sess_r['reflection'] = {'reflection_id': r_out['reflection_id'], 'evolution_actions': r_out['evolution_actions']}
-
-        # assertions on last write
-        last_write = sess_r['writes'][-1] if sess_r['writes'] else None
-        if last_write:
-            if 'expect_policy_result' in sess:
-                ok = last_write['policy_result'] == sess['expect_policy_result']
-                result['assertions'].append({'test': f"policy_result={sess['expect_policy_result']}", 'session': sid, 'passed': ok, 'actual': last_write['policy_result']})
-                result['passed' if ok else 'failed'] += 1
-            if 'expect_lifecycle' in sess:
-                ok = last_write['lifecycle'] == sess['expect_lifecycle']
-                result['assertions'].append({'test': f"lifecycle={sess['expect_lifecycle']}", 'session': sid, 'passed': ok, 'actual': last_write['lifecycle']})
-                result['passed' if ok else 'failed'] += 1
-
-        result['sessions'].append(sess_r)
+def _finalize_case_result(
+    result: dict,
+    reuse_sessions: list[bool],
+    reflect_results: list[dict],
+) -> dict:
     result['reuse_sessions'] = reuse_sessions
     result['reflect_count'] = len(reflect_results)
-    result['reflect_with_actions'] = sum(1 for r in reflect_results if r.get('evolution_actions'))
+    result['reflect_with_actions'] = sum(
+        1 for r in reflect_results if r.get('evolution_actions')
+    )
     return result
 
+
+# ---------------------------------------------------------------------------
+# helpers: write capsules
+# ---------------------------------------------------------------------------
+
+def _summarize_write_result(r: dict) -> dict:
+    return {
+        'capsule_id': r['capsule_id'],
+        'policy_result': r['governance']['policy_result'],
+        'lifecycle': r['state']['lifecycle'],
+        'memory_class': r['memory_class'],
+    }
+
+
+def _run_write_capsules(sess: dict) -> tuple[list[dict], dict | None]:
+    writes: list[dict] = []
+    last: dict | None = None
+    for cap_in in sess.get('write_capsules', []):
+        r = write_capsule(**cap_in)
+        writes.append(_summarize_write_result(r))
+        last = writes[-1]
+    return writes, last
+
+
+# ---------------------------------------------------------------------------
+# helpers: command loop
+# ---------------------------------------------------------------------------
+
+def _summarize_command_result(command_result: dict, recalled_classes: set[str]) -> dict:
+    return {
+        'risk_class': command_result['task_understanding']['risk_class'],
+        'execution_mode': command_result['execution_mode'],
+        'num_memories': len(command_result['recalled_memories']),
+        'num_evidence_cards': len(command_result['evidence_cards']),
+        'unsafe_autonomy': command_result['risk_assessment']['unsafe_autonomy'],
+        'confirmation_points': len(command_result['confirmation_points']),
+        'recalled_classes': list(recalled_classes),
+    }
+
+
+def _command_reused_prior_reflection(
+    reflect_results: list[dict],
+    recalled_classes: set[str],
+) -> bool:
+    return bool(
+        any(r.get('evolution_actions') for r in reflect_results)
+        and recalled_classes
+    )
+
+
+def _append_command_assertions(
+    result: dict,
+    sess: dict,
+    command_result: dict,
+    recalled_classes: set[str],
+) -> None:
+    sid = sess['session_id']
+
+    if sess.get('expect_evidence_cards'):
+        ok = len(command_result['evidence_cards']) > 0
+        _add_assertion(result, 'evidence_cards_present', sid, ok)
+
+    if sess.get('expect_unsafe_autonomy') is False:
+        ok = command_result['risk_assessment']['unsafe_autonomy'] is False
+        _add_assertion(result, 'unsafe_autonomy_rate=0', sid, ok)
+
+    if 'expect_memory_classes' in sess:
+        ok = bool(set(sess['expect_memory_classes']) & recalled_classes)
+        _add_assertion(
+            result, 'memories_recalled', sid, ok,
+            extra={'recalled_classes': list(recalled_classes)},
+        )
+
+
+def _run_command_session(
+    sess: dict,
+    result: dict,
+    reflect_results: list[dict],
+    reuse_sessions: list[bool],
+) -> dict | None:
+    if 'command_goal' not in sess:
+        return None
+    command_result = run_command_loop(
+        goal=sess['command_goal'],
+        scene=sess.get('scene', 'general'),
+    )
+    recalled_classes = {m.get('memory_class') for m in command_result['recalled_memories']}
+    reuse_sessions.append(_command_reused_prior_reflection(reflect_results, recalled_classes))
+    _append_command_assertions(result, sess, command_result, recalled_classes)
+    return command_result
+
+
+# ---------------------------------------------------------------------------
+# helpers: reflection
+# ---------------------------------------------------------------------------
+
+def _summarize_reflection_result(r_out: dict) -> dict:
+    return {
+        'reflection_id': r_out['reflection_id'],
+        'evolution_actions': r_out['evolution_actions'],
+    }
+
+
+def _run_reflection_session(
+    sess: dict,
+    command_result: dict | None,
+) -> dict | None:
+    if 'reflect' not in sess:
+        return None
+    rfl = dict(sess['reflect'])
+    if not rfl.get('helpful_memories') and command_result:
+        rfl['helpful_memories'] = [
+            m['capsule_id'] for m in command_result['recalled_memories']
+        ]
+    return reflect_task(rfl.get('task_id', sess['session_id']), rfl)
+
+
+# ---------------------------------------------------------------------------
+# helpers: write assertions
+# ---------------------------------------------------------------------------
+
+def _add_assertion(
+    result: dict,
+    test: str,
+    session: str,
+    passed: bool,
+    *,
+    actual: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    entry: dict = {'test': test, 'session': session, 'passed': passed}
+    if actual is not None:
+        entry['actual'] = actual
+    if extra:
+        entry.update(extra)
+    result['assertions'].append(entry)
+    result['passed' if passed else 'failed'] += 1
+
+
+def _append_write_assertions(result: dict, sess: dict, last_write: dict | None) -> None:
+    if not last_write:
+        return
+    sid = sess['session_id']
+    if 'expect_policy_result' in sess:
+        expected = sess['expect_policy_result']
+        actual = last_write['policy_result']
+        _add_assertion(result, f'policy_result={expected}', sid, actual == expected, actual=actual)
+    if 'expect_lifecycle' in sess:
+        expected = sess['expect_lifecycle']
+        actual = last_write['lifecycle']
+        _add_assertion(result, f'lifecycle={expected}', sid, actual == expected, actual=actual)
+
+
+# ---------------------------------------------------------------------------
+# session runner
+# ---------------------------------------------------------------------------
+
+def _run_session(
+    sess: dict,
+    result: dict,
+    reflect_results: list[dict],
+    reuse_sessions: list[bool],
+    last_command_result: dict | None,
+) -> tuple[dict, dict | None]:
+    """Run a single session. Returns (session_summary, updated_last_command_result)."""
+    sid = sess['session_id']
+    writes, last_write = _run_write_capsules(sess)
+    command_result = _run_command_session(sess, result, reflect_results, reuse_sessions)
+
+    # Persist command result across sessions so a later reflect can fill helpful_memories
+    if command_result is not None:
+        last_command_result = command_result
+
+    r_out = _run_reflection_session(sess, last_command_result)
+
+    sess_r: dict = {'session_id': sid, 'writes': writes, 'command': None}
+    if command_result is not None:
+        recalled_classes = {m.get('memory_class') for m in command_result['recalled_memories']}
+        sess_r['command'] = _summarize_command_result(command_result, recalled_classes)
+    if r_out is not None:
+        reflect_results.append(r_out)
+        sess_r['reflection'] = _summarize_reflection_result(r_out)
+
+    _append_write_assertions(result, sess, last_write)
+    return sess_r, last_command_result
+
+
+# ---------------------------------------------------------------------------
+# main case runner — cognitive complexity now well below 15
+# ---------------------------------------------------------------------------
+
+def _run_case(case: dict) -> dict:
+    result = _new_case_result(case)
+    reflect_results: list[dict] = []
+    reuse_sessions: list[bool] = []
+    last_command_result: dict | None = None
+
+    for sess in case['sessions']:
+        sess_r, last_command_result = _run_session(
+            sess, result, reflect_results, reuse_sessions, last_command_result,
+        )
+        result['sessions'].append(sess_r)
+
+    return _finalize_case_result(result, reuse_sessions, reflect_results)
+
+
+# ---------------------------------------------------------------------------
+# metrics
+# ---------------------------------------------------------------------------
 
 def compute_metrics(case_results: list[dict]) -> dict:
     total_assertions = sum(r['passed'] + r['failed'] for r in case_results)
@@ -121,14 +282,12 @@ def compute_metrics(case_results: list[dict]) -> dict:
     policy_ok = [a for r in case_results for a in r['assertions'] if 'policy_result=' in a['test']]
     lifecycle_ok = [a for r in case_results for a in r['assertions'] if 'lifecycle=' in a['test']]
 
-    # memory_reuse_success_rate: across all cases, how many command sessions had reuse from prior reflect?
     all_reuse = [v for r in case_results for v in r.get('reuse_sessions', [])]
-    reuse_rate = sum(all_reuse) / max(len(all_reuse), 1) if all_reuse else 'pending'
+    reuse_rate: float | str = sum(all_reuse) / max(len(all_reuse), 1) if all_reuse else 'pending'
 
-    # post_reflection_update_rate: among reflect steps, how many produced at least one evolution action?
     total_reflects = sum(r.get('reflect_count', 0) for r in case_results)
     reflects_with_actions = sum(r.get('reflect_with_actions', 0) for r in case_results)
-    reflect_rate = round(reflects_with_actions / total_reflects, 4) if total_reflects > 0 else 'pending'
+    reflect_rate: float | str = round(reflects_with_actions / total_reflects, 4) if total_reflects > 0 else 'pending'
 
     return {
         'total_cases': len(case_results),
@@ -146,7 +305,11 @@ def compute_metrics(case_results: list[dict]) -> dict:
     }
 
 
-def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path):
+# ---------------------------------------------------------------------------
+# report writer
+# ---------------------------------------------------------------------------
+
+def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
     lines = [
@@ -164,7 +327,7 @@ def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path)
     lines += ['', '## 2. Case 详情', '']
     for r in case_results:
         status = '✅ PASS' if r['failed'] == 0 else f'❌ FAIL ({r["failed"]} failed)'
-        lines.append(f'### {r["case_id"]} — {r.get("title","")}: {status}')
+        lines.append(f'### {r["case_id"]} — {r.get("title", "")}: {status}')
         lines.append('')
         for a in r['assertions']:
             icon = '✅' if a['passed'] else '❌'
@@ -181,8 +344,11 @@ def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path)
     print(mj)
 
 
-def main():
-    # Fresh DB per run
+# ---------------------------------------------------------------------------
+# entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
     if _db_path.exists():
         _db_path.unlink()
     init_db()
