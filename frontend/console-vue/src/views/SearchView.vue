@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+
+const router = useRouter()
 
 const q = ref('引用 规范')
 const topK = ref(5)
@@ -18,6 +21,10 @@ async function doSearch() {
     evidenceCards.value = r.evidence_cards || []
   } catch (e: any) { err.value = String(e) }
   loading.value = false
+}
+
+function openCapsule(id: string) {
+  router.push({ path: '/capsules', query: { id } })
 }
 </script>
 
@@ -54,7 +61,7 @@ async function doSearch() {
       </section>
       <section>
         <h3>证据卡 <span class="cnt">{{ evidenceCards.length }}</span></h3>
-        <div v-for="ec in evidenceCards" :key="ec.evidence_id" class="ec-card">
+        <div v-for="ec in evidenceCards" :key="ec.evidence_id" class="ec-card" @click="openCapsule(ec.capsule_id)">
           <div class="ec-head">
             <span class="tag cls">{{ ec.memory_class }}</span>
             <span class="tag mineral">{{ ec.used_for }}</span>
@@ -93,7 +100,8 @@ section h3 { font-size: 15px; letter-spacing: 2px; margin-bottom: 12px; }
 .tag.active, .tag.reinforced { background: var(--jade); color: #fff; }
 .tag.candidate { background: var(--gamboge); color: var(--ink); }
 .tag.quarantined, .tag.rejected { background: var(--cinnabar); color: #fff; }
-.ec-card { border: 1px solid var(--line); background: rgba(255,255,255,.3); padding: 12px; margin-bottom: 10px; }
+.ec-card { border: 1px solid var(--line); background: rgba(255,255,255,.3); padding: 12px; margin-bottom: 10px; cursor: pointer; transition: border-color .18s, transform .18s; }
+.ec-card:hover { border-color: var(--cinnabar); transform: translateY(-1px); }
 .ec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .ec-id { font-family: var(--mono); font-size: 10px; color: var(--ink-soft); margin-left: auto; }
 .ec-claim { font-size: 13px; color: var(--ink); margin-bottom: 6px; }

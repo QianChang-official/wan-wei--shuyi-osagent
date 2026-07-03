@@ -1,8 +1,57 @@
-// Same-origin API client for v0.6 MemoryOps Runtime.
-// In dev, Vite proxies /memory,/health,/audit to the FastAPI backend.
-// In prod, the built dist is mounted under /console on the same FastAPI server.
+// Same-origin API client for v0.7 MemoryOps Autopilot Platform.
+// In dev, Vite proxies backend paths to FastAPI; in prod dist is mounted under /console.
 
 export interface ApiState { online: boolean; version: string; name: string }
+
+export interface PlatformModule {
+  id: string
+  name_cn: string
+  name_en: string
+  pillar: string
+  status: 'done' | 'partial' | 'planned'
+  backend_refs: string[]
+  frontend_refs: string[]
+  competition_refs: string[]
+  description: string
+}
+
+export interface ModelProvider {
+  provider: string
+  api_base: string
+  api_key_alias: string
+  model: string
+  enabled: boolean
+  status: string
+  notes: string
+}
+
+export interface RegistryTool {
+  id: string
+  name_cn: string
+  kind: string
+  permission_mode: string
+  sandbox: string
+  status: string
+  result_storage: string
+  description: string
+}
+
+export interface RegistrySkill {
+  id: string
+  name_cn: string
+  scope: string
+  status: string
+  entrypoint: string
+  description: string
+}
+
+export interface ExportPackage {
+  id: string
+  name_cn: string
+  status: string
+  evidence_files: string[]
+  demo_path: string
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -30,4 +79,13 @@ export const api = {
   reflection: (body: Record<string, unknown>) =>
     req<any>('/memory/v2/reflection', { method: 'POST', body: JSON.stringify(body) }),
   auditLogs: (limit = 20) => req<{ items: any[] }>(`/audit/logs?limit=${limit}`),
+  platformModules: () => req<{ items: PlatformModule[]; summary: any }>('/platform/modules'),
+  modelProviders: () => req<{ items: ModelProvider[] }>('/model-gateway/providers'),
+  testModelProvider: (body: Record<string, unknown>) =>
+    req<any>('/model-gateway/test', { method: 'POST', body: JSON.stringify(body) }),
+  registryTools: () => req<{ items: RegistryTool[] }>('/tool-registry/tools'),
+  registrySkills: () => req<{ items: RegistrySkill[] }>('/tool-registry/skills'),
+  tuningDefaults: () => req<{ defaults: Record<string, Record<string, unknown>> }>('/tuning/defaults'),
+  tuningPolicies: () => req<{ items: any[] }>('/tuning/policies'),
+  exportPackages: () => req<{ items: ExportPackage[] }>('/exports/packages'),
 }

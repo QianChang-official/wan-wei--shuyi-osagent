@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import CapsuleDetail from '@/components/CapsuleDetail.vue'
+
+const route = useRoute()
 
 const items = ref<any[]>([])
 const selected = ref<any | null>(null)
@@ -19,6 +22,8 @@ async function load() {
   try {
     const r = await api.listCapsules(50)
     items.value = r.items || []
+    const id = typeof route.query.id === 'string' ? route.query.id : ''
+    if (id) await open(id)
   } catch (e: any) { err.value = String(e) }
   loading.value = false
 }

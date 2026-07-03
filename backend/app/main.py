@@ -11,8 +11,14 @@ from .memory_runtime.capsule_store import write_capsule, list_capsules, get_caps
 from .memory_runtime.retrieval import search_capsules
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
+from .platform.service import list_modules, module_summary
+from .model_gateway.schemas import ModelGatewayTestIn
+from .model_gateway.service import list_providers, test_provider
+from .tool_registry.service import list_skills, list_tools
+from .tuning.service import get_defaults, list_policy_modes
+from .export_center.service import list_packages
 
-app=FastAPI(title='宛委·枢忆 OSAgent')
+app=FastAPI(title='宛委·枢忆 MemoryOps Autopilot Platform')
 
 # Mount frontend console at /console (same-origin, no CORS needed).
 # Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.
@@ -33,7 +39,40 @@ def _startup():
         pass
 
 @app.get('/health')
-def health(): return {'status':'ok','name':'wanwei-shuyi-osagent','version':'v0.6-memoryops-runtime'}
+def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.7-memoryops-autopilot-platform'}
+
+# v0.7 platform cockpit endpoints
+@app.get('/platform/modules')
+def platform_modules(status: str | None = None):
+    return {'items': list_modules(status), 'summary': module_summary()}
+
+@app.get('/model-gateway/providers')
+def model_gateway_providers():
+    return list_providers()
+
+@app.post('/model-gateway/test')
+def model_gateway_test(req: ModelGatewayTestIn):
+    return test_provider(req)
+
+@app.get('/tool-registry/tools')
+def tool_registry_tools():
+    return list_tools()
+
+@app.get('/tool-registry/skills')
+def tool_registry_skills():
+    return list_skills()
+
+@app.get('/tuning/defaults')
+def tuning_defaults():
+    return get_defaults()
+
+@app.get('/tuning/policies')
+def tuning_policies():
+    return list_policy_modes()
+
+@app.get('/exports/packages')
+def export_packages():
+    return list_packages()
 
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')

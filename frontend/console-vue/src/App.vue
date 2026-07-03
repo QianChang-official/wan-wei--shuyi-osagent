@@ -4,13 +4,29 @@ import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()
 
-const nav = [
-  { to: '/', seal: '枢', name: '总览', en: 'Overview' },
-  { to: '/pillars', seal: '架', name: '九枢架构', en: 'Nine Pillars' },
-  { to: '/capsules', seal: '忆', name: '记忆容器', en: 'Capsules' },
-  { to: '/search', seal: '琅', name: '可信检索', en: 'Search' },
-  { to: '/command', seal: '司', name: '指挥闭环', en: 'Command' },
-  { to: '/reflection', seal: '省', name: '复盘演化', en: 'Reflection' },
+const navGroups = [
+  {
+    title: '平台舱室',
+    items: [
+      { to: '/', seal: '枢', name: '总览', en: 'Overview' },
+      { to: '/pillars', seal: '架', name: '主线架构', en: 'Architecture' },
+      { to: '/platform', seal: '舱', name: '平台舱室', en: 'Modules' },
+      { to: '/model-gateway', seal: '玄', name: '通玄模型舱', en: 'Gateway' },
+      { to: '/skills', seal: '工', name: '百工技能舱', en: 'MCP Skills' },
+      { to: '/tuning', seal: '南', name: '司南调参舱', en: 'Tuning' },
+      { to: '/exports', seal: '笈', name: '云笈导出舱', en: 'Exports' },
+    ],
+  },
+  {
+    title: '运行闭环',
+    items: [
+      { to: '/capsules', seal: '忆', name: '记忆容器', en: 'Capsules' },
+      { to: '/search', seal: '琅', name: '可信检索', en: 'Search' },
+      { to: '/command', seal: '司', name: '指挥闭环', en: 'Command' },
+      { to: '/reflection', seal: '省', name: '复盘演化', en: 'Reflection' },
+      { to: '/audit', seal: '台', name: '审计流水', en: 'Audit' },
+    ],
+  },
 ]
 </script>
 
@@ -25,10 +41,13 @@ const nav = [
         </div>
       </div>
       <nav class="nav">
-        <RouterLink v-for="n in nav" :key="n.to" :to="n.to" class="nav-item">
-          <span class="ni-seal">{{ n.seal }}</span>
-          <span class="ni-txt"><b>{{ n.name }}</b><i>{{ n.en }}</i></span>
-        </RouterLink>
+        <section v-for="group in navGroups" :key="group.title" class="nav-group">
+          <div class="nav-title">{{ group.title }}</div>
+          <RouterLink v-for="n in group.items" :key="n.to" :to="n.to" class="nav-item">
+            <span class="ni-seal">{{ n.seal }}</span>
+            <span class="ni-txt"><b>{{ n.name }}</b><i>{{ n.en }}</i></span>
+          </RouterLink>
+        </section>
       </nav>
       <div class="rail-foot">
         <span class="dot" :class="{ on: online }"></span>
@@ -47,11 +66,12 @@ const nav = [
 </template>
 
 <style scoped>
-.shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
+.shell { display: grid; grid-template-columns: 264px 1fr; min-height: 100vh; }
 .rail {
   background: linear-gradient(180deg, #211E1A, #17150F);
-  color: #E9DFC8; padding: 22px 16px; display: flex; flex-direction: column;
+  color: #E9DFC8; padding: 18px 14px; display: flex; flex-direction: column;
   border-right: 3px solid var(--cinnabar); position: sticky; top: 0; height: 100vh;
+  overflow: hidden;
 }
 .brand { display: flex; gap: 12px; align-items: center; padding-bottom: 20px; border-bottom: 1px solid rgba(233,223,200,.15); }
 .brand-seal {
@@ -61,9 +81,11 @@ const nav = [
 }
 .bt-cn { font-family: var(--font-kai); font-size: 18px; letter-spacing: 2px; }
 .bt-en { font-size: 11px; opacity: .6; letter-spacing: 1px; }
-.nav { margin-top: 18px; display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.nav { margin-top: 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; overflow: auto; padding-right: 4px; }
+.nav-group { display: flex; flex-direction: column; gap: 3px; }
+.nav-title { font-size: 10px; letter-spacing: 2px; color: rgba(233,223,200,.42); padding: 3px 4px 5px; }
 .nav-item {
-  display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 6px;
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px;
   color: #C9BC9E; text-decoration: none; transition: all .18s; border: 1px solid transparent;
 }
 .nav-item:hover { background: rgba(233,223,200,.06); color: #F3E9CE; }
