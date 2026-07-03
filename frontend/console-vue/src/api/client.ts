@@ -126,4 +126,22 @@ export const api = {
   researchTechnologies: () => req<{ items: ResearchTechnology[] }>('/research-adoption/technologies'),
   researchRoutes: () => req<{ items: AdoptionRoute[] }>('/research-adoption/routes'),
   researchVersionMap: () => req<{ items: VersionMapping[] }>('/research-adoption/version-map'),
+  reproductionSystems: () => req<any>('/reproduction/systems'),
+  reproductionWorkbench: () => req<any>('/reproduction/memoryarena/workbench'),
+  reproductionHippoGraph: () => req<any>('/reproduction/hippo-lite/graph'),
+  reproductionHippoRecall: (body: Record<string, unknown>) =>
+    req<any>('/reproduction/hippo-lite/recall', { method: 'POST', body: JSON.stringify(body) }),
+  reproductionRetentionState: () => req<any>('/reproduction/retention/state'),
+  reproductionRetentionSimulate: (body: Record<string, unknown>) =>
+    req<any>('/reproduction/retention/simulate', { method: 'POST', body: JSON.stringify(body) }),
+  reproductionReflexionEvaluator: () => req<any>('/reproduction/reflexion/evaluator'),
+  reproductionReflexionEvaluate: (body: Record<string, unknown>) =>
+    req<any>('/reproduction/reflexion/evaluate', { method: 'POST', body: JSON.stringify(body) }),
+  reproductionMemoryTools: () => req<any>('/reproduction/memory-tools'),
+  reproductionMemoryToolDryRun: (body: Record<string, unknown>) =>
+    req<any>('/reproduction/memory-tools/dry-run', { method: 'POST', body: JSON.stringify(body) }),
+  reproductionMemcubeSchema: () => req<any>('/reproduction/memcube/schema'),
+  reproductionMemoryTiers: () => req<any>('/reproduction/memory-tiers'),
+  reproductionLocomoTemplate: () => req<any>('/reproduction/locomo/template'),
+  reproductionGenerativeTemplate: () => req<any>('/reproduction/generative-stream/template'),
 }

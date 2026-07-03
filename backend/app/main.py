@@ -18,6 +18,26 @@ from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
+from .reproduction.service import (
+    HippoRecallIn,
+    MemoryToolDryRunIn,
+    ReflexionEvaluateIn,
+    RetentionSimulateIn,
+    evaluator as reproduction_reflexion_evaluator,
+    generative_template,
+    hippo_graph,
+    hippo_recall,
+    list_systems as list_reproduction_systems,
+    list_tools as list_memory_tools,
+    locomo_template,
+    memcube_schema,
+    memory_tiers,
+    memory_tool_dry_run,
+    retention_simulate,
+    retention_state,
+    reflexion_evaluate,
+    workbench as reproduction_workbench,
+)
 
 app=FastAPI(title='宛委·枢忆 MemoryOps Autopilot Platform')
 
@@ -40,7 +60,7 @@ def _startup():
         pass
 
 @app.get('/health')
-def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.8-authoritative-tech-adoption'}
+def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.9-research-system-reproduction'}
 
 # v0.7 platform cockpit endpoints
 @app.get('/platform/modules')
@@ -87,6 +107,63 @@ def research_adoption_routes():
 @app.get('/research-adoption/version-map')
 def research_adoption_version_map():
     return version_map()
+
+# v0.9 lightweight research system reproduction endpoints
+@app.get('/reproduction/systems')
+def reproduction_systems():
+    return list_reproduction_systems()
+
+@app.get('/reproduction/memoryarena/workbench')
+def reproduction_memoryarena_workbench():
+    return reproduction_workbench()
+
+@app.get('/reproduction/hippo-lite/graph')
+def reproduction_hippo_graph():
+    return hippo_graph()
+
+@app.post('/reproduction/hippo-lite/recall')
+def reproduction_hippo_recall(req: HippoRecallIn):
+    return hippo_recall(req)
+
+@app.get('/reproduction/retention/state')
+def reproduction_retention_state():
+    return retention_state()
+
+@app.post('/reproduction/retention/simulate')
+def reproduction_retention_simulate(req: RetentionSimulateIn):
+    return retention_simulate(req)
+
+@app.get('/reproduction/reflexion/evaluator')
+def reproduction_reflexion_evaluator_view():
+    return reproduction_reflexion_evaluator()
+
+@app.post('/reproduction/reflexion/evaluate')
+def reproduction_reflexion_evaluate(req: ReflexionEvaluateIn):
+    return reflexion_evaluate(req)
+
+@app.get('/reproduction/memory-tools')
+def reproduction_memory_tools():
+    return list_memory_tools()
+
+@app.post('/reproduction/memory-tools/dry-run')
+def reproduction_memory_tool_dry_run(req: MemoryToolDryRunIn):
+    return memory_tool_dry_run(req)
+
+@app.get('/reproduction/memcube/schema')
+def reproduction_memcube_schema():
+    return memcube_schema()
+
+@app.get('/reproduction/memory-tiers')
+def reproduction_memory_tiers():
+    return memory_tiers()
+
+@app.get('/reproduction/locomo/template')
+def reproduction_locomo_template():
+    return locomo_template()
+
+@app.get('/reproduction/generative-stream/template')
+def reproduction_generative_template():
+    return generative_template()
 
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')
