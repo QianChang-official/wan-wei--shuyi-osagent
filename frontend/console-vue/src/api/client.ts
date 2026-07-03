@@ -144,4 +144,21 @@ export const api = {
   reproductionMemoryTiers: () => req<any>('/reproduction/memory-tiers'),
   reproductionLocomoTemplate: () => req<any>('/reproduction/locomo/template'),
   reproductionGenerativeTemplate: () => req<any>('/reproduction/generative-stream/template'),
+  deepeningSessionCoreDesign: () => req<any>('/deepening/session-core/design'),
+  deepeningSessionCoreDemoTrace: () => req<any>('/deepening/session-core/demo-trace'),
+  deepeningReasoningDepthDesign: () => req<any>('/deepening/reasoning-depth/design'),
+  deepeningReasoningDepthSimulate: (body: Record<string, unknown>) =>
+    req<any>('/deepening/reasoning-depth/simulate', { method: 'POST', body: JSON.stringify(body) }),
+  deepeningRedQueenEvaluatorDesign: () => req<any>('/deepening/redqueen/evaluator-design'),
+  deepeningRedQueenEvaluateDryRun: (body: Record<string, unknown>) =>
+    req<any>('/deepening/redqueen/evaluate-dry-run', { method: 'POST', body: JSON.stringify(body) }),
+  deepeningContractSourceOfTruth: () => req<any>('/deepening/contracts/source-of-truth'),
+  deepeningContractDriftCheck: () => req<any>('/deepening/contracts/drift-check'),
+  deepeningAgiAsiPathways: () => req<any>('/deepening/agi-asi/pathways'),
+  deepeningInterrogationQuestions: () => req<any>('/deepening/interrogation/questions'),
+  deepeningInterrogationAnswerDryRun: (body: Record<string, unknown>) =>
+    req<any>('/deepening/interrogation/answer-dry-run', { method: 'POST', body: JSON.stringify(body) }),
+  deepeningVisualVerificationProtocol: () => req<any>('/deepening/visual-verification/protocol'),
+  deepeningVisualVerificationChecklistDryRun: (body: Record<string, unknown>) =>
+    req<any>('/deepening/visual-verification/checklist-dry-run', { method: 'POST', body: JSON.stringify(body) }),
 }

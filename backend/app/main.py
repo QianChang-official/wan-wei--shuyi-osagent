@@ -18,6 +18,25 @@ from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
+from .deepening.service import (
+    InterrogationAnswerIn,
+    ReasoningDepthSimulateIn,
+    RedQueenEvaluateIn,
+    VisualChecklistIn,
+    answer_dry_run as deepening_answer_dry_run,
+    drift_check as deepening_drift_check,
+    evaluator_design as deepening_evaluator_design,
+    pathways as deepening_pathways,
+    questions as deepening_questions,
+    reasoning_depth_design as deepening_reasoning_depth_design,
+    reasoning_depth_simulate as deepening_reasoning_depth_simulate,
+    redqueen_evaluate_dry_run as deepening_redqueen_evaluate_dry_run,
+    session_core_demo_trace as deepening_session_core_demo_trace,
+    session_core_design as deepening_session_core_design,
+    source_of_truth as deepening_source_of_truth,
+    visual_checklist_dry_run as deepening_visual_checklist_dry_run,
+    visual_protocol as deepening_visual_protocol,
+)
 from .reproduction.service import (
     HippoRecallIn,
     MemoryToolDryRunIn,
@@ -164,6 +183,59 @@ def reproduction_locomo_template():
 @app.get('/reproduction/generative-stream/template')
 def reproduction_generative_template():
     return generative_template()
+
+# v0.9.1 deep expansion and visual verification endpoints
+@app.get('/deepening/session-core/design')
+def deepening_session_core_design_view():
+    return deepening_session_core_design()
+
+@app.get('/deepening/session-core/demo-trace')
+def deepening_session_core_demo_trace_view():
+    return deepening_session_core_demo_trace()
+
+@app.get('/deepening/reasoning-depth/design')
+def deepening_reasoning_depth_design_view():
+    return deepening_reasoning_depth_design()
+
+@app.post('/deepening/reasoning-depth/simulate')
+def deepening_reasoning_depth_simulate_view(req: ReasoningDepthSimulateIn):
+    return deepening_reasoning_depth_simulate(req)
+
+@app.get('/deepening/redqueen/evaluator-design')
+def deepening_redqueen_evaluator_design_view():
+    return deepening_evaluator_design()
+
+@app.post('/deepening/redqueen/evaluate-dry-run')
+def deepening_redqueen_evaluate_dry_run_view(req: RedQueenEvaluateIn):
+    return deepening_redqueen_evaluate_dry_run(req)
+
+@app.get('/deepening/contracts/source-of-truth')
+def deepening_source_of_truth_view():
+    return deepening_source_of_truth()
+
+@app.get('/deepening/contracts/drift-check')
+def deepening_drift_check_view():
+    return deepening_drift_check()
+
+@app.get('/deepening/agi-asi/pathways')
+def deepening_agi_asi_pathways_view():
+    return deepening_pathways()
+
+@app.get('/deepening/interrogation/questions')
+def deepening_interrogation_questions_view():
+    return deepening_questions()
+
+@app.post('/deepening/interrogation/answer-dry-run')
+def deepening_interrogation_answer_dry_run_view(req: InterrogationAnswerIn):
+    return deepening_answer_dry_run(req)
+
+@app.get('/deepening/visual-verification/protocol')
+def deepening_visual_verification_protocol_view():
+    return deepening_visual_protocol()
+
+@app.post('/deepening/visual-verification/checklist-dry-run')
+def deepening_visual_verification_checklist_dry_run_view(req: VisualChecklistIn):
+    return deepening_visual_checklist_dry_run(req)
 
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')

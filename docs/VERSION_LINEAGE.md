@@ -313,16 +313,102 @@
 - `backend/app/research_adoption/service.py`
 - `frontend/console-vue/src/views/ResearchAdoptionView.vue`
 
-## v0.9 继承目标
+## v0.9 Research System Reproduction Edition
 
-定位：风险收敛与工程硬化。
+定位：论文系统轻量复现层，不是完整官方复现。
 
-计划处理：
+已完成：
 
-- 不确定论文状态联网核验。
-- partial/planned/pending 能力二次收敛。
-- API stub 到真实配置落盘。
-- MemoryArena case 扩容。
-- 权限、审计、工具写入确认。
-- 麒麟环境适配复测。
-- 指标与宣传口径防夸大。
+- `docs/V09_RESEARCH_SYSTEM_REPRODUCTION.md`
+- `backend/app/reproduction/`
+- `GET /reproduction/systems`
+- MemoryArena Workbench。
+- Hippo-Lite Graph Recall。
+- MemoryBank Retention Engine。
+- Reflexion Evaluator。
+- Memory Tools API dry-run。
+- MemCube / MemoryCapsule 2.1 schema。
+- MemGPT Memory Tier Manager。
+- LoCoMo Long-Session Template。
+- Generative Agents Memory Stream。
+- 前端 `ReproductionView.vue`。
+- 导航新增「研究吸收 / 论文复现」。
+
+未完成：
+
+- 完整官方复现。
+- 外部论文状态逐条联网核验。
+- 真实长期会话 benchmark。
+- mutating Memory Tools 写入沙箱。
+
+后续继承：
+
+- v0.9.1 深做追问与视觉同步验证。
+- v0.9.1 Contract Truth 和 Visual Verification。
+
+权威支撑：
+
+- MemoryArena。
+- HippoRAG。
+- MemoryBank。
+- Reflexion。
+- Memory Tools / Agentic Memory。
+- MemCube / MemOS。
+- MemGPT。
+- LoCoMo。
+- Generative Agents。
+
+证据文件：
+
+- `docs/V09_RESEARCH_SYSTEM_REPRODUCTION.md`
+- `backend/app/reproduction/service.py`
+- `frontend/console-vue/src/views/ReproductionView.vue`
+
+## v0.9.1 Deep Expansion & Visual Verification Edition
+
+定位：深做追问、契约真源、视觉同步验证和答辩解释力加厚。
+
+已完成：
+
+- `docs/V091_DEEP_EXPANSION_VISUAL_VERIFICATION.md`
+- `backend/app/deepening/`
+- `GET /deepening/session-core/design`
+- `GET /deepening/session-core/demo-trace`
+- `GET /deepening/reasoning-depth/design`
+- `POST /deepening/reasoning-depth/simulate`
+- `GET /deepening/redqueen/evaluator-design`
+- `POST /deepening/redqueen/evaluate-dry-run`
+- `GET /deepening/contracts/source-of-truth`
+- `GET /deepening/contracts/drift-check`
+- `GET /deepening/agi-asi/pathways`
+- `GET /deepening/interrogation/questions`
+- `POST /deepening/interrogation/answer-dry-run`
+- `GET /deepening/visual-verification/protocol`
+- `POST /deepening/visual-verification/checklist-dry-run`
+- 前端 `DeepeningView.vue`。
+- 导航新增「研究吸收 / 深做追问」。
+
+未完成：
+
+- 真实 token / money 成本日志接入。
+- drift-check 自动读取文件与探测端点。
+- Red Queen evaluator 自动策略更新。
+- 浏览器视觉验收在所有机器上的稳定自动化。
+
+后续继承：
+
+- v0.9.2 可扩展到自动 drift scanner、真实成本报表和长会话评测。
+
+权威支撑：
+
+- Hermes Session Core。
+- OpenMythos recurrent depth。
+- Red Queen Godel Machine。
+- TriadJS single source of truth。
+- From AGI to ASI pathway framing。
+
+证据文件：
+
+- `docs/V091_DEEP_EXPANSION_VISUAL_VERIFICATION.md`
+- `backend/app/deepening/service.py`
+- `frontend/console-vue/src/views/DeepeningView.vue`
