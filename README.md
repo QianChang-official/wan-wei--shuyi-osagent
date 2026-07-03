@@ -88,6 +88,29 @@ v0.7 新增平台舱室：
 - 前端新增平台舱室、通玄模型舱、百工技能舱、司南调参舱、云笈导出舱入口。
 - 总览页扩展为平台规模展示，架构页扩展为 20 舱仪器盘。
 
+## v0.8 吸收矩阵与 API/UI 入口
+
+v0.8 是权威技术吸收版：以 MemoryArena 强化评测场，以 MemOS 强化记忆资源治理，以 Reflexion 强化复盘演化，以 MemoryBank 强化遗忘与偏好适应，以 HippoRAG 强化关系召回，以 MemGPT 强化分层上下文，以 LoCoMo 强化长期会话评测，以 AgeMem 预埋记忆工具化 API。
+
+新增文档：
+
+- `docs/V08_AUTHORITATIVE_TECH_ADOPTION_MATRIX.md`
+- `docs/VERSION_LINEAGE.md`
+
+新增后端 API：
+
+- `GET /research-adoption/technologies`：返回 MemoryArena、MemOS、Reflexion、MemoryBank、HippoRAG、LoCoMo、MemGPT、Generative Agents、AgeMem 的吸收 catalog。
+- `GET /research-adoption/routes`：返回 MemoryArena Workbench、Hippo-Lite Graph Recall、MemoryBank Retention、Reflexion Evaluator、Memory Tools API 五条落地路线。
+- `GET /research-adoption/version-map`：返回 v0.1-v0.8 的权威技术依据映射。
+
+新增前端入口：
+
+- `/console/#/research-adoption`
+- 导航组：研究吸收 / 权威吸收
+- 页面结构：技术卡片区、五大路线区、版本映射区、状态统计、done/partial/planned/pending 标签。
+
+v0.8 只做项目内 catalog/stub/API/UI/文档吸收，不联网、不伪造 DOI、不声明完整复现外部系统。未确认论文状态统一标 `needs_verification`，预印本标 `arxiv_preprint`。
+
 ## 当前真实指标
 
 来自 v0.6 MemoryArena-Lite 真实运行报告：

@@ -53,6 +53,41 @@ export interface ExportPackage {
   demo_path: string
 }
 
+export interface ResearchTechnology {
+  id: string
+  name: string
+  source_level: string
+  publication_status: string
+  core_idea: string
+  target_modules: string[]
+  adoption_ratio: number
+  current_status: 'done' | 'partial' | 'planned' | 'pending'
+  v08_actions: string[]
+  v09_risk_controls: string[]
+  evidence_files: string[]
+}
+
+export interface AdoptionRoute {
+  route_id: string
+  name_cn: string
+  target_pillar: string
+  backend_plan: string[]
+  frontend_plan: string[]
+  arena_plan: string[]
+  status: string
+  expected_impact: string
+}
+
+export interface VersionMapping {
+  version: string
+  positioning: string
+  authoritative_support: string[]
+  completed: string[]
+  unfinished: string[]
+  inherited_by: string[]
+  evidence_files: string[]
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -88,4 +123,7 @@ export const api = {
   tuningDefaults: () => req<{ defaults: Record<string, Record<string, unknown>> }>('/tuning/defaults'),
   tuningPolicies: () => req<{ items: any[] }>('/tuning/policies'),
   exportPackages: () => req<{ items: ExportPackage[] }>('/exports/packages'),
+  researchTechnologies: () => req<{ items: ResearchTechnology[] }>('/research-adoption/technologies'),
+  researchRoutes: () => req<{ items: AdoptionRoute[] }>('/research-adoption/routes'),
+  researchVersionMap: () => req<{ items: VersionMapping[] }>('/research-adoption/version-map'),
 }

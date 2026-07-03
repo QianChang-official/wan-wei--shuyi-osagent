@@ -4,6 +4,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { title: '总览', seal: '览' } },
   { path: '/pillars', name: 'pillars', component: () => import('@/views/PillarsView.vue'), meta: { title: '架构', seal: '枢' } },
   { path: '/platform', name: 'platform', component: () => import('@/views/PlatformView.vue'), meta: { title: '舱室', seal: '舱' } },
+  { path: '/research-adoption', name: 'researchAdoption', component: () => import('@/views/ResearchAdoptionView.vue'), meta: { title: '权威吸收', seal: '研' } },
   { path: '/model-gateway', name: 'modelGateway', component: () => import('@/views/ModelGatewayView.vue'), meta: { title: '模型', seal: '玄' } },
   { path: '/skills', name: 'skills', component: () => import('@/views/SkillsRegistryView.vue'), meta: { title: '百工', seal: '工' } },
   { path: '/tuning', name: 'tuning', component: () => import('@/views/TuningView.vue'), meta: { title: '调参', seal: '南' } },

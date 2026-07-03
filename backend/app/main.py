@@ -17,6 +17,7 @@ from .model_gateway.service import list_providers, test_provider
 from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
+from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
 
 app=FastAPI(title='宛委·枢忆 MemoryOps Autopilot Platform')
 
@@ -39,7 +40,7 @@ def _startup():
         pass
 
 @app.get('/health')
-def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.7-memoryops-autopilot-platform'}
+def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.8-authoritative-tech-adoption'}
 
 # v0.7 platform cockpit endpoints
 @app.get('/platform/modules')
@@ -73,6 +74,19 @@ def tuning_policies():
 @app.get('/exports/packages')
 def export_packages():
     return list_packages()
+
+# v0.8 authoritative technology adoption endpoints
+@app.get('/research-adoption/technologies')
+def research_adoption_technologies():
+    return list_technologies()
+
+@app.get('/research-adoption/routes')
+def research_adoption_routes():
+    return list_adoption_routes()
+
+@app.get('/research-adoption/version-map')
+def research_adoption_version_map():
+    return version_map()
 
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')

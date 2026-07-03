@@ -18,6 +18,12 @@ const navGroups = [
     ],
   },
   {
+    title: '研究吸收',
+    items: [
+      { to: '/research-adoption', seal: '研', name: '权威吸收', en: 'Research' },
+    ],
+  },
+  {
     title: '运行闭环',
     items: [
       { to: '/capsules', seal: '忆', name: '记忆容器', en: 'Capsules' },
