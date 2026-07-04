@@ -1,0 +1,16 @@
+[
+  {
+    "source_type": "manual_config",
+    "scene": "office",
+    "content": {
+      "text": "以后周报用正式语气"
+    }
+  },
+  {
+    "source_type": "tool_result",
+    "scene": "office",
+    "content": {
+      "result": "本周完成接口联调"
+    }
+  }
+]

@@ -1,0 +1,53 @@
+{
+  "case_id": "self_evolution_loop",
+  "title": "自进化闭环演示：失败 → 记忆 → 复用 → 改进",
+  "sessions": [
+    {
+      "session_id": "s1_first_task_fail",
+      "write_capsules": [
+        {
+          "memory_class": "experience",
+          "content": {
+            "task_id": "task_demo_001",
+            "goal": "提交包含 URL 的 metadata JSON 文件",
+            "outcome": "failed",
+            "lessons": "聊天界面自动渲染导致 URL 被误转成 HTML，json.tool 校验才发现真文件没有残留但肉眼看起来有"
+          },
+          "source_type": "eval",
+          "scene": "coding",
+          "task_type": "execution"
+        }
+      ],
+      "reflect": {
+        "task_id": "task_demo_001",
+        "goal_achieved": false,
+        "helpful_memories": [],
+        "misleading_memories": [],
+        "new_risks": [
+          {
+            "risk_statement": "聊天界面渲染假象导致 JSON 误判失效风险，必须用 json.tool 校验真实文件而不是看聊天界面显示",
+            "trigger_condition": "提交含 URL 的 JSON 且只看聊天界面不看真文件",
+            "mitigation": "提交前运行 python3 -m json.tool 校验实际文件，再 grep 检查 HTML anchor 残留"
+          }
+        ]
+      }
+    },
+    {
+      "session_id": "s2_second_task_same_goal",
+      "command_goal": "提交 metadata JSON 文件，校验是否有问题",
+      "expect_memory_classes": ["risk"],
+      "expect_evidence_cards": true,
+      "description": "第二次相同类型任务；系统应召回第一次写入的风险记忆，改变计划，演示自进化生效"
+    },
+    {
+      "session_id": "s3_reflect_and_reinforce",
+      "reflect": {
+        "task_id": "task_demo_002",
+        "goal_achieved": true,
+        "helpful_memories": [],
+        "misleading_memories": [],
+        "new_risks": []
+      }
+    }
+  ]
+}

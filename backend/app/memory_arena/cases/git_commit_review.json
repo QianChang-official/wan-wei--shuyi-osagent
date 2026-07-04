@@ -1,0 +1,37 @@
+{
+  "case_id": "git_commit_review",
+  "title": "Git 提交前审查场景",
+  "sessions": [
+    {
+      "session_id": "s1_seed_commit_rules",
+      "write_capsules": [
+        {
+          "memory_class": "risk",
+          "content": {
+            "risk_statement": "聊天界面可能把纯 URL 渲染成 HTML 假象，提交前必须检查真实文件无 HTML anchor 残留。",
+            "trigger_condition": "提交 docs/metadata 中含 URL 的文档或 JSON",
+            "mitigation": "运行 grep 检查 <a href / </a> / &quot; / &amp;。"
+          },
+          "source_type": "eval",
+          "scene": "coding"
+        },
+        {
+          "memory_class": "skill",
+          "content": {
+            "skill_name": "提交前审查流程",
+            "steps": ["git status --porcelain", "grep 检查 HTML residue", "必要时 json.tool 校验", "git push 后 ls-remote 验证 HEAD"],
+            "preconditions": ["工作区存在待提交改动"]
+          },
+          "source_type": "eval",
+          "scene": "coding"
+        }
+      ]
+    },
+    {
+      "session_id": "s2_plan_commit_review",
+      "command_goal": "提交 v0.6 文档和代码变更前，生成只读检查计划并列出需要确认的文件范围。",
+      "expect_memory_classes": ["risk", "skill"],
+      "expect_evidence_cards": true
+    }
+  ]
+}

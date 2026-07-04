@@ -1,0 +1,62 @@
+宛委·枢忆 OSAgent / ASI-Memory Environment
+v0.4 / v0.5 权威参考资料 —— 一手链接清单
+（所有 arXiv 条目均已通过 arXiv API 逐条核验存在；PDF 全文留在本地 research 包，未提交进主仓库）
+
+本地 PDF 目录（不在本 git 仓库内，兄弟目录）：
+../../02_research/OSAgent记忆系统权威论文阅读包/papers_v04_v05/
+
+=== v0.4：安全治理 + 精准遗忘 + 纵向评测 ===
+
+1. A Survey on Long-Term Memory Security in LLM Agents (B级/预印本, 2026-04-17)
+   abs : https://arxiv.org/abs/2604.16548
+   pdf : https://arxiv.org/pdf/2604.16548
+
+2. Memory Poisoning Attack and Defense on Memory Based LLM-Agents (B级/预印本)
+   abs : https://arxiv.org/abs/2601.05504
+
+3. Remembering More, Risking More: Longitudinal Safety Risks (B级/预印本)
+   abs : https://arxiv.org/abs/2605.17830
+
+4. OWASP Agent Memory Guard (C级/行业治理, 非论文)
+   url : https://owasp.org/www-project-agent-memory-guard/
+
+5. OWASP Agentic Security Initiative (C级/行业倡议, 非论文)
+   url : https://genai.owasp.org/initiatives/agentic-security-initiative/
+
+6. Microsoft: Manage AI memory safety in agentic systems (C级/厂商治理文档, 非论文)
+   url : https://learn.microsoft.com/en-us/security/zero-trust/sfi/manage-agentic-memory-safety
+
+=== v0.5：ASI-Oriented 偏好与知识记忆优化 ===
+
+7. The Road to Artificial SuperIntelligence: Survey of Superalignment (B级/预印本, 2024-12-21)
+   abs : https://arxiv.org/abs/2412.16468
+   pdf : https://arxiv.org/pdf/2412.16468
+
+8. Scalable AI Safety via Doubly-Efficient Debate (A级/ICML 2024, arXiv首发 2023-11-23)
+   abs : https://arxiv.org/abs/2311.14125
+   pdf : https://arxiv.org/pdf/2311.14125
+   pmlr: https://proceedings.mlr.press/v235/brown-cohen24a.html
+
+9. Constitutional AI: Harmlessness from AI Feedback (B级/Anthropic预印本, 2022-12-15)
+   abs : https://arxiv.org/abs/2212.08073
+   pdf : https://arxiv.org/pdf/2212.08073
+
+10. Scalable agent alignment via reward modeling (B级/DeepMind预印本, 2018-11-19)
+    abs : https://arxiv.org/abs/1811.07871
+    pdf : https://arxiv.org/pdf/1811.07871
+
+11. MemOS: A Memory OS for AI System (B级/预印本)
+    abs : https://arxiv.org/abs/2507.03724
+
+12. Memory for Autonomous LLM Agents: Mechanisms, Evaluation, Frontiers (B级/预印本, 2026-03-08)
+    abs : https://arxiv.org/abs/2603.07670
+    pdf : https://arxiv.org/pdf/2603.07670
+
+13. MemoryBank: Enhancing LLMs with Long-Term Memory (A级/AAAI 2024)
+    abs : https://arxiv.org/abs/2305.10250
+
+措辞红线：
+- 「发表于 ICML 2024」仅限 #8 Debate。
+- 「发表于 AAAI 2024」仅限 #13 MemoryBank。
+- 其余 arXiv 条目一律写「预印本 / 综述性参考」。
+- #4/#5/#6 写「行业安全治理 / 标准化参考」，不是论文。

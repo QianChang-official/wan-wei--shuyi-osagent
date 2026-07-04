@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宛委·枢忆 OSAgent · 秘府控制台</title>
+<style>
+  :root{
+    --paper:#EFE7D3; --paper-2:#E4D8BE; --ink:#1C1A17; --ink-soft:#5A5348;
+    --cinnabar:#B23A2E; --cinnabar-2:#9E2B25; --stone:#2E5A6C; --gold:#C8991F;
+    --line:rgba(28,26,23,0.16); --card:rgba(255,255,255,0.34);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Songti SC","SimSun",Georgia,serif; line-height:1.7;
+    background-image:
+      repeating-linear-gradient(0deg,transparent,transparent 33px,rgba(28,26,23,0.03) 34px);
+  }
+  .wrap{max-width:1180px; margin:0 auto; padding:28px 22px 80px}
+  /* 标题 */
+  .masthead{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap;
+    border-bottom:2px double var(--ink); padding-bottom:14px}
+  .masthead h1{font-size:34px; margin:0; letter-spacing:6px; font-weight:700}
+  .masthead .sub{font-size:13px; color:var(--ink-soft); letter-spacing:2px}
+  .seal{display:inline-block; background:var(--cinnabar); color:var(--paper); font-size:13px;
+    padding:6px 10px; border-radius:3px; letter-spacing:3px; writing-mode:vertical-rl}
+  /* 状态灯 */
+  .status-bar{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:18px 0 6px;
+    font-size:13px; color:var(--ink-soft)}
+  .dot{width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px}
+  .dot.on{background:#3E8E5A} .dot.off{background:var(--cinnabar)}
+  .ver{border:1px solid var(--line); padding:2px 8px; border-radius:3px}
+  .ver.now{background:var(--ink); color:var(--paper)}
+  /* SVG hero */
+  .hero-art{margin:22px 0 8px; border:1px solid var(--line); background:rgba(255,255,255,0.3);
+    overflow:hidden; line-height:0}
+  .hero-art svg{width:100%; height:auto; display:block}
+  /* 通用区块 */
+  .sec-head{display:flex; align-items:center; gap:12px; margin:34px 0 14px}
+  .sec-head .cn{font-size:20px; font-weight:700; letter-spacing:3px}
+  .sec-head .en{font-size:11px; color:var(--ink-soft); font-family:Georgia,serif; letter-spacing:1px}
+  .sec-head::after{content:""; flex:1; height:1px; background:var(--line)}
+  /* 九宫格 */
+  .grid9{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+  .pillar{border:1px solid var(--line); background:var(--card); padding:14px 16px; position:relative}
+  .pillar .stamp{position:absolute; top:12px; right:12px; width:34px; height:34px; border:1.5px solid var(--cinnabar);
+    color:var(--cinnabar); border-radius:4px; display:flex; align-items:center; justify-content:center;
+    font-size:15px; font-weight:700}
+  .pillar .cn{font-size:17px; font-weight:700; letter-spacing:2px}
+  .pillar .fn{font-size:12px; color:var(--stone); margin:4px 0 6px; font-family:Georgia,serif}
+  .pillar p{font-size:12.5px; color:var(--ink-soft); margin:0}
+  /* 操作台 */
+  .console-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+  .panel{border:1px solid var(--line); background:var(--card); padding:16px}
+  .panel h3{margin:0 0 4px; font-size:16px; letter-spacing:2px}
+  .panel .path{font-size:11px; color:var(--stone); font-family:Georgia,monospace; margin-bottom:10px}
+  label{display:block; font-size:12px; color:var(--ink-soft); margin:8px 0 3px}
+  input,select,textarea{width:100%; padding:6px 8px; border:1px solid var(--line); background:rgba(255,255,255,0.6);
+    font-family:inherit; font-size:13px; color:var(--ink); border-radius:2px}
+  textarea{min-height:70px; font-family:Georgia,monospace; font-size:12px}
+  .row{display:flex; gap:10px} .row>*{flex:1}
+  button{margin-top:10px; padding:8px 16px; background:var(--ink); color:var(--paper); border:none;
+    font-family:inherit; font-size:13px; letter-spacing:2px; cursor:pointer; border-radius:2px}
+  button:hover{background:var(--cinnabar)}
+  .out{margin-top:12px; background:rgba(28,26,23,0.05); border:1px solid var(--line); padding:10px;
+    font-family:Georgia,monospace; font-size:11.5px; white-space:pre-wrap; word-break:break-word;
+    max-height:280px; overflow:auto; color:var(--ink)}
+  .badge{display:inline-block; padding:1px 7px; border-radius:3px; font-size:11px; font-family:Georgia,monospace;
+    margin:2px 3px 2px 0}
+  .badge.allow{background:#3E8E5A; color:#fff} .badge.active{background:#3E8E5A; color:#fff}
+  .badge.quarantine,.badge.quarantined{background:var(--cinnabar); color:#fff}
+  .badge.require_confirmation,.badge.candidate{background:var(--gold); color:var(--ink)}
+  .badge.reject,.badge.rejected{background:var(--cinnabar-2); color:#fff}
+  .badge.cls{background:var(--stone); color:#fff}
+  /* 指标 */
+  .metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:12px}
+  .metric{border:1px solid var(--line); background:var(--card); padding:12px; text-align:center}
+  .metric .v{font-size:24px; font-weight:700; font-family:Georgia,serif}
+  .metric .v.pending{font-size:15px; color:var(--gold)}
+  .metric .k{font-size:11px; color:var(--ink-soft); font-family:Georgia,monospace; margin-top:4px}
+  .metric.red .v{color:var(--cinnabar)}
+  footer{margin-top:56px; padding-top:22px; border-top:2px double var(--ink); font-size:12.5px;
+    color:var(--ink-soft); display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px}
+  @media(max-width:760px){.grid9,.console-grid{grid-template-columns:1fr} .metrics{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <div>
+      <h1>宛委·枢忆</h1>
+      <div class="sub">WANWEI SHUYI OSAGENT · 秘府记忆运行控制台</div>
+    </div>
+    <span class="seal">枢忆秘府</span>
+  </div>
+
+  <div class="status-bar">
+    <span id="svcDot" class="dot off"></span>
+    <span id="svcText">正在连接后端…</span>
+    <span class="ver">v0.4 安全治理</span>
+    <span class="ver">v0.5 认知优化</span>
+    <span class="ver now">v0.6 MemoryOps Runtime</span>
+  </div>
+
+  <div class="hero-art"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 300" role="img" aria-label="宛委·枢忆 秘府主视觉">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#EFE7D3"/><stop offset="100%" stop-color="#E4D8BE"/></linearGradient>
+      <linearGradient id="mt1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4A443B" stop-opacity="0.16"/><stop offset="100%" stop-color="#4A443B" stop-opacity="0.44"/></linearGradient>
+      <linearGradient id="mt2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2E5A6C" stop-opacity="0.10"/><stop offset="100%" stop-color="#2E5A6C" stop-opacity="0.34"/></linearGradient>
+      <radialGradient id="sealGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#C0392B" stop-opacity="0.26"/><stop offset="100%" stop-color="#C0392B" stop-opacity="0"/></radialGradient>
+      <filter id="inkBlur"><feGaussianBlur stdDeviation="1.8"/></filter>
+      <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <rect width="1180" height="300" fill="url(#sky)"/>
+    <path d="M0,230 Q80,140 160,178 Q240,120 300,160 Q380,88 440,150 Q500,105 560,138 Q620,70 680,142 Q740,96 800,146 Q860,78 920,142 Q980,105 1040,140 Q1100,84 1180,142 L1180,300 L0,300 Z" fill="url(#mt1)" filter="url(#inkBlur)"/>
+    <path d="M-20,300 Q60,178 130,212 Q210,160 280,196 Q360,142 420,172 Q500,116 560,178 L1180,178 L1180,300 Z" fill="url(#mt2)" filter="url(#inkBlur)" opacity="0.55"/>
+    <g opacity="0.13" transform="translate(1030,44)">
+      <rect x="0" y="0" width="11" height="160" rx="2" fill="#4A443B"/><rect x="15" y="8" width="11" height="152" rx="2" fill="#4A443B"/><rect x="30" y="4" width="11" height="148" rx="2" fill="#4A443B"/><rect x="45" y="10" width="11" height="140" rx="2" fill="#4A443B"/>
+      <line x1="0" y1="40" x2="56" y2="40" stroke="#4A443B" stroke-width="2.2"/><line x1="0" y1="100" x2="56" y2="100" stroke="#4A443B" stroke-width="2.2"/>
+    </g>
+    <g fill="#1C1A17" opacity="0.06" filter="url(#inkBlur)"><ellipse cx="200" cy="72" rx="130" ry="17"/><ellipse cx="780" cy="58" rx="150" ry="15"/><ellipse cx="500" cy="92" rx="72" ry="10"/></g>
+    <g transform="translate(538,58)" filter="url(#glow)">
+      <ellipse cx="52" cy="108" rx="80" ry="20" fill="url(#sealGlow)"/>
+      <rect x="14" y="90" width="76" height="20" rx="4" fill="#C8991F" opacity="0.6"/>
+      <rect x="6" y="32" width="92" height="62" rx="6" fill="#EFE7D3" stroke="#B23A2E" stroke-width="3"/>
+      <rect x="32" y="14" width="40" height="24" rx="4" fill="#B23A2E" opacity="0.85"/>
+      <rect x="6" y="84" width="92" height="11" rx="2" fill="#B23A2E"/>
+      <text x="52" y="76" text-anchor="middle" font-family="Songti SC,SimSun,serif" font-size="26" font-weight="700" fill="#B23A2E" letter-spacing="6">枢忆</text>
+    </g>
+    <g transform="translate(590,176)" fill="none" stroke="#B23A2E" opacity="0.1"><circle r="36" stroke-width="1.5"/><circle r="64" stroke-width="1"/><circle r="92" stroke-width="0.7"/></g>
+    <rect x="8" y="8" width="1164" height="284" rx="2" fill="none" stroke="#B23A2E" stroke-width="1.5" opacity="0.35"/>
+    <text x="1140" y="278" text-anchor="end" font-family="Songti SC,SimSun,serif" font-size="11" fill="#4A443B" opacity="0.55" letter-spacing="1">宛委·枢忆 OSAgent · 秘府典籍</text>
+  </svg></div>
+
+  <!-- 指标 -->
+  <div class="sec-head"><span class="cn">兰台鉴证</span><span class="en">LATEST ARENA METRICS · live</span></div>
+  <div class="metrics" id="metrics"><div class="metric"><div class="v">…</div><div class="k">loading</div></div></div>
+
+  <!-- 九宫格 -->
+  <div class="sec-head"><span class="cn">九枢架构</span><span class="en">NINE-PILLAR MEMORY ARCHITECTURE</span></div>
+  <div class="grid9" id="grid9"></div>
+
+  <!-- 操作台 -->
+  <div class="sec-head"><span class="cn">运行操作台</span><span class="en">MEMORYOPS RUNTIME CONSOLE · live API</span></div>
+  <div class="console-grid">
+
+    <div class="panel">
+      <h3>枢忆核 · 写入记忆</h3>
+      <div class="path">POST /memory/v2/capsules</div>
+      <div class="row">
+        <div><label>memory_class</label>
+          <select id="w_class"><option>knowledge</option><option>preference</option><option>policy</option><option>experience</option><option>risk</option><option>skill</option></select></div>
+        <div><label>scene</label>
+          <select id="w_scene"><option>general</option><option>coding</option><option>ops</option><option>research</option><option>security</option></select></div>
+      </div>
+      <div class="row">
+        <div><label>write_intent</label>
+          <select id="w_intent"><option>explicit</option><option>inferred</option><option>autonomous</option></select></div>
+        <div><label>affects_future_behavior</label>
+          <select id="w_affect"><option value="false">false</option><option value="true">true</option></select></div>
+      </div>
+      <label>content (JSON)</label>
+      <textarea id="w_content">{"statement": "示例：论文引用 arXiv 预印本不得写作顶刊发表"}</textarea>
+      <button onclick="doWrite()">写入并过闸</button>
+      <div class="out" id="w_out">〔 提交后显示 policy_result / lifecycle / capsule_id 〕</div>
+    </div>
+
+    <div class="panel">
+      <h3>可信检索 · 证据卡</h3>
+      <div class="path">GET /memory/v2/search</div>
+      <label>查询词 q</label>
+      <input id="s_q" value="引用 规范">
+      <div class="row">
+        <div><label>top_k</label><input id="s_k" type="number" value="5"></div>
+        <div><label>high_risk</label><select id="s_hr"><option value="false">false</option><option value="true">true</option></select></div>
+      </div>
+      <button onclick="doSearch()">检索并生成证据卡</button>
+      <div class="out" id="s_out">〔 显示召回 capsules 与 evidence cards 〕</div>
+    </div>
+
+    <div class="panel">
+      <h3>司契护栏 · 指挥闭环</h3>
+      <div class="path">POST /memory/v2/command</div>
+      <label>任务目标 goal</label>
+      <textarea id="c_goal">提交 v0.6 文档变更前，生成只读检查计划</textarea>
+      <div class="row">
+        <div><label>scene</label><input id="c_scene" value="coding"></div>
+        <div><label>top_k</label><input id="c_k" type="number" value="5"></div>
+      </div>
+      <button onclick="doCommand()">运行 Command Loop</button>
+      <div class="out" id="c_out">〔 显示 risk_class / execution_mode / 计划 / 确认点 〕</div>
+    </div>
+
+    <div class="panel">
+      <h3>兰台 · 复盘演化</h3>
+      <div class="path">POST /memory/v2/reflection · GET /memory/v2/capsules</div>
+      <label>task_id</label>
+      <input id="r_task" value="task_console_demo">
+      <div class="row">
+        <div><label>goal_achieved</label><select id="r_goal"><option value="true">true</option><option value="false">false</option></select></div>
+        <div><label>new_risks(JSON数组)</label><input id="r_risks" value="[]"></div>
+      </div>
+      <button onclick="doReflect()">触发复盘演化</button>
+      <button onclick="loadCapsules()" style="background:var(--stone)">刷新 Capsule 列表</button>
+      <div class="out" id="r_out">〔 显示 reflection_id / evolution_actions 〕</div>
+    </div>
+
+  </div>
+
+  <div class="sec-head"><span class="cn">枢忆库</span><span class="en">MEMORYCAPSULE 2.0 BROWSER</span></div>
+  <div class="out" id="caps_out" style="max-height:340px">〔 点击上方「刷新 Capsule 列表」加载 〕</div>
+
+  <footer>
+    <span>宛委·枢忆 OSAgent · 面向 ASI-Oriented Agent 的安全记忆治理运行时</span>
+    <span id="foot_ver">—</span>
+  </footer>
+</div>
+
+<script>
+// same-origin when served from FastAPI /console ; falls back to :8000 if opened as static file
+const API = (location.protocol === 'file:' || location.port === '8765') ? 'http://localhost:8000' : '';
+
+const PILLARS = [
+  ['石渠校验',' input & residue check','入库前质量、格式、source_layer 校验','石'],
+  ['司契护栏','policy gate','敏感分级 / 投毒拦截 / 确认 / 隔离 / 拒绝','契'],
+  ['枢忆核','capsule lifecycle','MemoryCapsule 2.0 写入·状态·索引','枢'],
+  ['玄珠偏好','preference memory','显式/推断偏好·candidate·确认','玄'],
+  ['琅嬛知识','knowledge memory','事实·引用规范·证据·冲突','琅'],
+  ['建木网络','relation graph','relation_edges·关联召回·supersede','建'],
+  ['灵犀情感','affective salience','只调排序/保留，不覆盖安全','灵'],
+  ['忘机机制','forget & purge','遗忘·过期·不可召回','忘'],
+  ['兰台鉴证','audit & eval','证据卡·审计·Arena 评测','兰'],
+];
+
+function renderPillars(){
+  document.getElementById('grid9').innerHTML = PILLARS.map(p=>
+    `<div class="pillar"><div class="stamp">${p[3]}</div><div class="cn">${p[0]}</div><div class="fn">${p[1]}</div><p>${p[2]}</p></div>`
+  ).join('');
+}
+
+async function api(path, opts){
+  const r = await fetch(API + path, opts);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+async function checkHealth(){
+  try{
+    const h = await api('/health');
+    document.getElementById('svcDot').className='dot on';
+    document.getElementById('svcText').textContent = '后端在线 · '+h.name+' · '+h.version;
+    document.getElementById('foot_ver').textContent = h.version;
+  }catch(e){
+    document.getElementById('svcDot').className='dot off';
+    document.getElementById('svcText').textContent = '后端未连接：请启动 FastAPI（uvicorn app.main:app --port 8000），或从 /console 打开本页';
+  }
+}
+
+async function loadMetrics(){
+  // metrics from static report file (works even without backend)
+  try{
+    const m = await (await fetch('../../reports/production_memory_eval_metrics.json')).json();
+    renderMetrics(m);
+  }catch(e){
+    try{ renderMetrics(await api('/health').then(()=>({note:'run ./scripts/run_eval.sh'}))); }catch(_){}
+  }
+}
+function renderMetrics(m){
+  const keys=['total_cases','total_assertions','assertion_pass_rate','unsafe_autonomy_rate',
+    'evidence_card_coverage_rate','policy_gate_hit_rate','memory_reuse_success_rate','post_reflection_update_rate'];
+  document.getElementById('metrics').innerHTML = keys.filter(k=>k in m).map(k=>{
+    const v=m[k]; const pend = v==='pending';
+    const red = k==='unsafe_autonomy_rate' && v>0;
+    const disp = pend?'pending':(typeof v==='number'&&v%1!==0?v.toFixed(4):v);
+    return `<div class="metric ${red?'red':''}"><div class="v ${pend?'pending':''}">${disp}</div><div class="k">${k}</div></div>`;
+  }).join('');
+}
+
+function badge(v){ return `<span class="badge ${v}">${v}</span>`; }
+
+async function doWrite(){
+  const o=document.getElementById('w_out'); o.textContent='提交中…';
+  try{
+    let content; try{content=JSON.parse(document.getElementById('w_content').value);}catch(e){o.textContent='content 不是合法 JSON';return;}
+    const body={memory_class:w_class.value, scene:w_scene.value, source_type:'user_input',
+      write_intent:w_intent.value, affects_future_behavior:w_affect.value==='true', content};
+    const r=await api('/memory/v2/capsules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    o.innerHTML='capsule_id: '+r.capsule_id+'\n'+badge(r.governance.policy_result)+badge(r.state.lifecycle)+
+      '\nsensitivity: '+r.governance.sensitivity_level+' · trust: '+r.governance.trust_score+
+      '\n\n'+JSON.stringify(r.governance,null,2);
+  }catch(e){o.textContent='错误：'+e.message+'（后端是否已启动？）';}
+}
+
+async function doSearch(){
+  const o=document.getElementById('s_out'); o.textContent='检索中…';
+  try{
+    const r=await api('/memory/v2/search?q='+encodeURIComponent(s_q.value)+'&top_k='+s_k.value+'&high_risk='+s_hr.value);
+    let out='召回 '+r.results.length+' 条\n\n';
+    r.evidence_cards.forEach(c=>{ out+='▣ '+badge(c.memory_class)+' '+(c.claim||'').slice(0,80)+
+      '\n  trust='+c.trust_score+' conf='+c.confidence+' used_for='+c.used_for+'\n\n'; });
+    o.innerHTML=out||'无召回';
+  }catch(e){o.textContent='错误：'+e.message;}
+}
+
+async function doCommand(){
+  const o=document.getElementById('c_out'); o.textContent='运行中…';
+  try{
+    const r=await api('/memory/v2/command',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({goal:c_goal.value,scene:c_scene.value,top_k:parseInt(c_k.value)})});
+    const t=r.task_understanding, ra=r.risk_assessment;
+    let out='risk_class: '+badge(t.risk_class)+' execution_mode: '+r.execution_mode+
+      '\nunsafe_autonomy: '+ra.unsafe_autonomy+'\n召回记忆: '+r.recalled_memories.length+' · 证据卡: '+r.evidence_cards.length+
+      '\n确认点: '+r.confirmation_points.length+'\n\n计划:\n';
+    r.recommended_plan.forEach(s=>out+='  '+s.step+'. '+s.action+' ['+s.risk_level+']\n');
+    if(r.confirmation_points.length){out+='\n确认点:\n';r.confirmation_points.forEach(c=>out+='  ⚠ '+c.reason+': '+c.question+'\n');}
+    o.innerHTML=out;
+  }catch(e){o.textContent='错误：'+e.message;}
+}
+
+async function doReflect(){
+  const o=document.getElementById('r_out'); o.textContent='复盘中…';
+  try{
+    let risks; try{risks=JSON.parse(r_risks.value);}catch(e){risks=[];}
+    const body={task_id:r_task.value, goal_achieved:r_goal.value==='true',
+      helpful_memories:[], misleading_memories:[], new_risks:risks};
+    const r=await api('/memory/v2/reflection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    let out='reflection_id: '+r.reflection_id+'\n\nevolution_actions:\n';
+    (r.evolution_actions||[]).forEach(a=>out+='  · '+a.action+' → '+(a.capsule_id||'')+(a.memory_class?' ('+a.memory_class+')':'')+'\n');
+    o.innerHTML=out||'无演化动作';
+  }catch(e){o.textContent='错误：'+e.message;}
+}
+
+async function loadCapsules(){
+  const o=document.getElementById('caps_out'); o.textContent='加载中…';
+  try{
+    const r=await api('/memory/v2/capsules?limit=50');
+    if(!r.items.length){o.textContent='暂无 capsule（先写入几条）';return;}
+    o.innerHTML=r.items.map(c=>{
+      const g=c.governance||{}, st=c.state||{};
+      return badge(c.memory_class)+badge(st.lifecycle||'?')+' '+c.capsule_id+
+        '\n  '+JSON.stringify(c.content).slice(0,90)+
+        '\n  policy='+(g.policy_result||'?')+' trust='+(g.trust_score||'?')+' sens='+(g.sensitivity_level||'?')+'\n';
+    }).join('\n');
+  }catch(e){o.textContent='错误：'+e.message;}
+}
+
+renderPillars();
+checkHealth();
+loadMetrics();
+</script>
+</body>
+</html>
