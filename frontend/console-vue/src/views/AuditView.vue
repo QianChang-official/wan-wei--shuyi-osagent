@@ -5,12 +5,13 @@ import { api } from '@/api/client'
 const items = ref<any[]>([])
 const loading = ref(false)
 const err = ref('')
+const traceId = ref('')
 
 async function load() {
   loading.value = true
   err.value = ''
   try {
-    const r = await api.auditLogs(50)
+    const r = await api.auditLogs(50, traceId.value.trim())
     items.value = r.items || []
   } catch (e: any) {
     err.value = String(e)
@@ -26,8 +27,14 @@ onMounted(load)
   <div>
     <div class="page-head">
       <h1>兰台鉴证 · 审计流水</h1>
-      <p>运行时审计记录，展示记忆写入、遗忘预览、复盘等事件的可追溯链路。</p>
+      <p>运行时审计记录，默认最近 50 条；支持按 workflow trace_id 过滤。</p>
       <button class="refresh" @click="load">刷新</button>
+    </div>
+
+    <div class="filter-row">
+      <input v-model="traceId" placeholder="trace_id 过滤，例如 trace_xxx" @keyup.enter="load" />
+      <button @click="load">按 trace 过滤</button>
+      <button @click="traceId=''; load()">清空</button>
     </div>
 
     <div v-if="err" class="err">{{ err }}</div>
@@ -59,6 +66,9 @@ onMounted(load)
 .page-head p { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
 .refresh { position: absolute; right: 0; top: 0; border: 1px solid var(--line); background: transparent; padding: 7px 15px; color: var(--ink); }
 .refresh:hover { border-color: var(--cinnabar); color: var(--cinnabar); }
+.filter-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.filter-row input { flex: 1; border: 1px solid var(--line); background: rgba(255,255,255,.45); color: var(--ink); padding: 8px; }
+.filter-row button { border: 1px solid var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,46,.07); padding: 8px 12px; }
 .err { color: var(--cinnabar); font-size: 13px; }
 .muted,.empty { color: var(--ink-soft); font-size: 13px; }
 .timeline { display: flex; flex-direction: column; gap: 12px; }

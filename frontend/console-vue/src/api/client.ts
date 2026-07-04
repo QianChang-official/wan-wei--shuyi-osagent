@@ -1,4 +1,4 @@
-// Same-origin API client for v0.7 MemoryOps Autopilot Platform.
+// Same-origin API client for v0.9.3 MemoryOps Workflow Run Platform.
 // In dev, Vite proxies backend paths to FastAPI; in prod dist is mounted under /console.
 
 export interface ApiState { online: boolean; version: string; name: string }
@@ -99,6 +99,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ status: string; name: string; version: string }>('/health'),
+  arenaMetrics: () => req<Record<string, any>>('/arena/metrics'),
   listCapsules: (limit = 50) =>
     req<{ items: any[] }>(`/memory/v2/capsules?limit=${limit}`),
   getCapsule: (id: string) => req<any>(`/memory/v2/capsules/${id}`),
@@ -113,7 +114,8 @@ export const api = {
     }),
   reflection: (body: Record<string, unknown>) =>
     req<any>('/memory/v2/reflection', { method: 'POST', body: JSON.stringify(body) }),
-  auditLogs: (limit = 20) => req<{ items: any[] }>(`/audit/logs?limit=${limit}`),
+  auditLogs: (limit = 50, traceId = '') =>
+    req<{ items: any[] }>(`/audit/logs?limit=${limit}${traceId ? `&trace_id=${encodeURIComponent(traceId)}` : ''}`),
   platformModules: () => req<{ items: PlatformModule[]; summary: any }>('/platform/modules'),
   modelProviders: () => req<{ items: ModelProvider[] }>('/model-gateway/providers'),
   testModelProvider: (body: Record<string, unknown>) =>
@@ -126,6 +128,15 @@ export const api = {
   researchTechnologies: () => req<{ items: ResearchTechnology[] }>('/research-adoption/technologies'),
   researchRoutes: () => req<{ items: AdoptionRoute[] }>('/research-adoption/routes'),
   researchVersionMap: () => req<{ items: VersionMapping[] }>('/research-adoption/version-map'),
+  workflowDesign: () => req<any>('/workflow/design'),
+  workflowCompetitionMapping: () => req<any>('/workflow/competition-mapping'),
+  workflowRunDryRun: (body: Record<string, unknown>) =>
+    req<any>('/workflow/run-dry-run', { method: 'POST', body: JSON.stringify(body) }),
+  workflowCreateRun: (body: Record<string, unknown>) =>
+    req<any>('/workflow/runs', { method: 'POST', body: JSON.stringify(body) }),
+  workflowGetRun: (runId: string) => req<any>(`/workflow/runs/${encodeURIComponent(runId)}`),
+  workflowTrace: (runId: string) => req<any>(`/workflow/runs/${encodeURIComponent(runId)}/trace`),
+  workflowArtifacts: (runId: string) => req<any>(`/workflow/runs/${encodeURIComponent(runId)}/artifacts`),
   reproductionSystems: () => req<any>('/reproduction/systems'),
   reproductionWorkbench: () => req<any>('/reproduction/memoryarena/workbench'),
   reproductionHippoGraph: () => req<any>('/reproduction/hippo-lite/graph'),

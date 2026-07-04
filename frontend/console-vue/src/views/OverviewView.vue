@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { api } from '@/api/client'
 import { usePlatformModules } from '@/composables/usePlatformModules'
 
 const metrics = ref<Record<string,any> | null>(null)
@@ -43,8 +44,7 @@ function fmt(v: any) {
 
 onMounted(async () => {
   try {
-    const r = await fetch('../../reports/production_memory_eval_metrics.json')
-    metrics.value = r.ok ? await r.json() : null
+    metrics.value = await api.arenaMetrics()
   } catch { metrics.value = null }
   loading.value = false
 })
@@ -54,13 +54,13 @@ onMounted(async () => {
   <div>
     <div class="page-head">
       <h1>总览 · MemoryOps Autopilot</h1>
-      <p>v0.7 平台级扩张控制台：真实 Arena 指标 + 20 舱生产控制面</p>
+      <p>v0.9.3 Workflow Run 主线：真实 Arena 指标 + 20 舱生产控制面 + 安全 dry-run 编排器</p>
     </div>
 
     <section class="hero-board">
       <div class="hero-copy">
         <h2>不是记忆 demo，而是一台可以自行闭环的精密生产仪器。</h2>
-        <p>多源接入 → Policy Gate → MemoryCapsule 2.0 → 检索/证据卡 → 指挥闭环 → 复盘演化 → Arena 评测 → 审计与导出。</p>
+        <p>多源接入 → Policy Gate → MemoryCapsule 2.0 → 检索/证据卡 → 模型网关 → 指挥闭环 → Workflow Run → 复盘演化 → Arena 评测 → 审计与导出。</p>
       </div>
       <div class="hero-dials">
         <div><b>{{ modules.length || 20 }}</b><span>平台舱室</span></div>
@@ -82,8 +82,8 @@ onMounted(async () => {
           <div class="kv-k">real assertions</div>
         </div>
         <div class="kv-card">
-          <div class="kv-v small">v0.7</div>
-          <div class="kv-k">platform expansion</div>
+          <div class="kv-v small">v0.9.3</div>
+          <div class="kv-k">workflow run</div>
         </div>
       </div>
       <div class="metrics-grid">
@@ -108,7 +108,7 @@ onMounted(async () => {
         </div>
       </section>
       <section class="section-block">
-        <div class="section-title">v0.7 新增舱室</div>
+        <div class="section-title">平台舱室与 Workflow Run 主线</div>
         <div class="expansion-grid">
           <div v-for="item in expansionModules" :key="item.id" class="expansion-card" :class="item.status">
             <b>{{ item.name_cn }}</b>

@@ -22,7 +22,7 @@ onMounted(async () => {
   <div>
     <div class="page-head">
       <h1>司南调参舱</h1>
-      <p>top_k · trust_threshold · retention/retrieval score · confirmation policy</p>
+      <p>top_k · trust_threshold · 控制链路延迟口径 · 模型生成延迟分离展示</p>
     </div>
     <div v-if="error" class="muted">{{ error }}</div>
 

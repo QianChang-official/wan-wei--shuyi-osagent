@@ -209,6 +209,7 @@ Implemented：
 
 - `backend/app/deepening/` 服务模块。
 - 13 个 `/deepening/*` API。
+- `docs/OSAGENT_MODEL_GATEWAY_FLOW.md` 模型接入后 OSAgent 流程图。
 - `frontend/console-vue/src/views/DeepeningView.vue`。
 - `frontend/console-vue/src/api/client.ts` deepening client。
 - `/console/#/deepening` route。

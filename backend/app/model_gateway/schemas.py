@@ -16,6 +16,8 @@ class ModelGatewayTestIn(BaseModel):
     model: str | None = None
     dry_run: bool = True
     prompt_preview: str = "MemoryOps gateway dry-run"
+    api_base: str | None = None
+    max_tokens: int = 96
 
 
 class ModelGatewayTestOut(BaseModel):
@@ -26,3 +28,5 @@ class ModelGatewayTestOut(BaseModel):
     request_id: str
     message: str
     key_policy: str = "真实 key 不入库、不回显、不打印"
+    latency_ms: int | None = None
+    response_preview: str | None = None

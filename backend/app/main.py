@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import get_conn
 from .guardrail.service import evaluate
-from .audit.service import record
+from .audit.service import list_logs, record
 from .retrieval.service import search as do_search
 from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule
 from .memory_runtime.retrieval import search_capsules
@@ -18,6 +18,17 @@ from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
+from .workflow.service import (
+    VERSION as WORKFLOW_VERSION,
+    WorkflowRunIn,
+    competition_mapping as workflow_competition_mapping,
+    create_run as workflow_create_run,
+    get_artifacts as workflow_get_artifacts,
+    get_run as workflow_get_run,
+    get_trace as workflow_get_trace,
+    run_dry_run as workflow_run_dry_run,
+    workflow_design,
+)
 from .deepening.service import (
     InterrogationAnswerIn,
     ReasoningDepthSimulateIn,
@@ -79,7 +90,14 @@ def _startup():
         pass
 
 @app.get('/health')
-def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':'v0.9-research-system-reproduction'}
+def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':WORKFLOW_VERSION}
+
+@app.get('/arena/metrics')
+def arena_metrics():
+    metrics_path = Path(__file__).resolve().parents[2] / 'reports' / 'production_memory_eval_metrics.json'
+    if not metrics_path.exists():
+        return {'error': 'metrics_not_found', 'hint': 'run ./scripts/run_eval.sh'}
+    return json.loads(metrics_path.read_text(encoding='utf-8'))
 
 # v0.7 platform cockpit endpoints
 @app.get('/platform/modules')
@@ -126,6 +144,35 @@ def research_adoption_routes():
 @app.get('/research-adoption/version-map')
 def research_adoption_version_map():
     return version_map()
+
+# v0.9.3 competition workflow run endpoints
+@app.get('/workflow/design')
+def workflow_design_view():
+    return workflow_design()
+
+@app.get('/workflow/competition-mapping')
+def workflow_competition_mapping_view():
+    return workflow_competition_mapping()
+
+@app.post('/workflow/run-dry-run')
+def workflow_run_dry_run_view(req: WorkflowRunIn):
+    return workflow_run_dry_run(req)
+
+@app.post('/workflow/runs')
+def workflow_runs_create(req: WorkflowRunIn):
+    return workflow_create_run(req)
+
+@app.get('/workflow/runs/{run_id}')
+def workflow_runs_get(run_id: str):
+    return workflow_get_run(run_id)
+
+@app.get('/workflow/runs/{run_id}/trace')
+def workflow_runs_trace(run_id: str):
+    return workflow_get_trace(run_id)
+
+@app.get('/workflow/runs/{run_id}/artifacts')
+def workflow_runs_artifacts(run_id: str):
+    return workflow_get_artifacts(run_id)
 
 # v0.9 lightweight research system reproduction endpoints
 @app.get('/reproduction/systems')
@@ -286,5 +333,5 @@ def v2_reflection(req: ReflectionIn):
     return reflect_task(req.task_id, req.dict())
 
 @app.get('/audit/logs')
-def audit_logs(limit:int=20):
-    rows=get_conn().execute('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?',(limit,)).fetchall(); return {'items':[dict(r) for r in rows]}
+def audit_logs(limit:int=50,trace_id:str|None=None):
+    return {'items':list_logs(limit,trace_id)}

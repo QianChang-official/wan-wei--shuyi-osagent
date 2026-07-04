@@ -5,7 +5,9 @@ import { api, type ModelProvider } from '@/api/client'
 const providers = shallowRef<ModelProvider[]>([])
 const testResult = shallowRef<any>(null)
 const loading = shallowRef(true)
+const testingProvider = shallowRef('')
 const error = shallowRef('')
+const smokePrompt = shallowRef('请用一句中文确认本地 OpenAI-compatible 模型网关已接入宛委枢忆。')
 
 async function load() {
   loading.value = true
@@ -20,7 +22,28 @@ async function load() {
 }
 
 async function dryRun(provider: ModelProvider) {
-  testResult.value = await api.testModelProvider({ provider: provider.provider, dry_run: true, prompt_preview: 'v0.7 console dry-run' })
+  testingProvider.value = provider.provider
+  try {
+    testResult.value = await api.testModelProvider({ provider: provider.provider, dry_run: true, prompt_preview: 'v0.9.3 console dry-run' })
+  } finally {
+    testingProvider.value = ''
+  }
+}
+
+async function realSmoke(provider: ModelProvider) {
+  testingProvider.value = provider.provider
+  try {
+    testResult.value = await api.testModelProvider({
+      provider: provider.provider,
+      dry_run: false,
+      prompt_preview: smokePrompt.value,
+      model: provider.model,
+      api_base: provider.api_base,
+      max_tokens: 96,
+    })
+  } finally {
+    testingProvider.value = ''
+  }
 }
 
 onMounted(load)
@@ -30,7 +53,7 @@ onMounted(load)
   <div>
     <div class="page-head">
       <h1>通玄模型舱</h1>
-      <p>OpenAI-compatible / Anthropic / Gemini / local_mock · dry-run 网关仪器盘</p>
+      <p>v0.9.3 模型网关：provider 配置来自后端，真实 smoke 与 OSAgent 控制链路延迟分开展示。</p>
     </div>
 
     <div v-if="loading" class="muted">加载 provider...</div>
@@ -48,13 +71,17 @@ onMounted(load)
           <dt>status</dt><dd>{{ provider.status }}</dd>
         </dl>
         <p>{{ provider.notes }}</p>
-        <button @click="dryRun(provider)">Dry-run</button>
+        <div class="button-row">
+          <button :disabled="!!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run' }}</button>
+          <button v-if="provider.provider === 'openai_compatible'" :disabled="!!testingProvider" @click="realSmoke(provider)">{{ testingProvider === provider.provider ? '调用中…' : '真实 smoke' }}</button>
+        </div>
       </article>
     </div>
 
     <section class="result-panel">
       <div class="panel-title">调用日志预览</div>
-      <pre>{{ testResult || '尚未执行 dry-run；v0.7 不保存、不回显、不打印真实 key。' }}</pre>
+      <textarea v-model="smokePrompt" class="smoke-prompt"></textarea>
+      <pre>{{ testResult || '尚未执行 dry-run；本页不会保存、不回显、不打印真实 key。' }}</pre>
     </section>
   </div>
 </template>
@@ -65,7 +92,7 @@ onMounted(load)
 .page-head p { color: var(--ink-soft); font-size: 13px; margin-top: 5px; }
 .muted { color: var(--ink-soft); }
 .provider-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-.provider { border: 1px solid var(--line); border-top: 4px solid var(--ink-soft); background: rgba(255,255,255,.38); padding: 15px; min-height: 310px; }
+.provider { border: 1px solid var(--line); border-top: 4px solid var(--ink-soft); background: rgba(255,255,255,.38); padding: 15px; min-height: 330px; }
 .provider.enabled { border-top-color: var(--jade); }
 .provider-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .provider-head h2 { font-size: 16px; font-family: var(--mono); }
@@ -74,9 +101,11 @@ dl { display: grid; grid-template-columns: 72px 1fr; gap: 7px 8px; margin: 15px 
 dt { font-family: var(--mono); font-size: 10.5px; color: var(--gamboge); }
 dd { font-size: 11.5px; color: var(--ink-soft); word-break: break-all; }
 p { font-size: 12px; line-height: 1.55; color: var(--ink-soft); min-height: 58px; }
-button { margin-top: 12px; border: 1px solid var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,46,.07); padding: 8px 12px; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+button { border: 1px solid var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,46,.07); padding: 8px 12px; }
 .result-panel { margin-top: 28px; border: 1px solid var(--line); background: rgba(28,26,23,.04); }
 .panel-title { padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; letter-spacing: 2px; }
+.smoke-prompt { width: calc(100% - 28px); margin: 14px 14px 0; min-height: 68px; border: 1px solid var(--line); background: rgba(255,255,255,.45); color: var(--ink); padding: 8px; resize: vertical; }
 pre { padding: 14px; min-height: 120px; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; color: var(--ink-soft); }
 @media (max-width: 1100px) { .provider-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 620px) { .provider-grid { grid-template-columns: 1fr; } }

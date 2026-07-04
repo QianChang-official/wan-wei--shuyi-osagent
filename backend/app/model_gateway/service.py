@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import os
+import json
+import time
+import urllib.error
+import urllib.request
 import uuid
 
 from .schemas import ModelGatewayTestIn, ModelGatewayTestOut, ModelProvider
 
+LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://172.29.128.1:8084/v1")
+LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "C:\\LLMShare\\Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q4_K.gguf")
 
 PROVIDERS: list[ModelProvider] = [
     ModelProvider(
         provider="openai_compatible",
-        api_base="https://api.example.com/v1",
-        api_key_alias="OPENAI_COMPATIBLE_API_KEY",
-        model="gpt-4.1-compatible",
-        enabled=False,
-        status="planned_configurable",
-        notes="OpenAI-compatible endpoint stub; stores env alias only, never stores raw key.",
+        api_base=LOCAL_LLAMA_BASE,
+        api_key_alias="NONE_LOCAL_LLAMA_CPP",
+        model=LOCAL_LLAMA_MODEL,
+        enabled=True,
+        status="available_local_llama_cpp",
+        notes="Local llama.cpp OpenAI-compatible endpoint; base/model can be overridden by WANWEI_OPENAI_COMPATIBLE_BASE and WANWEI_OPENAI_COMPATIBLE_MODEL. No API key is stored.",
     ),
     ModelProvider(
         provider="anthropic",
@@ -31,7 +38,7 @@ PROVIDERS: list[ModelProvider] = [
         model="gemini-2.5-pro",
         enabled=False,
         status="planned_configurable",
-        notes="Gemini provider stub; no outbound call is made in v0.7 dry-run.",
+        notes="Gemini provider stub; no outbound call is made in v0.9.3 dry-run.",
     ),
     ModelProvider(
         provider="local_mock",
@@ -49,32 +56,83 @@ def list_providers() -> dict:
     return {"items": [provider.dict() for provider in PROVIDERS]}
 
 
+def _openai_compatible_smoke(api_base: str, model: str, prompt: str, max_tokens: int) -> tuple[str, int, str]:
+    started = time.perf_counter()
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。"},
+            {"role": "user", "content": prompt[:500]},
+        ],
+        "temperature": 0.2,
+        "max_tokens": max(16, min(max_tokens, 256)),
+        "stream": False,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        api_base.rstrip("/") + "/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=90) as response:
+        raw = response.read().decode("utf-8")
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    data = json.loads(raw)
+    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return "ok", latency_ms, text[:600]
+
+
 def test_provider(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
     provider = next((item for item in PROVIDERS if item.provider == req.provider), None)
     model = req.model or (provider.model if provider else "unknown")
+    request_id = "mgw_" + uuid.uuid4().hex[:12]
     if provider is None:
         return ModelGatewayTestOut(
             provider=req.provider,
             model=model,
             dry_run=req.dry_run,
             status="not_found",
-            request_id="mgw_" + uuid.uuid4().hex[:12],
-            message="Provider is not registered in the v0.7 model gateway catalog.",
+            request_id=request_id,
+            message="Provider is not registered in the model gateway catalog.",
         )
-    if not req.dry_run:
+    if req.dry_run:
+        return ModelGatewayTestOut(
+            provider=provider.provider,
+            model=model,
+            dry_run=True,
+            status="ok",
+            request_id=request_id,
+            message=f"Dry-run accepted for {provider.provider}; prompt preview length={len(req.prompt_preview)}.",
+        )
+    if provider.provider != "openai_compatible":
         return ModelGatewayTestOut(
             provider=provider.provider,
             model=model,
             dry_run=False,
             status="blocked_in_alpha",
-            request_id="mgw_" + uuid.uuid4().hex[:12],
-            message="v0.7 only exposes safe dry-run tests. Real outbound calls require v0.8 credential policy.",
+            request_id=request_id,
+            message="Only the local OpenAI-compatible llama.cpp endpoint is enabled for real smoke in this prototype.",
         )
-    return ModelGatewayTestOut(
-        provider=provider.provider,
-        model=model,
-        dry_run=True,
-        status="ok",
-        request_id="mgw_" + uuid.uuid4().hex[:12],
-        message=f"Dry-run accepted for {provider.provider}; prompt preview length={len(req.prompt_preview)}.",
-    )
+    api_base = req.api_base or provider.api_base
+    try:
+        status, latency_ms, preview = _openai_compatible_smoke(api_base, model, req.prompt_preview, req.max_tokens)
+        return ModelGatewayTestOut(
+            provider=provider.provider,
+            model=model,
+            dry_run=False,
+            status=status,
+            request_id=request_id,
+            message=f"OpenAI-compatible smoke completed via {api_base}.",
+            latency_ms=latency_ms,
+            response_preview=preview,
+        )
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        return ModelGatewayTestOut(
+            provider=provider.provider,
+            model=model,
+            dry_run=False,
+            status="error",
+            request_id=request_id,
+            message=f"OpenAI-compatible smoke failed: {exc}",
+        )

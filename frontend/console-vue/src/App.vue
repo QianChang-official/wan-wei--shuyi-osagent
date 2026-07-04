@@ -21,6 +21,7 @@ const navGroups = [
     title: '研究吸收',
     items: [
       { to: '/research-adoption', seal: '研', name: '权威吸收', en: 'Research' },
+      { to: '/workflow', seal: '流', name: '工作流闭环', en: 'Workflow Run' },
       { to: '/reproduction', seal: '复', name: '论文复现', en: 'Reproduction' },
       { to: '/deepening', seal: '问', name: '深做追问', en: 'Deepening' },
     ],

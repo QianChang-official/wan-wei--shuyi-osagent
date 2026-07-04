@@ -412,3 +412,92 @@
 - `docs/V091_DEEP_EXPANSION_VISUAL_VERIFICATION.md`
 - `backend/app/deepening/service.py`
 - `frontend/console-vue/src/views/DeepeningView.vue`
+
+## v0.9.2 Competition Workflow & Local Model Gateway Edition
+
+定位：把 20 舱平台入口合并为一条符合赛题的 OSAgent 工作流，并把本地 llama.cpp OpenAI 兼容模型网关接入通玄模型舱。
+
+已完成：
+
+- `docs/OSAGENT_COMPETITION_WORKFLOW.md`
+- `docs/OSAGENT_MODEL_GATEWAY_FLOW.md`
+- `backend/app/workflow/`
+- `GET /workflow/design`
+- `GET /workflow/competition-mapping`
+- `POST /workflow/run-dry-run`
+- `GET /arena/metrics`
+- `backend/app/model_gateway/` 支持本地 OpenAI-compatible smoke。
+- 前端 `WorkflowView.vue`。
+- 导航新增「研究吸收 / 赛题工作流」。
+- Overview 指标从 `/arena/metrics` 读取，不再依赖静态 reports 路径。
+
+未完成：
+
+- OCR / Kylin embedding SDK 的真实系统接入。
+- 多设备同步、自然语言遗忘、工具护栏的完整生产实现。
+- 真实模型生成质量评测和成本报表。
+- 把工作流 dry-run 升级为有人工确认的可变更沙箱执行器。
+
+后续继承：
+
+- v1.0 可围绕「项目周报自动生成 + 偏好学习」主演示打通真实文档接入、记忆写入、检索证据卡、模型生成、复盘评测和导出包。
+
+权威支撑：
+
+- 赛题文档 `01_docs_legacy/wanwei_shuyi_osagent_plan.md`。
+- llama.cpp OpenAI-compatible server。
+- v0.7 20 舱平台模块。
+- v0.9.1 Contract Truth / Visual Verification。
+
+证据文件：
+
+- `docs/OSAGENT_COMPETITION_WORKFLOW.md`
+- `docs/OSAGENT_MODEL_GATEWAY_FLOW.md`
+- `backend/app/workflow/service.py`
+- `backend/app/model_gateway/service.py`
+- `frontend/console-vue/src/views/WorkflowView.vue`
+## v0.9.3 Workflow Run Orchestrator Edition
+
+定位：把 v0.9.2 的工作流设计层升级为安全 dry-run workflow run 编排器，生成 run_id、trace_id、10 阶段状态、阶段证据卡、延迟预算、风险等级和 next_action，并把 trace 写入审计流水。
+
+已完成：
+
+- `POST /workflow/runs`
+- `GET /workflow/runs/{run_id}`
+- `GET /workflow/runs/{run_id}/trace`
+- `GET /workflow/runs/{run_id}/artifacts`
+- 兼容 `POST /workflow/run-dry-run`，内部创建 workflow run。
+- `GET /audit/logs?limit=50&trace_id=...` 支持按 trace_id 过滤，默认最近 50 条。
+- `/health` 版本统一为 `v0.9.3-workflow-run`。
+- 前端 `/console/#/workflow` 改造成可运行闭环页：启动 run、展示 10 阶段进度、证据卡、trace 回放、artifacts 与边界。
+- 通玄模型舱 smoke 按钮增加 loading/disabled，provider base/model 从后端 provider 配置读取，并可通过环境变量覆盖。
+- 司南调参舱新增 workflow dry-run、retrieval、policy gate、command loop、audit write 与 model generation 的延迟边界说明。
+- README 与 workflow 文档统一说明：当前是安全 dry-run 编排器，不伪装为真实危险工具执行或生产级自动执行器。
+
+未完成：
+
+- 真实 OCR / 文档解析输入接入。
+- 麒麟端侧 embedding SDK 接入。
+- 工作流中的真实模型生成计划尚未自动进入 Command Loop。
+- 流式模型 smoke 尚未实现。
+- 真实生产收益、成本降低和线上稳定性仍需实测，不能写成已证明。
+
+后续继承：
+
+- v0.9.4 / v1.0 可继续把 workflow run 从 dry-run 编排器推进为带人工确认、安全沙箱和 trace 回放的主演示执行链路。
+
+权威支撑：
+
+- `01_docs_legacy/wanwei_shuyi_osagent_plan.md` 的赛题要求。
+- v0.9.2 OSAgent Competition Workflow Design。
+- v0.9.1 Contract Truth / Visual Verification。
+
+证据文件：
+
+- `docs/OSAGENT_COMPETITION_WORKFLOW.md`
+- `backend/app/workflow/service.py`
+- `backend/app/audit/service.py`
+- `frontend/console-vue/src/views/WorkflowView.vue`
+- `frontend/console-vue/src/views/AuditView.vue`
+- `frontend/console-vue/src/views/TuningView.vue`
+
