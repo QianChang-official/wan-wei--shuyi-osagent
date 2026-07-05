@@ -120,14 +120,42 @@ def write_capsule(
     return {"capsule_id": capsule_id, "memory_class": memory_class, "governance": governance, "state": state, "audit_id": audit_id}
 
 
+_JSON_COLUMNS = [
+    "content", "source_events", "provenance", "governance", "state",
+    "production_context", "alignment_metadata", "affective_metadata",
+    "relation_edges", "index_refs",
+]
+
+
+def _row_to_capsule(row: Any) -> dict[str, Any]:
+    """Deserialize a memory_capsules_v2 row into a capsule dict."""
+    d = dict(row)
+    for key in _JSON_COLUMNS:
+        d[key] = loads(d[key], {} if key != "relation_edges" else [])
+    return d
+
+
 def get_capsule(capsule_id: str) -> dict[str, Any] | None:
     row = get_conn().execute("SELECT * FROM memory_capsules_v2 WHERE capsule_id=?", (capsule_id,)).fetchone()
     if not row:
         return None
-    d = dict(row)
-    for key in ["content", "source_events", "provenance", "governance", "state", "production_context", "alignment_metadata", "affective_metadata", "relation_edges", "index_refs"]:
-        d[key] = loads(d[key], {} if key != "relation_edges" else [])
-    return d
+    return _row_to_capsule(row)
+
+
+def get_capsules_batch(capsule_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Fetch multiple capsules in a single query (avoids N+1).
+
+    Returns a mapping of capsule_id -> capsule dict. Missing ids are omitted.
+    Preserves no particular order; callers should order via capsule_ids.
+    """
+    if not capsule_ids:
+        return {}
+    placeholders = ",".join("?" for _ in capsule_ids)
+    rows = get_conn().execute(
+        f"SELECT * FROM memory_capsules_v2 WHERE capsule_id IN ({placeholders})",
+        tuple(capsule_ids),
+    ).fetchall()
+    return {row["capsule_id"]: _row_to_capsule(row) for row in rows}
 
 
 def list_capsules(limit: int = 50) -> list[dict[str, Any]]:
@@ -139,7 +167,9 @@ def list_capsules(limit: int = 50) -> list[dict[str, Any]]:
         """,
         (limit,),
     ).fetchall()
-    return [get_capsule(r["capsule_id"]) for r in rows]
+    ids = [r["capsule_id"] for r in rows]
+    by_id = get_capsules_batch(ids)
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def update_capsule(capsule_id: str, *, state: dict[str, Any] | None = None, relation_edges: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -154,6 +184,26 @@ def update_capsule(capsule_id: str, *, state: dict[str, Any] | None = None, rela
     ).connection.commit()
     record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
     return get_capsule(capsule_id)
+
+
+def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
+    """Persist usage-count/state updates for many capsules in one round-trip.
+
+    ``updates`` is a list of (capsule_id, new_state) pairs. Uses a single
+    ``executemany`` plus one aggregated audit record, replacing the per-capsule
+    get+update+audit+get chain that caused N+1 query amplification in the
+    retrieval hot path.
+    """
+    if not updates:
+        return
+    ts = now()
+    conn = get_conn()
+    conn.executemany(
+        "UPDATE memory_capsules_v2 SET state=?, updated_at=? WHERE capsule_id=?",
+        [(dumps(state), ts, cid) for cid, state in updates],
+    )
+    conn.commit()
+    record("capsule_usage_batch", {"capsule_ids": [cid for cid, _ in updates], "count": len(updates)})
 
 
 def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:

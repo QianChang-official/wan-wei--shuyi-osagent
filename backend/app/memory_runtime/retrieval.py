@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from ..db import get_conn
-from .capsule_store import get_capsule, allowed_for_context, update_capsule, now
+from .capsule_store import get_capsules_batch, allowed_for_context, bump_usage_batch, now
 
 
 def _has_cjk(text: str) -> bool:
@@ -70,18 +70,25 @@ def search_capsules(q: str, *, top_k: int = 5, high_risk: bool = False) -> list[
             if row["capsule_id"] not in seen:
                 rows.append(row)
                 seen.add(row["capsule_id"])
+    # Batch-fetch all candidates in a single query (avoids N+1).
+    candidate_ids = [r["capsule_id"] for r in rows]
+    by_id = get_capsules_batch(candidate_ids)
+    accessed_at = now()
     out = []
-    for r in rows:
-        cap = get_capsule(r["capsule_id"])
+    updates: list[tuple[str, dict[str, Any]]] = []
+    for capsule_id in candidate_ids:
+        cap = by_id.get(capsule_id)
         if not cap or not allowed_for_context(cap, high_risk=high_risk):
             continue
         gov = cap["governance"]; state = cap["state"]
         score = 0.35 + 0.25 * float(gov.get("trust_score", 0)) + 0.20 * float(gov.get("confidence", 0)) + 0.05 * float(state.get("retention_score", 0))
         cap["retrieval_score"] = round(score, 4)
         state["usage_count"] = int(state.get("usage_count") or 0) + 1
-        state["last_accessed_at"] = now()
-        update_capsule(cap["capsule_id"], state=state)
+        state["last_accessed_at"] = accessed_at
+        updates.append((capsule_id, state))
         out.append(cap)
         if len(out) >= top_k:
             break
+    # Batch-update usage counts in a single executemany + one aggregated audit.
+    bump_usage_batch(updates)
     return out

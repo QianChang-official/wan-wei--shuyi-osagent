@@ -70,15 +70,15 @@ def test_version_constant():
 
     # 版本号应该是字符串
     assert isinstance(VERSION, str)
-    assert VERSION == "v0.9.5-workflow-persistence"
+    assert VERSION == "v0.9.6-rate-limit-and-test-hardening"
 
     # 版本历史应该是列表
     assert isinstance(VERSION_HISTORY, list)
     assert len(VERSION_HISTORY) >= 3
 
-    # 最新版本应该是 v0.9.5
+    # 最新版本应该是 v0.9.6
     latest = VERSION_HISTORY[0]
-    assert latest['version'] == "v0.9.5-workflow-persistence"
+    assert latest['version'] == "v0.9.6-rate-limit-and-test-hardening"
     assert latest['status'] == "in_progress"
 
 
