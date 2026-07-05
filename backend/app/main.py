@@ -1,5 +1,6 @@
-import uuid,json,datetime
+import uuid,json
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware
@@ -21,14 +22,17 @@ from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
+from .utils.datetime_utils import utc_now_iso
 from .workflow.service import (
-    VERSION as WORKFLOW_VERSION,
     WorkflowRunIn,
+    cleanup_old_runs as workflow_cleanup_old_runs,
     competition_mapping as workflow_competition_mapping,
     create_run as workflow_create_run,
     get_artifacts as workflow_get_artifacts,
     get_run as workflow_get_run,
+    get_storage_stats as workflow_get_storage_stats,
     get_trace as workflow_get_trace,
+    list_runs as workflow_list_runs,
     run_dry_run as workflow_run_dry_run,
     workflow_design,
 )
@@ -72,12 +76,34 @@ from .reproduction.service import (
     workbench as reproduction_workbench,
 )
 
+# v0.9.5: Migrate from @app.on_event to lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    try:
+        from .init_db import main as init_db
+        init_db()
+    except Exception:
+        pass
+    # v0.9.5: Initialize workflow persistence
+    try:
+        from .workflow.persistence import init_workflow_persistence
+        init_workflow_persistence()
+    except Exception:
+        pass
+
+    yield
+
+    # Shutdown (if needed in future)
+    pass
+
 _prod_mode = __import__('os').getenv('WANWEI_PRODUCTION', '').lower() in {'1','true','yes'}
 app=FastAPI(
     title='宛委·枢忆 MemoryOps Autopilot Platform',
     docs_url=None if _prod_mode else '/docs',
     redoc_url=None if _prod_mode else '/redoc',
     openapi_url=None if _prod_mode else '/openapi.json',
+    lifespan=lifespan,
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
@@ -93,16 +119,10 @@ if _vue_dist.exists():
 if _legacy_console.exists():
     app.mount("/console-legacy", StaticFiles(directory=str(_legacy_console), html=True), name="console-legacy")
 
-@app.on_event('startup')
-def _startup():
-    try:
-        from .init_db import main as init_db
-        init_db()
-    except Exception:
-        pass
-
 @app.get('/health')
-def health(): return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':WORKFLOW_VERSION}
+def health():
+    from .version import VERSION
+    return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':VERSION}
 
 @app.get('/arena/metrics')
 def arena_metrics():
@@ -185,6 +205,19 @@ def workflow_runs_trace(run_id: str):
 @app.get('/workflow/runs/{run_id}/artifacts')
 def workflow_runs_artifacts(run_id: str):
     return workflow_get_artifacts(run_id)
+
+# v0.9.5: New workflow persistence management endpoints
+@app.get('/workflow/runs')
+def workflow_runs_list(limit: int = 100, offset: int = 0, scenario: str | None = None):
+    return workflow_list_runs(limit=limit, offset=offset, scenario=scenario)
+
+@app.post('/workflow/cleanup')
+def workflow_cleanup(ttl_days: int = 7):
+    return workflow_cleanup_old_runs(ttl_days=ttl_days)
+
+@app.get('/workflow/stats')
+def workflow_stats():
+    return workflow_get_storage_stats()
 
 # v0.9 lightweight research system reproduction endpoints
 @app.get('/reproduction/systems')
@@ -303,8 +336,8 @@ def add_event(event:MemoryEventIn):
     if guard['policy_result'] == 'reject':
         audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.dict()})
         return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
-    conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],datetime.datetime.utcnow().isoformat())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
-    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],datetime.datetime.utcnow().isoformat())); conn.commit()
+    conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
+    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.commit()
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')

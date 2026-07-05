@@ -7,7 +7,6 @@ import json
 import os
 import sys
 import pathlib
-import datetime
 
 # ---- path setup so we can import backend.app ----
 _here = pathlib.Path(__file__).resolve()
@@ -22,6 +21,7 @@ from app.init_db import main as init_db                         # noqa: E402
 from app.memory_runtime.capsule_store import write_capsule, get_capsule  # noqa: E402
 from app.memory_runtime.command_loop import run_command_loop    # noqa: E402
 from app.memory_runtime.evolution import reflect_task           # noqa: E402
+from app.utils.datetime_utils import utc_now                    # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def compute_metrics(case_results: list[dict]) -> dict:
 
 def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    ts = utc_now().strftime('%Y%m%dT%H%M%SZ')
     lines = [
         '# Production MemoryArena-Lite 评测报告 (v0.6)',
         f'> 生成时间: {ts}',

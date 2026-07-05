@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from ..audit.service import record
 from ..model_gateway.service import LOCAL_LLAMA_BASE
-
-VERSION = "v0.9.3-workflow-run"
+from ..utils.datetime_utils import utc_now_iso
+from ..version import VERSION
+from . import persistence
 
 
 class WorkflowRunIn(BaseModel):
@@ -146,14 +146,9 @@ SCENARIOS = [
     },
 ]
 
-# TODO(v0.9.5): Migrate workflow runs to database persistence
-# RISK: In-memory storage causes:
-# - Data loss on process restart
-# - Memory leak without TTL cleanup
-# - Breaks multi-process deployment (Gunicorn workers)
-# - No horizontal scaling capability
-# MITIGATION: For production, use external state store (Redis/database)
-# or implement TTL-based cleanup and document single-process requirement
+# v0.9.5: Workflow runs now persisted to SQLite via persistence module
+# Legacy in-memory dict kept as fallback during migration period
+# TODO(v0.9.6): Remove _RUNS entirely once persistence is fully validated
 _RUNS: dict[str, dict[str, Any]] = {}
 
 
@@ -279,7 +274,7 @@ def create_run(req: WorkflowRunIn) -> dict[str, Any]:
         "user_goal": req.user_goal,
         "dry_run": True,
         "status": "completed_with_skips" if skipped else "completed",
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": utc_now_iso(),
         "summary": {
             "total_stages": len(trace),
             "completed_stages": completed,
@@ -303,12 +298,28 @@ def create_run(req: WorkflowRunIn) -> dict[str, Any]:
     }
     audit_id = record("workflow_run", {"run_id": run_id, "trace_id": trace_id, "scenario": req.scenario, "summary": run["summary"]})
     run["audit_id"] = audit_id
+
+    # v0.9.5: Persist to database
+    persistence.save_run(run_id, run)
+
+    # Keep in-memory copy as fallback during migration
     _RUNS[run_id] = run
+
     return run
 
 
 def get_run(run_id: str) -> dict[str, Any]:
-    return _RUNS.get(run_id) or {"error": "not_found", "run_id": run_id}
+    # v0.9.5: Read from database first, fallback to memory
+    run = persistence.get_run(run_id)
+    if run:
+        return run
+
+    # Fallback to in-memory dict (migration period)
+    run = _RUNS.get(run_id)
+    if run:
+        return run
+
+    return {"error": "not_found", "run_id": run_id}
 
 
 def get_trace(run_id: str) -> dict[str, Any]:
@@ -327,3 +338,47 @@ def get_artifacts(run_id: str) -> dict[str, Any]:
 
 def run_dry_run(req: WorkflowRunIn) -> dict[str, Any]:
     return create_run(req)
+
+
+def list_runs(limit: int = 100, offset: int = 0, scenario: str | None = None) -> dict[str, Any]:
+    """
+    列出 workflow runs（支持分页和过滤）。
+
+    v0.9.5 新增: 支持从数据库读取持久化的 runs
+    """
+    runs = persistence.list_runs(limit=limit, offset=offset, scenario=scenario)
+    return {
+        "runs": runs,
+        "limit": limit,
+        "offset": offset,
+        "count": len(runs),
+    }
+
+
+def cleanup_old_runs(ttl_days: int = 7) -> dict[str, Any]:
+    """
+    清理过期的 workflow runs。
+
+    v0.9.5 新增: 自动 TTL 清理功能
+
+    参数:
+        ttl_days: TTL 天数（默认 7 天）
+
+    返回:
+        清理结果统计
+    """
+    deleted_count = persistence.cleanup_old_runs(ttl_days=ttl_days)
+    return {
+        "deleted_count": deleted_count,
+        "ttl_days": ttl_days,
+        "status": "completed",
+    }
+
+
+def get_storage_stats() -> dict[str, Any]:
+    """
+    获取 workflow runs 存储统计。
+
+    v0.9.5 新增: 持久化存储统计
+    """
+    return persistence.get_storage_stats()

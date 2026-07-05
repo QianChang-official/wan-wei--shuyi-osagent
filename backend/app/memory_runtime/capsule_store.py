@@ -1,10 +1,10 @@
-import datetime as _dt
 import json
 import uuid
 from typing import Any
 
 from ..db import get_conn
 from ..audit.service import record
+from ..utils.datetime_utils import utc_now_iso_compact
 from .policy_gate import evaluate_policy
 
 BLOCKED_POLICY = {"reject", "quarantine"}
@@ -12,7 +12,7 @@ BLOCKED_LIFECYCLE = {"quarantined", "forgotten", "rolled_back", "deprecated"}
 
 
 def now() -> str:
-    return _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return utc_now_iso_compact()
 
 
 def dumps(obj: Any) -> str:

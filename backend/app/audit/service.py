@@ -1,6 +1,7 @@
-import uuid,json,datetime
+import uuid,json
 from ..db import get_conn
 from ..security.redaction import redact_audit_payload
+from ..utils.datetime_utils import utc_now_iso
 
 
 def _ensure_audit_table(conn):
@@ -14,7 +15,7 @@ def record(event_type:str,payload:dict)->str:
     conn=get_conn(); _ensure_audit_table(conn)
     # Redact sensitive data before storing
     safe_payload = redact_audit_payload(payload)
-    conn.execute('INSERT INTO audit_logs VALUES (?,?,?,?)',(audit_id,event_type,json.dumps(safe_payload,ensure_ascii=False),datetime.datetime.utcnow().isoformat())); conn.commit(); return audit_id
+    conn.execute('INSERT INTO audit_logs VALUES (?,?,?,?)',(audit_id,event_type,json.dumps(safe_payload,ensure_ascii=False),utc_now_iso())); conn.commit(); return audit_id
 
 
 def list_logs(limit:int=50,trace_id:str|None=None)->list[dict]:
