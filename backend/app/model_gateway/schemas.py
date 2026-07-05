@@ -16,7 +16,6 @@ class ModelGatewayTestIn(BaseModel):
     model: str | None = None
     dry_run: bool = True
     prompt_preview: str = "MemoryOps gateway dry-run"
-    api_base: str | None = None
     max_tokens: int = 96
 
 

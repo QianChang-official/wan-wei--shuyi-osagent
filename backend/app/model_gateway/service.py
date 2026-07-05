@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import json
 import time
-import urllib.error
-import urllib.request
 import uuid
+from urllib.parse import urlparse
+
+import httpx
 
 from .schemas import ModelGatewayTestIn, ModelGatewayTestOut, ModelProvider
+from ..security.ssrf import SSRFError, validate_external_url
 
 LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://172.29.128.1:8084/v1")
 LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "C:\\LLMShare\\Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q4_K.gguf")
@@ -20,7 +22,7 @@ PROVIDERS: list[ModelProvider] = [
         model=LOCAL_LLAMA_MODEL,
         enabled=True,
         status="available_local_llama_cpp",
-        notes="Local llama.cpp OpenAI-compatible endpoint; base/model can be overridden by WANWEI_OPENAI_COMPATIBLE_BASE and WANWEI_OPENAI_COMPATIBLE_MODEL. No API key is stored.",
+        notes="Local llama.cpp OpenAI-compatible endpoint; base can be overridden by WANWEI_OPENAI_COMPATIBLE_BASE env. URL must be HTTP(S) and not in SSRF block list. No API key is stored.",
     ),
     ModelProvider(
         provider="anthropic",
@@ -38,7 +40,7 @@ PROVIDERS: list[ModelProvider] = [
         model="gemini-2.5-pro",
         enabled=False,
         status="planned_configurable",
-        notes="Gemini provider stub; no outbound call is made in v0.9.3 dry-run.",
+        notes="Gemini provider stub; no outbound call is made in v0.9.4 dry-run.",
     ),
     ModelProvider(
         provider="local_mock",
@@ -68,22 +70,17 @@ def _openai_compatible_smoke(api_base: str, model: str, prompt: str, max_tokens:
         "max_tokens": max(16, min(max_tokens, 256)),
         "stream": False,
     }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        api_base.rstrip("/") + "/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=90) as response:
-        raw = response.read().decode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    with httpx.Client(timeout=90, follow_redirects=False) as client:
+        response = client.post(api_base.rstrip("/") + "/chat/completions", json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
     latency_ms = int((time.perf_counter() - started) * 1000)
-    data = json.loads(raw)
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     return "ok", latency_ms, text[:600]
 
 
-def test_provider(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
+def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
     provider = next((item for item in PROVIDERS if item.provider == req.provider), None)
     model = req.model or (provider.model if provider else "unknown")
     request_id = "mgw_" + uuid.uuid4().hex[:12]
@@ -114,8 +111,11 @@ def test_provider(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
             request_id=request_id,
             message="Only the local OpenAI-compatible llama.cpp endpoint is enabled for real smoke in this prototype.",
         )
-    api_base = req.api_base or provider.api_base
+    api_base = provider.api_base
     try:
+        allowlist_env = os.getenv("WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST")
+        allowlist = [h.strip() for h in allowlist_env.split(",") if h.strip()] if allowlist_env else None
+        validate_external_url(api_base, allowlist=allowlist)
         status, latency_ms, preview = _openai_compatible_smoke(api_base, model, req.prompt_preview, req.max_tokens)
         return ModelGatewayTestOut(
             provider=provider.provider,
@@ -127,12 +127,21 @@ def test_provider(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
             latency_ms=latency_ms,
             response_preview=preview,
         )
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+    except SSRFError as exc:
+        return ModelGatewayTestOut(
+            provider=provider.provider,
+            model=model,
+            dry_run=False,
+            status="ssrf_blocked",
+            request_id=request_id,
+            message=f"SSRF block: {exc}",
+        )
+    except (httpx.RequestError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError) as exc:
         return ModelGatewayTestOut(
             provider=provider.provider,
             model=model,
             dry_run=False,
             status="error",
             request_id=request_id,
-            message=f"OpenAI-compatible smoke failed: {exc}",
+            message=f"Model gateway smoke failed: {exc}",
         )

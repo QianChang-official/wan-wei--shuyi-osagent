@@ -1,19 +1,22 @@
 import uuid,json,datetime
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from .security.auth import APIKeyMiddleware
+from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
+from .security.headers import SecurityHeadersMiddleware
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import get_conn
-from .guardrail.service import evaluate
+from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record
 from .retrieval.service import search as do_search
-from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule
+from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule, forget_capsules
 from .memory_runtime.retrieval import search_capsules
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
 from .model_gateway.schemas import ModelGatewayTestIn
-from .model_gateway.service import list_providers, test_provider
+from .model_gateway.service import list_providers, run_provider_test
 from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
@@ -69,7 +72,16 @@ from .reproduction.service import (
     workbench as reproduction_workbench,
 )
 
-app=FastAPI(title='宛委·枢忆 MemoryOps Autopilot Platform')
+_prod_mode = __import__('os').getenv('WANWEI_PRODUCTION', '').lower() in {'1','true','yes'}
+app=FastAPI(
+    title='宛委·枢忆 MemoryOps Autopilot Platform',
+    docs_url=None if _prod_mode else '/docs',
+    redoc_url=None if _prod_mode else '/redoc',
+    openapi_url=None if _prod_mode else '/openapi.json',
+)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(APIKeyMiddleware)
 
 # Mount frontend console at /console (same-origin, no CORS needed).
 # Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.
@@ -110,7 +122,7 @@ def model_gateway_providers():
 
 @app.post('/model-gateway/test')
 def model_gateway_test(req: ModelGatewayTestIn):
-    return test_provider(req)
+    return run_provider_test(req)
 
 @app.get('/tool-registry/tools')
 def tool_registry_tools():
@@ -287,13 +299,17 @@ def deepening_visual_verification_checklist_dry_run_view(req: VisualChecklistIn)
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')
 def add_event(event:MemoryEventIn):
-    event_id='evt_'+uuid.uuid4().hex[:12]; text=json.dumps(event.content,ensure_ascii=False); guard=evaluate(text); quality=0.9 if len(text)>8 else 0.5
+    event_id='evt_'+uuid.uuid4().hex[:12]; text=json.dumps(event.content,ensure_ascii=False); guard=evaluate_policy(text=text); quality=0.9 if len(text)>8 else 0.5
+    if guard['policy_result'] == 'reject':
+        audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.dict()})
+        return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
     conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],datetime.datetime.utcnow().isoformat())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
     capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],datetime.datetime.utcnow().isoformat())); conn.commit()
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
 def search(q:str,scene:str='general',top_k:int=5):
+    q, top_k = validate_search_params(q, top_k)
     results=do_search(q,scene,top_k); evidence=[{'source_event_id':r['event_id'],'source_type':r['source_type'],'trust_score':r['trust_score'],'actions':['view_source','correct','forget']} for r in results]
     return {'query':q,'results':results,'evidence_cards':evidence}
 
@@ -303,7 +319,37 @@ def forget_preview(req:ForgetPreviewIn):
 
 @app.post('/memory/forget/confirm')
 def forget_confirm(req:ForgetConfirmIn):
-    audit_id=record('forget_confirm',req.dict()); return {'status':'recorded','audit_id':audit_id}
+    if not req.confirm:
+        audit_id=record('forget_confirm_cancelled',req.dict()); return {'status':'cancelled','audit_id':audit_id}
+    conn=get_conn()
+    # Use JSON extraction for exact matching instead of LIKE wildcard
+    # This prevents SQL wildcard injection (% and _) from matching unintended records
+    cursor = conn.execute(
+        "SELECT payload FROM audit_logs WHERE event_type='forget_preview' ORDER BY created_at DESC LIMIT 50"
+    )
+    preview = None
+    for row in cursor:
+        payload = json.loads(row['payload'])
+        if payload.get('forget_request_id') == req.forget_request_id:
+            preview = payload
+            break
+
+    if not preview:
+        audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
+        return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
+
+    capsule_ids=[]
+    event_ids=[]
+    for item in preview.get('candidates',[]):
+        if item.get('capsule_id'): capsule_ids.append(item['capsule_id'])
+        if item.get('event_id'): event_ids.append(item['event_id'])
+    for event_id in event_ids:
+        conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
+        conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
+    conn.commit()
+    result=forget_capsules(capsule_ids, mode=req.mode)
+    audit_id=record('forget_confirm',{'request':req.dict(),'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids})
+    return {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids}
 
 # v0.6 MemoryOps Runtime endpoints
 @app.post('/memory/v2/capsules')
@@ -320,12 +366,14 @@ def v2_get_capsule(capsule_id: str):
 
 @app.get('/memory/v2/search')
 def v2_search(q:str,top_k:int=5,high_risk:bool=False):
+    q, top_k = validate_search_params(q, top_k)
     from .memory_runtime.evidence import build_evidence_card
     results=search_capsules(q,top_k=top_k,high_risk=high_risk)
     return {'query':q,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
 
 @app.post('/memory/v2/command')
 def v2_command(req: CommandLoopIn):
+    validate_goal_length(req.goal)
     return run_command_loop(goal=req.goal, scene=req.scene, top_k=req.top_k)
 
 @app.post('/memory/v2/reflection')
