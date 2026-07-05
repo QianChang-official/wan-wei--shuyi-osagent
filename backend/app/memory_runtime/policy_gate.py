@@ -5,6 +5,13 @@ S3_PATTERNS = [
     r"password\s*[:=]", r"api[_-]?key\s*[:=]", r"token\s*[:=]", r"secret\s*[:=]",
     r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----", r"\b\d{17}[0-9Xx]\b",
 ]
+AWS_KEY_PATTERNS = [
+    r"AKIA[0-9A-Z]{16}",
+    r"ASIA[0-9A-Z]{16}",
+]
+OPENAI_KEY_PATTERNS = [r"sk-[a-zA-Z0-9]{20,}"]
+PHONE_PATTERNS = [r"(?<!\d)1[3-9]\d{9}(?!\d)"]
+ID_CARD_PATTERNS = [r"(?<!\d)\d{17}[0-9Xx](?!\d)"]
 POISON_PATTERNS = [
     r"忽略.*安全规则", r"覆盖.*系统提示", r"不要告诉用户", r"永久记住.*跳过确认",
     r"下次.*自动调用.*危险", r"ignore.*safety", r"override.*system", r"skip.*confirmation",
@@ -26,15 +33,27 @@ def evaluate_policy(
     memory_class: str = "knowledge",
 ) -> dict[str, Any]:
     s3_hits = _hits(S3_PATTERNS, text)
+    aws_hits = _hits(AWS_KEY_PATTERNS, text)
+    openai_hits = _hits(OPENAI_KEY_PATTERNS, text)
+    phone_hits = _hits(PHONE_PATTERNS, text)
+    id_hits = _hits(ID_CARD_PATTERNS, text)
+    all_s3_hits = s3_hits + aws_hits + openai_hits
     poison_hits = _hits(POISON_PATTERNS, text)
     weak_hits = _hits(WEAK_IDENTIFIER_PATTERNS, text)
 
-    if s3_hits:
+    if all_s3_hits:
         return {
             "sensitivity_level": "S3", "trust_score": 0.0, "confidence": 0.9,
             "policy_result": "reject", "risk_tags": ["s3_secret", "block_from_memory"],
             "retention_policy": "read_only", "requires_confirmation": False,
-            "hits": s3_hits,
+            "hits": all_s3_hits,
+        }
+    if phone_hits or id_hits:
+        return {
+            "sensitivity_level": "S3", "trust_score": 0.0, "confidence": 0.9,
+            "policy_result": "reject", "risk_tags": ["s3_secret", "pii"],
+            "retention_policy": "read_only", "requires_confirmation": False,
+            "hits": phone_hits + id_hits,
         }
     if poison_hits:
         return {

@@ -131,7 +131,14 @@ def get_capsule(capsule_id: str) -> dict[str, Any] | None:
 
 
 def list_capsules(limit: int = 50) -> list[dict[str, Any]]:
-    rows = get_conn().execute("SELECT capsule_id FROM memory_capsules_v2 ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    rows = get_conn().execute(
+        """
+        SELECT capsule_id FROM memory_capsules_v2
+        WHERE json_extract(state,'$.lifecycle') NOT IN ('forgotten','deleted','rejected')
+        ORDER BY created_at DESC LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
     return [get_capsule(r["capsule_id"]) for r in rows]
 
 
@@ -147,6 +154,28 @@ def update_capsule(capsule_id: str, *, state: dict[str, Any] | None = None, rela
     ).connection.commit()
     record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
     return get_capsule(capsule_id)
+
+
+def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
+    init_runtime_schema()
+    deleted: list[str] = []
+    conn = get_conn()
+    for capsule_id in capsule_ids:
+        cap = get_capsule(capsule_id)
+        if not cap:
+            continue
+        state = cap["state"]
+        state["lifecycle"] = "forgotten" if mode != "hard_delete" else "deleted"
+        state["forgotten_at"] = now()
+        conn.execute(
+            "UPDATE memory_capsules_v2 SET state=?, updated_at=? WHERE capsule_id=?",
+            (dumps(state), now(), capsule_id),
+        )
+        conn.execute("DELETE FROM memory_capsules_v2_fts WHERE capsule_id=?", (capsule_id,))
+        deleted.append(capsule_id)
+    conn.commit()
+    audit_id = record("forget_confirm", {"deleted_capsule_ids": deleted, "mode": mode})
+    return {"status": "forgotten", "deleted_capsule_ids": deleted, "audit_id": audit_id}
 
 
 def allowed_for_context(cap: dict[str, Any], *, high_risk: bool = False) -> bool:

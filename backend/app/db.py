@@ -11,6 +11,13 @@ def _db_path() -> Path:
     else:
         p = Path.home() / ".local/share/wanwei-shuyi/memory.db"
     p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.exists():
+        p.touch(mode=0o600)
+    else:
+        try:
+            p.chmod(0o600)
+        except PermissionError:
+            pass
     return p
 
 
