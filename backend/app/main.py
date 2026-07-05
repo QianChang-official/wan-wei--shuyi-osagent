@@ -3,6 +3,8 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware
+from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
+from .security.headers import SecurityHeadersMiddleware
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import get_conn
 from .memory_runtime.policy_gate import evaluate_policy
@@ -77,6 +79,8 @@ app=FastAPI(
     redoc_url=None if _prod_mode else '/redoc',
     openapi_url=None if _prod_mode else '/openapi.json',
 )
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(APIKeyMiddleware)
 
 # Mount frontend console at /console (same-origin, no CORS needed).
@@ -305,6 +309,7 @@ def add_event(event:MemoryEventIn):
 
 @app.get('/memory/search')
 def search(q:str,scene:str='general',top_k:int=5):
+    q, top_k = validate_search_params(q, top_k)
     results=do_search(q,scene,top_k); evidence=[{'source_event_id':r['event_id'],'source_type':r['source_type'],'trust_score':r['trust_score'],'actions':['view_source','correct','forget']} for r in results]
     return {'query':q,'results':results,'evidence_cards':evidence}
 
@@ -317,14 +322,27 @@ def forget_confirm(req:ForgetConfirmIn):
     if not req.confirm:
         audit_id=record('forget_confirm_cancelled',req.dict()); return {'status':'cancelled','audit_id':audit_id}
     conn=get_conn()
-    preview=conn.execute("SELECT payload FROM audit_logs WHERE event_type='forget_preview' AND payload LIKE ? ORDER BY created_at DESC LIMIT 1",(f'%{req.forget_request_id}%',)).fetchone()
+    # Use JSON extraction for exact matching instead of LIKE wildcard
+    # This prevents SQL wildcard injection (% and _) from matching unintended records
+    cursor = conn.execute(
+        "SELECT payload FROM audit_logs WHERE event_type='forget_preview' ORDER BY created_at DESC LIMIT 50"
+    )
+    preview = None
+    for row in cursor:
+        payload = json.loads(row['payload'])
+        if payload.get('forget_request_id') == req.forget_request_id:
+            preview = payload
+            break
+
+    if not preview:
+        audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
+        return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
+
     capsule_ids=[]
     event_ids=[]
-    if preview:
-        payload=json.loads(preview['payload'])
-        for item in payload.get('candidates',[]):
-            if item.get('capsule_id'): capsule_ids.append(item['capsule_id'])
-            if item.get('event_id'): event_ids.append(item['event_id'])
+    for item in preview.get('candidates',[]):
+        if item.get('capsule_id'): capsule_ids.append(item['capsule_id'])
+        if item.get('event_id'): event_ids.append(item['event_id'])
     for event_id in event_ids:
         conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
         conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
@@ -348,12 +366,14 @@ def v2_get_capsule(capsule_id: str):
 
 @app.get('/memory/v2/search')
 def v2_search(q:str,top_k:int=5,high_risk:bool=False):
+    q, top_k = validate_search_params(q, top_k)
     from .memory_runtime.evidence import build_evidence_card
     results=search_capsules(q,top_k=top_k,high_risk=high_risk)
     return {'query':q,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
 
 @app.post('/memory/v2/command')
 def v2_command(req: CommandLoopIn):
+    validate_goal_length(req.goal)
     return run_command_loop(goal=req.goal, scene=req.scene, top_k=req.top_k)
 
 @app.post('/memory/v2/reflection')

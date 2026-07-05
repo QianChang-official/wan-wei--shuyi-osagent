@@ -146,6 +146,14 @@ SCENARIOS = [
     },
 ]
 
+# TODO(v0.9.5): Migrate workflow runs to database persistence
+# RISK: In-memory storage causes:
+# - Data loss on process restart
+# - Memory leak without TTL cleanup
+# - Breaks multi-process deployment (Gunicorn workers)
+# - No horizontal scaling capability
+# MITIGATION: For production, use external state store (Redis/database)
+# or implement TTL-based cleanup and document single-process requirement
 _RUNS: dict[str, dict[str, Any]] = {}
 
 

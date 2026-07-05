@@ -38,7 +38,7 @@ def test_legacy_event_rejects_secret_and_not_searchable(tmp_path):
     r = client.post("/memory/events", json=payload, headers={"x-api-key": "test-key"})
     assert r.status_code == 200
     assert r.json()["status"] == "rejected"
-    search = client.get("/memory/search", params={"q": "hunter2"})
+    search = client.get("/memory/search", params={"q": "hunter2"}, headers={"x-api-key": "test-key"})
     assert search.status_code == 200
     assert search.json()["results"] == []
 
@@ -48,14 +48,14 @@ def test_forget_confirm_hides_capsule_from_search(tmp_path):
     body = {"memory_class": "knowledge", "content": {"text": "请生成周报，使用正式语气和三段式结构。"}}
     write = client.post("/memory/v2/capsules", json=body, headers={"x-api-key": "test-key"}).json()
     cap_id = write["capsule_id"]
-    assert client.get("/memory/v2/search", params={"q": "周报"}).json()["results"]
+    assert client.get("/memory/v2/search", params={"q": "周报"}, headers={"x-api-key": "test-key"}).json()["results"]
     result = client.post("/memory/forget/confirm", json={"forget_request_id": "manual", "confirm": True, "mode": "soft_delete"}, headers={"x-api-key": "test-key"})
     # manual request has no preview; direct helper path is tested via capsule lifecycle below
     assert result.status_code == 200
     from backend.app.memory_runtime.capsule_store import forget_capsules, get_capsule
     forget_capsules([cap_id])
     assert get_capsule(cap_id)["state"]["lifecycle"] == "forgotten"
-    assert client.get("/memory/v2/search", params={"q": "周报"}).json()["results"] == []
+    assert client.get("/memory/v2/search", params={"q": "周报"}, headers={"x-api-key": "test-key"}).json()["results"] == []
 
 
 def test_chinese_search_hits_real_capsule_not_latest_fallback(tmp_path):
@@ -65,15 +65,15 @@ def test_chinese_search_hits_real_capsule_not_latest_fallback(tmp_path):
     w1 = client.post("/memory/v2/capsules", json=first, headers={"x-api-key": "test-key"}).json()
     client.post("/memory/v2/capsules", json=second, headers={"x-api-key": "test-key"}).json()
     for q in ["周报", "正式语气", "三段式结构"]:
-        res = client.get("/memory/v2/search", params={"q": q}).json()["results"]
+        res = client.get("/memory/v2/search", params={"q": q}, headers={"x-api-key": "test-key"}).json()["results"]
         assert res and res[0]["capsule_id"] == w1["capsule_id"]
-    assert client.get("/memory/v2/search", params={"q": "不存在关键词"}).json()["results"] == []
+    assert client.get("/memory/v2/search", params={"q": "不存在关键词"}, headers={"x-api-key": "test-key"}).json()["results"] == []
 
 
 def test_db_file_permission_600(tmp_path):
     client = _client(tmp_path)
     assert client.get("/health").status_code == 200
-    client.get("/audit/logs")
+    client.get("/audit/logs", headers={"x-api-key": "test-key"})
     mode = stat.S_IMODE((tmp_path / "memory.db").stat().st_mode)
     assert mode == 0o600
 

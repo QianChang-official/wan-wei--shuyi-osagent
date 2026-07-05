@@ -1,5 +1,6 @@
 import uuid,json,datetime
 from ..db import get_conn
+from ..security.redaction import redact_audit_payload
 
 
 def _ensure_audit_table(conn):
@@ -8,9 +9,12 @@ def _ensure_audit_table(conn):
 
 
 def record(event_type:str,payload:dict)->str:
+    """Record audit event with sensitive data redaction."""
     audit_id='audit_'+uuid.uuid4().hex[:12]
     conn=get_conn(); _ensure_audit_table(conn)
-    conn.execute('INSERT INTO audit_logs VALUES (?,?,?,?)',(audit_id,event_type,json.dumps(payload,ensure_ascii=False),datetime.datetime.utcnow().isoformat())); conn.commit(); return audit_id
+    # Redact sensitive data before storing
+    safe_payload = redact_audit_payload(payload)
+    conn.execute('INSERT INTO audit_logs VALUES (?,?,?,?)',(audit_id,event_type,json.dumps(safe_payload,ensure_ascii=False),datetime.datetime.utcnow().isoformat())); conn.commit(); return audit_id
 
 
 def list_logs(limit:int=50,trace_id:str|None=None)->list[dict]:
