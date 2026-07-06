@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware
 from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
 from .security.headers import SecurityHeadersMiddleware
+from .security.rate_limit import RateLimitMiddleware
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import get_conn
 from .memory_runtime.policy_gate import evaluate_policy
@@ -108,6 +109,10 @@ app=FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(APIKeyMiddleware)
+# v0.9.6 (T6): per-IP in-memory token-bucket rate limit. Added last so it runs
+# outermost — a burst is rejected before auth/body work. Single-process only;
+# multi-process shared limiting is deferred to v1.0.
+app.add_middleware(RateLimitMiddleware)
 
 # Mount frontend console at /console (same-origin, no CORS needed).
 # Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.

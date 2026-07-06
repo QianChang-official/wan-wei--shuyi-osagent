@@ -4,10 +4,24 @@
 统一版本号，供 /health 端点和其他模块使用。
 """
 
-VERSION = "v0.9.5-workflow-persistence"
+VERSION = "v0.9.6-rate-limit-and-test-hardening"
 
 # 版本历史
 VERSION_HISTORY = [
+    {
+        "version": "v0.9.6-rate-limit-and-test-hardening",
+        "date": "2026-07-06",
+        "features": [
+            "核心模块单元测试（capsule_store / policy_gate / retrieval / command_loop，核心覆盖率 98%）",
+            "性能基线采集工具（perf baseline harness）",
+            "N+1 查询批量优化（get_capsules_batch + bump_usage_batch）",
+            "移除 workflow _RUNS 内存 fallback（持久化已验证）",
+            "线程本地连接复用 + WAL",
+            "单进程内存令牌桶限流（rate limit）",
+            "pytest 第三方 warnings 过滤，项目代码 warnings 视为错误",
+        ],
+        "status": "in_progress",
+    },
     {
         "version": "v0.9.5-workflow-persistence",
         "date": "2026-07-05",
@@ -18,7 +32,7 @@ VERSION_HISTORY = [
             "FastAPI lifespan 迁移",
             "pytest warnings 清理",
         ],
-        "status": "in_progress",
+        "status": "released",
     },
     {
         "version": "v0.9.4",

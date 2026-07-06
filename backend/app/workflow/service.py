@@ -146,10 +146,9 @@ SCENARIOS = [
     },
 ]
 
-# v0.9.5: Workflow runs now persisted to SQLite via persistence module
-# Legacy in-memory dict kept as fallback during migration period
-# TODO(v0.9.6): Remove _RUNS entirely once persistence is fully validated
-_RUNS: dict[str, dict[str, Any]] = {}
+# v0.9.6: Workflow runs are persisted to SQLite via the persistence module.
+# The legacy in-memory `_RUNS` fallback was removed after persistence was
+# validated by the v0.9.5 test suite; all reads/writes now go through SQLite.
 
 
 def workflow_design() -> dict[str, Any]:
@@ -299,26 +298,17 @@ def create_run(req: WorkflowRunIn) -> dict[str, Any]:
     audit_id = record("workflow_run", {"run_id": run_id, "trace_id": trace_id, "scenario": req.scenario, "summary": run["summary"]})
     run["audit_id"] = audit_id
 
-    # v0.9.5: Persist to database
+    # v0.9.6: Persist to database (single source of truth; in-memory fallback removed)
     persistence.save_run(run_id, run)
-
-    # Keep in-memory copy as fallback during migration
-    _RUNS[run_id] = run
 
     return run
 
 
 def get_run(run_id: str) -> dict[str, Any]:
-    # v0.9.5: Read from database first, fallback to memory
+    # v0.9.6: DB is the single source of truth for workflow runs.
     run = persistence.get_run(run_id)
     if run:
         return run
-
-    # Fallback to in-memory dict (migration period)
-    run = _RUNS.get(run_id)
-    if run:
-        return run
-
     return {"error": "not_found", "run_id": run_id}
 
 

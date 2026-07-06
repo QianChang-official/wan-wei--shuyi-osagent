@@ -78,7 +78,6 @@ def init_workflow_persistence() -> None:
     ''')
 
     conn.commit()
-    conn.close()
 
 
 def save_run(run_id: str, run_data: dict[str, Any]) -> None:
@@ -120,7 +119,6 @@ def save_run(run_id: str, run_data: dict[str, Any]) -> None:
     ))
 
     conn.commit()
-    conn.close()
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
@@ -141,7 +139,6 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     ''', (run_id,))
 
     row = cursor.fetchone()
-    conn.close()
 
     if row:
         return json.loads(row[0])
@@ -186,7 +183,6 @@ def list_runs(
     cursor.execute(query, params)
 
     runs = [json.loads(row[0]) for row in cursor.fetchall()]
-    conn.close()
 
     return runs
 
@@ -216,7 +212,6 @@ def cleanup_old_runs(ttl_days: int = DEFAULT_TTL_DAYS) -> int:
 
     deleted_count = cursor.rowcount
     conn.commit()
-    conn.close()
 
     return deleted_count
 
@@ -234,7 +229,6 @@ def get_run_count() -> int:
     cursor.execute('SELECT COUNT(*) FROM workflow_runs')
     count = cursor.fetchone()[0]
 
-    conn.close()
     return count
 
 
@@ -275,7 +269,6 @@ def get_storage_stats() -> dict[str, Any]:
     ''')
     scenario_distribution = dict(cursor.fetchall())
 
-    conn.close()
 
     return {
         'total_runs': total,
