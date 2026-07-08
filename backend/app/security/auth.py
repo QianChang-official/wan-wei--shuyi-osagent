@@ -13,7 +13,7 @@ import os
 import secrets
 from typing import Callable
 
-from fastapi import Request, HTTPException, status
+from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -98,11 +98,3 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 )
 
         return await call_next(request)
-
-
-def require_api_key(request: Request):
-    """Legacy function for manual key checks in endpoints."""
-    api_key = get_api_key()
-    header_key = request.headers.get("x-api-key")
-    if header_key != api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid X-API-Key")
