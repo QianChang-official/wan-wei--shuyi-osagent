@@ -12,7 +12,13 @@ class SSRFError(ValueError):
 _ALLOWED_SCHEMES = {"http", "https"}
 
 # Default block list. In addition to these networks, loopback/link-local/multicast are rejected.
-_BLOCKED_NETWORKS = [
+# Security hotspot review (v0.9.6.1): Intentional non-configurable SSRF denylist
+# constants; making them configurable would weaken default security. These are
+# RFC-reserved / private / loopback / link-local / CGNAT / multicast / reserved
+# ranges that must always be rejected by default. Do NOT move them into env vars
+# or runtime config. Per-deployment exceptions go through the explicit `allowlist`
+# parameter of validate_external_url() (exact-host match), never by editing this list.
+_BLOCKED_NETWORKS = [  # NOSONAR (intentional hardcoded security denylist)
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),

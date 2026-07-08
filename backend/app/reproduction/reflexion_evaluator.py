@@ -26,39 +26,36 @@ def evaluator() -> dict:
     }
 
 
-def evaluate(req: ReflexionEvaluateIn) -> dict:
+def _classify_failure(req: ReflexionEvaluateIn) -> tuple[str, float]:
     notes = req.notes.lower()
     evidence_count = len(req.evidence_cards)
-    used_count = len(req.used_memories)
     if req.goal_achieved and evidence_count > 0:
-        failure_type = "no_failure"
-        quality = 0.88
-    elif "unsafe" in notes or "越权" in notes:
-        failure_type = "unsafe_plan"
-        quality = 0.35
-    elif "false_positive" in notes or "误报" in notes:
-        failure_type = "false_positive_echo"
-        quality = 0.42
-    elif evidence_count == 0:
-        failure_type = "weak_evidence"
-        quality = 0.45
-    elif used_count == 0:
-        failure_type = "missing_memory"
-        quality = 0.5
-    else:
-        failure_type = "conflict_ignored" if "conflict" in notes else "missing_memory"
-        quality = 0.55
-    suggested_actions = []
-    if failure_type == "weak_evidence":
-        suggested_actions.append("require evidence cards before writing reflection memory")
-    if failure_type == "missing_memory":
-        suggested_actions.append("add retrieval trace and memory class expectation")
-    if failure_type == "false_positive_echo":
-        suggested_actions.append("separate tool_display/chat_render from file_content/runtime_log")
-    if failure_type == "unsafe_plan":
-        suggested_actions.append("force supervised mode and add confirmation point")
-    if failure_type == "no_failure":
-        suggested_actions.append("record successful before/after comparison as reusable pattern")
+        return "no_failure", 0.88
+    if "unsafe" in notes or "越权" in notes:
+        return "unsafe_plan", 0.35
+    if "false_positive" in notes or "误报" in notes:
+        return "false_positive_echo", 0.42
+    if evidence_count == 0:
+        return "weak_evidence", 0.45
+    if len(req.used_memories) == 0:
+        return "missing_memory", 0.5
+    return ("conflict_ignored" if "conflict" in notes else "missing_memory"), 0.55
+
+
+_SUGGESTED_ACTIONS = {
+    "weak_evidence": "require evidence cards before writing reflection memory",
+    "missing_memory": "add retrieval trace and memory class expectation",
+    "false_positive_echo": "separate tool_display/chat_render from file_content/runtime_log",
+    "unsafe_plan": "force supervised mode and add confirmation point",
+    "no_failure": "record successful before/after comparison as reusable pattern",
+}
+
+
+def evaluate(req: ReflexionEvaluateIn) -> dict:
+    evidence_count = len(req.evidence_cards)
+    failure_type, quality = _classify_failure(req)
+    action = _SUGGESTED_ACTIONS.get(failure_type)
+    suggested_actions = [action] if action else []
     return {
         "status": "dry_run_only",
         "task_id": req.task_id,

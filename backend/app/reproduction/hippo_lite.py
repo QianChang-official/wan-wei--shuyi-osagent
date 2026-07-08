@@ -47,16 +47,17 @@ def graph() -> dict:
     }
 
 
-def recall(req: HippoRecallIn) -> dict:
-    g = graph()
-    nodes = g["nodes"]
+def _build_edge_map(edges: list[dict]) -> dict:
     edge_map = defaultdict(list)
-    for edge in g["edges"]:
+    for edge in edges:
         edge_map[edge["source"]].append(edge["target"])
         edge_map[edge["target"]].append(edge["source"])
-    terms = [part.lower() for part in req.query.split() if part.strip()]
-    seed_scores = {}
+    return edge_map
+
+
+def _seed_scores(nodes: list[dict], terms: list[str]) -> dict:
     capsule_lookup = {cap["capsule_id"]: cap for cap in list_capsules(200) if cap}
+    seed_scores = {}
     for node in nodes:
         text = _content_text(capsule_lookup.get(node["id"], {}))
         score = sum(1 for term in terms if term in text)
@@ -64,17 +65,31 @@ def recall(req: HippoRecallIn) -> dict:
             seed_scores[node["id"]] = float(score)
     if not seed_scores and nodes:
         seed_scores[nodes[0]["id"]] = 0.2
+    return seed_scores
+
+
+def _spread_one_hop(frontier: dict, edge_map: dict) -> dict:
+    next_frontier = defaultdict(float)
+    for source, score in frontier.items():
+        neighbors = edge_map.get(source, [])
+        if not neighbors:
+            continue
+        spread = score * 0.45 / len(neighbors)
+        for target in neighbors:
+            next_frontier[target] += spread
+    return next_frontier
+
+
+def recall(req: HippoRecallIn) -> dict:
+    g = graph()
+    nodes = g["nodes"]
+    edge_map = _build_edge_map(g["edges"])
+    terms = [part.lower() for part in req.query.split() if part.strip()]
+    seed_scores = _seed_scores(nodes, terms)
     scores = dict(seed_scores)
     frontier = dict(seed_scores)
     for hop in range(max(0, min(req.hops, 4))):
-        next_frontier = defaultdict(float)
-        for source, score in frontier.items():
-            neighbors = edge_map.get(source, [])
-            if not neighbors:
-                continue
-            spread = score * 0.45 / len(neighbors)
-            for target in neighbors:
-                next_frontier[target] += spread
+        next_frontier = _spread_one_hop(frontier, edge_map)
         for target, score in next_frontier.items():
             scores[target] = scores.get(target, 0.0) + score
         frontier = dict(next_frontier)

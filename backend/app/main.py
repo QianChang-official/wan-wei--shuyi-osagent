@@ -94,9 +94,7 @@ async def lifespan(app: FastAPI):
         pass
 
     yield
-
-    # Shutdown (if needed in future)
-    pass
+    # Shutdown: nothing to clean up yet
 
 _prod_mode = __import__('os').getenv('WANWEI_PRODUCTION', '').lower() in {'1','true','yes'}
 app=FastAPI(

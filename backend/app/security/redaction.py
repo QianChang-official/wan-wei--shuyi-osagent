@@ -91,13 +91,14 @@ def redact_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
     result = redact_dict(payload, in_place=False)
 
     # For policy rejections, further reduce stored content
-    if result.get('policy_result') == 'reject' or result.get('guard', {}).get('policy_result') == 'reject':
-        if 'content' in result:
-            content = result['content']
-            if isinstance(content, dict):
-                content = str(content)
-            # Store only preview and metadata, not full content
-            result['content'] = '[REDACTED - Policy Block]'
-            result['content_preview'] = redact_sensitive_text(content[:100]) if content else ''
+    is_reject = (result.get('policy_result') == 'reject'
+                 or result.get('guard', {}).get('policy_result') == 'reject')
+    if is_reject and 'content' in result:
+        content = result['content']
+        if isinstance(content, dict):
+            content = str(content)
+        # Store only preview and metadata, not full content
+        result['content'] = '[REDACTED - Policy Block]'
+        result['content_preview'] = redact_sensitive_text(content[:100]) if content else ''
 
     return result

@@ -1,6 +1,10 @@
 """
 SSRF regression tests for model gateway and external URL validation.
 No live network calls; local loopback / cloud metadata URLs are rejected at validation.
+
+Security hotspot review (v0.9.6.1): all IP literals in this file are intentional
+SSRF test vectors; hardcoded by design (NOSONAR). They exercise the denylist in
+backend/app/security/ssrf.py and must NOT be made configurable or weakened.
 """
 import pytest
 from ..security.ssrf import SSRFError, validate_external_url
@@ -10,7 +14,7 @@ from ..model_gateway.service import run_provider_test
 
 def test_blocks_loopback_ipv4():
     with pytest.raises(SSRFError):
-        validate_external_url("http://127.0.0.1:8084/v1")
+        validate_external_url("http://127.0.0.1:8084/v1")  # NOSONAR (intentional SSRF test vector)
 
 
 def test_blocks_localhost():
@@ -20,11 +24,11 @@ def test_blocks_localhost():
 
 def test_blocks_cloud_metadata():
     with pytest.raises(SSRFError):
-        validate_external_url("http://169.254.169.254/latest/meta-data/")
+        validate_external_url("http://169.254.169.254/latest/meta-data/")  # NOSONAR (intentional SSRF test vector)
 
 
 def test_blocks_private_ipv4():
-    for url in ["http://10.0.0.1/x", "http://192.168.1.1/x", "http://172.16.0.1/x"]:
+    for url in ["http://10.0.0.1/x", "http://192.168.1.1/x", "http://172.16.0.1/x"]:  # NOSONAR (intentional SSRF test vectors)
         with pytest.raises(SSRFError):
             validate_external_url(url)
 
