@@ -20,8 +20,9 @@ stages:
         commands:
           - python3 -m pip install --upgrade pip
           - pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-          - pip3 install -r requirements.txt
-          - python3 ./main.py
+          - pip3 install -r backend/requirements.txt
+          - PYTHONPATH=backend python3 -m compileall -q backend/app
+          - PYTHONPATH=. python3 -m pytest -q backend/app/model_gateway/test_ssrf.py backend/app/tests/test_security_baseline.py
       - step: publish@general_artifacts
         name: publish_general_artifacts
         displayName: 上传制品
