@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { RouterView, RouterLink } from 'vue-router'
 import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()

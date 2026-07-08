@@ -11,7 +11,16 @@ import httpx
 from .schemas import ModelGatewayTestIn, ModelGatewayTestOut, ModelProvider
 from ..security.ssrf import SSRFError, validate_external_url
 
-LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://172.29.128.1:8084/v1")
+# Security hotspot review (v0.9.6.1): the hardcoded IP below is a dev-only
+# fallback for the WSL -> Windows-host local llama.cpp OpenAI-compatible server.
+# - The env var WANWEI_OPENAI_COMPATIBLE_BASE always takes precedence; production
+#   deployments must set it explicitly instead of relying on this fallback.
+# - Users cannot override api_base via API requests (ModelGatewayTestIn has no
+#   api_base field); only this catalog value is used, after SSRF validation.
+# - This does NOT open up 172.16.0.0/12: validate_external_url() still blocks
+#   private ranges unless the exact host is explicitly allowlisted via
+#   WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST.
+LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://172.29.128.1:8084/v1")  # NOSONAR (dev fallback, env-overridable)
 LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "C:\\LLMShare\\Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q4_K.gguf")
 
 PROVIDERS: list[ModelProvider] = [

@@ -16,6 +16,8 @@ from backend.app.security.rate_limit import RateLimiter
 def test_burst_up_to_capacity_then_reject():
     rl = RateLimiter({"/x": 5})
     # Fixed clock so no refill happens between calls.
+    # "1.1.1.1" is an intentional deterministic test IP (NOSONAR); it only keys
+    # an in-memory bucket, no traffic is sent. Do not make it configurable.
     t = 1000.0
     allowed = [rl.allow("1.1.1.1", "/x", now=t) for _ in range(5)]
     assert all(allowed), "first C requests must be allowed"

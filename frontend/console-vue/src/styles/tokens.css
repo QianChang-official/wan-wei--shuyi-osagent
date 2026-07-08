@@ -28,4 +28,4 @@ body{
 ::-webkit-scrollbar-track{background:transparent}
 a{color:inherit;text-decoration:none}
 button{font-family:inherit;cursor:pointer}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
