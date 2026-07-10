@@ -13,4 +13,5 @@ mkdir -p "$(dirname "$WANWEI_MEMORY_DB")"
 exec "$PYTHON" -m uvicorn app.main:app \
   --app-dir "$ROOT/backend" \
   --host "${WANWEI_HOST:-127.0.0.1}" \
-  --port "${WANWEI_PORT:-8010}"
+  --port "${WANWEI_PORT:-8010}" \
+  --no-proxy-headers

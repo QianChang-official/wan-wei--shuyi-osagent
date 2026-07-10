@@ -1,0 +1,48 @@
+[CmdletBinding()]
+param(
+    [switch]$SkipInstall,
+    [switch]$IncludeArena
+)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$python = Join-Path $root 'backend\.venv\Scripts\python.exe'
+$frontend = Join-Path $root 'frontend\console-vue'
+if (-not (Test-Path -LiteralPath $python)) {
+    throw 'Python environment not found. Run scripts\setup.ps1 first.'
+}
+
+Push-Location $root
+try {
+    if (-not $SkipInstall) {
+        & $python -m pip install -r backend\requirements-dev.txt
+        if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
+        Push-Location $frontend
+        try {
+            npm ci
+            if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
+        }
+        finally { Pop-Location }
+    }
+
+    & $python -m compileall -q backend\app
+    if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed.' }
+    & $python -m pytest --basetemp .\tmp\pytest-verify -p no:cacheprovider
+    if ($LASTEXITCODE -ne 0) { throw 'Backend test suite failed.' }
+    $distDigestBefore = & $python (Join-Path $PSScriptRoot 'tree_digest.py') (Join-Path $frontend 'dist')
+    Push-Location $frontend
+    try {
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend production build failed.' }
+    }
+    finally { Pop-Location }
+    $distDigestAfter = & $python (Join-Path $PSScriptRoot 'tree_digest.py') (Join-Path $frontend 'dist')
+    if ($distDigestBefore -ne $distDigestAfter) { throw 'Frontend production build is not reproducible.' }
+    if ($IncludeArena) {
+        $env:PYTHONPATH = Join-Path $root 'backend'
+        & $python -m app.memory_arena.runner --output-dir (Join-Path $root 'tmp\arena-verify')
+        if ($LASTEXITCODE -ne 0) { throw 'MemoryArena evaluation failed.' }
+    }
+    Write-Host 'Delivery verification passed.' -ForegroundColor Green
+}
+finally { Pop-Location }

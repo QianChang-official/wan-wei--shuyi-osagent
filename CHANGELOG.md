@@ -2,6 +2,21 @@
 
 ## Unreleased - 2026-07-10
 
+### v0.10.0 交付硬化
+
+- 增加非 root 多阶段 Docker 镜像、安全默认 Compose、Linux setup/smoke/verify/backup 与 secret 初始化脚本。
+- 增加 GitHub Windows/Linux CI、HTTP/容器 smoke、CodeQL、Dependency Review、Trivy、Dependabot、Release、SBOM、校验和与 provenance attestation。
+- 增加 `/health/live`、`/health/ready`、受保护 `/metrics`、`X-Request-ID` 与低基数 HTTP 指标。
+- 增加 SQLite 在线备份、quick_check、SHA-256 manifest、防篡改验证、停机恢复和恢复前安全副本。
+- 生产 API Key 增加 32 字符最低强度与 secret 文件加载；限流仅信任显式配置的代理 IP/CIDR，并从右向左剥离代理链以避免伪造转发头影响分桶。
+- 升级到 FastAPI 0.139、Starlette 1.3、Pydantic 2.13、HTTPX 0.28、Uvicorn 0.51 和 pytest 9.1，并迁移 Pydantic v2 序列化接口。
+- 拆分运行时/开发依赖；本地 `pip-audit` 与 `npm audit` 均未发现已知漏洞。
+- 增加生产运维手册、灾备演练、发布检查表、API 契约概览和分阶段 v1.0 路线图。
+
+### 仍需所有者决策
+
+- 根目录许可证尚未选择，因此公开 Release 流水线会 fail closed；不会擅自替项目所有者选择法律条款。
+
 ### 赛题合规与文档校准
 
 - 收敛 README 项目定位，从完整生产平台表述调整为可运行 alpha 原型与参赛研发底座。

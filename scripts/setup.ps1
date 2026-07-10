@@ -35,7 +35,7 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 $pipCache = Join-Path $root '.cache\pip'
 New-Item -ItemType Directory -Force -Path $pipCache | Out-Null
 $env:PIP_CACHE_DIR = $pipCache
-& $venvPython -m pip install -r (Join-Path $backend 'requirements.txt')
+& $venvPython -m pip install -r (Join-Path $backend 'requirements-dev.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install Python dependencies.' }
 
 $npmCache = Join-Path $root '.cache\npm'

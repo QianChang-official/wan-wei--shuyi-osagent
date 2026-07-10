@@ -11,11 +11,15 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from pathlib import Path
 from typing import Callable
 
 from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+
+
+MIN_PRODUCTION_API_KEY_LENGTH = 32
 
 
 def is_production_mode() -> bool:
@@ -26,19 +30,40 @@ def is_production_mode() -> bool:
 def get_api_key() -> str:
     """Get API key with fail-closed security."""
     key = os.getenv("WANWEI_API_KEY")
+    if key is not None:
+        key = key.strip()
+    key_file = os.getenv("WANWEI_API_KEY_FILE")
+    if not key and key_file:
+        try:
+            key = Path(key_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError("Unable to read WANWEI_API_KEY_FILE.") from exc
 
-    if is_production_mode() and not key:
-        raise RuntimeError(
-            "WANWEI_PRODUCTION=1 requires WANWEI_API_KEY to be set. "
-            "Set a strong API key in production environment."
-        )
+    if is_production_mode():
+        if not key:
+            raise RuntimeError(
+                "WANWEI_PRODUCTION=1 requires WANWEI_API_KEY to be set. "
+                "Set a strong API key in production environment."
+            )
+        if len(key) < MIN_PRODUCTION_API_KEY_LENGTH:
+            raise RuntimeError(
+                f"WANWEI_API_KEY must contain at least {MIN_PRODUCTION_API_KEY_LENGTH} "
+                "characters in production mode."
+            )
 
     if not key:
         return "wanwei-dev-key"
 
     return key
 
-_PUBLIC_PATHS = {"/health", "/", "/console", "/console-legacy"}
+_PUBLIC_PATHS = {
+    "/health",
+    "/health/live",
+    "/health/ready",
+    "/",
+    "/console",
+    "/console-legacy",
+}
 _PUBLIC_PREFIXES = ("/console/", "/console-legacy/")
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -49,6 +74,7 @@ _PROTECTED_GET_PATHS = {
     "/memory/v2/search",
     "/memory/events",
     "/memory/search",
+    "/metrics",
 }
 _PROTECTED_GET_PREFIXES = (
     "/workflow/runs",

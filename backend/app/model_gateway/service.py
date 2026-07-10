@@ -54,7 +54,7 @@ PROVIDERS: list[ModelProvider] = [
 
 
 def list_providers() -> dict:
-    return {"items": [provider.dict() for provider in PROVIDERS]}
+    return {"items": [provider.model_dump() for provider in PROVIDERS]}
 
 
 def _openai_compatible_smoke(api_base: str, model: str, prompt: str, max_tokens: int) -> tuple[str, int, str]:

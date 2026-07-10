@@ -1,0 +1,43 @@
+name: wanwei-shuyi
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        APP_VERSION: v0.10.0-delivery-hardening
+    image: wanwei-shuyi:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      WANWEI_PRODUCTION: "1"
+      WANWEI_MEMORY_DB: /data/memory.db
+      WANWEI_API_KEY_FILE: /run/secrets/wanwei_api_key
+      WANWEI_TRUSTED_PROXY_IPS: ""
+    secrets:
+      - wanwei_api_key
+    volumes:
+      - wanwei-data:/data
+    ports:
+      - "${WANWEI_BIND_HOST:-127.0.0.1}:${WANWEI_PORT:-8010}:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 4
+    stop_grace_period: 20s
+
+volumes:
+  wanwei-data:
+
+secrets:
+  wanwei_api_key:
+    file: ${WANWEI_API_KEY_SOURCE:-./secrets/wanwei_api_key.txt}

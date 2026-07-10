@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any
 
 class MemoryEventIn(BaseModel):
@@ -38,9 +38,9 @@ class CommandLoopIn(BaseModel):
 class ReflectionIn(BaseModel):
     task_id: str
     goal_achieved: bool = True
-    memory_used: list[str] = []
-    helpful_memories: list[str] = []
-    misleading_memories: list[str] = []
-    new_preferences: list[dict[str, Any]] = []
-    new_knowledge: list[dict[str, Any]] = []
-    new_risks: list[dict[str, Any]] = []
+    memory_used: list[str] = Field(default_factory=list)
+    helpful_memories: list[str] = Field(default_factory=list)
+    misleading_memories: list[str] = Field(default_factory=list)
+    new_preferences: list[dict[str, Any]] = Field(default_factory=list)
+    new_knowledge: list[dict[str, Any]] = Field(default_factory=list)
+    new_risks: list[dict[str, Any]] = Field(default_factory=list)

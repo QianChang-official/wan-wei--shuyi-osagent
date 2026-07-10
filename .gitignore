@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+secrets/*
+!secrets/.gitkeep
 .cache/
 node_modules/
 tmp/
@@ -12,9 +16,11 @@ tmp/
 *.db
 *.db-shm
 *.db-wal
+*.db.manifest.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite3
 .DS_Store
 Thumbs.db
+data/runtime/

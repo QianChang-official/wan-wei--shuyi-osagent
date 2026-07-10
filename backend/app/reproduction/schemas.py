@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any
 
 
@@ -20,11 +20,11 @@ class RetentionSimulateIn(BaseModel):
 class ReflexionEvaluateIn(BaseModel):
     task_id: str
     goal_achieved: bool = True
-    used_memories: list[str] = []
-    evidence_cards: list[dict[str, Any]] = []
+    used_memories: list[str] = Field(default_factory=list)
+    evidence_cards: list[dict[str, Any]] = Field(default_factory=list)
     notes: str = ""
 
 
 class MemoryToolDryRunIn(BaseModel):
     tool_name: str
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)

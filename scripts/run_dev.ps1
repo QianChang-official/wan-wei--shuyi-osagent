@@ -32,5 +32,5 @@ if ($Production) {
 }
 
 Write-Host "Starting API and console at http://${BindAddress}:$Port/console/" -ForegroundColor Cyan
-& $python -m uvicorn app.main:app --app-dir $backend --host $BindAddress --port $Port
+& $python -m uvicorn app.main:app --app-dir $backend --host $BindAddress --port $Port --no-proxy-headers
 exit $LASTEXITCODE
