@@ -74,6 +74,7 @@ _PROTECTED_GET_PATHS = {
     "/memory/v2/search",
     "/memory/events",
     "/memory/search",
+    "/kylin/sdk/status",
     "/metrics",
 }
 _PROTECTED_GET_PREFIXES = (

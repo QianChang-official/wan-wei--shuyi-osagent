@@ -40,4 +40,5 @@
 | 前端依赖安装与生产构建 | `pending` | 运行 `npm --prefix frontend/console-vue ci` 和生产构建。 |
 | MemoryArena-Lite、审计、备份恢复与安全回归 | `pending` | 按 `docs/KYLIN_VM_TEST_PLAN.md` 记录命令、输出和结论。 |
 | Kylin SDK、embedding SDK 和 OCR SDK | `sdk_pending` | 需要已安装、已授权的对应厂商组件。 |
+| Kylin embedding/vector native Bridge | `sdk_pending` | Bridge 源码、默认优先路由与 FTS 后备已进入仓库；尚未在 Kylin VM 安装官方开发包并完成编译和 smoke。 |
 | 目标硬件认证 | `target_hardware_pending` | 需要在指定的物理麒麟目标环境复测。 |

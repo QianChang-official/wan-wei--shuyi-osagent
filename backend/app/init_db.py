@@ -28,6 +28,17 @@ def main():
         updated_at TEXT
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_capsules_v2_fts USING fts5(capsule_id, text);
+    CREATE TABLE IF NOT EXISTS memory_vector_refs(
+        vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        capsule_id TEXT NOT NULL UNIQUE,
+        provider TEXT NOT NULL,
+        collection_name TEXT NOT NULL,
+        model_name TEXT,
+        dimension INTEGER,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS memory_reflections(reflection_id TEXT PRIMARY KEY, task_id TEXT, payload TEXT, created_at TEXT);
     """)
     conn.commit(); print('initialized')

@@ -1,7 +1,7 @@
 import uuid,json
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
@@ -16,7 +16,8 @@ from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record
 from .retrieval.service import search as do_search
 from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule, forget_capsules
-from .memory_runtime.retrieval import search_capsules
+from .memory_runtime.retrieval import search_capsules, search_capsules_with_status
+from .kylin_sdk.native import get_native_sdk
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
@@ -135,6 +136,67 @@ def health_live():
 def health_ready():
     report = readiness_report((_vue_dist / 'index.html', _legacy_console / 'index.html'))
     return JSONResponse(report, status_code=200 if report['status'] == 'ready' else 503)
+
+@app.get('/kylin/sdk/status')
+def kylin_sdk_status():
+    """Expose native SDK readiness without leaking bridge input or credentials."""
+    from .memory_runtime.vector_index import native_index_coverage, vector_sync_active
+
+    sdk = get_native_sdk()
+    status = sdk.status()
+    status["index"] = native_index_coverage(sdk.collection)
+    status["reindex_in_progress"] = vector_sync_active()
+    return status
+
+@app.post('/kylin/sdk/reindex')
+def kylin_sdk_reindex(
+    background_tasks: BackgroundTasks,
+    limit: int = 10,
+    retry_failed: bool = False,
+):
+    """Queue a bounded native-index migration without holding the HTTP worker."""
+    if not 1 <= limit <= 25:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 25")
+    from .memory_runtime.vector_index import (
+        native_index_coverage,
+        reserve_vector_sync,
+        run_reserved_vector_sync,
+        vector_sync_active,
+    )
+
+    sdk = get_native_sdk()
+    availability = sdk.availability()
+    coverage = native_index_coverage(sdk.collection)
+    if not availability["available"]:
+        return {
+            "backend": "fts_fallback",
+            "scheduled": False,
+            "reason": availability["reason"],
+            "index": coverage,
+        }
+    if not reserve_vector_sync():
+        return JSONResponse(
+            {
+                "backend": "kylin_native",
+                "scheduled": False,
+                "reason": "reindex_already_in_progress",
+                "index": coverage,
+                "reindex_in_progress": vector_sync_active(),
+            },
+            status_code=409,
+        )
+    background_tasks.add_task(run_reserved_vector_sync, limit=limit, retry_failed=retry_failed)
+    return JSONResponse(
+        {
+            "backend": "kylin_native",
+            "scheduled": True,
+            "limit": limit,
+            "retry_failed": retry_failed,
+            "index": coverage,
+            "reindex_in_progress": True,
+        },
+        status_code=202,
+    )
 
 @app.get('/metrics')
 def prometheus_metrics():
@@ -418,8 +480,8 @@ def v2_get_capsule(capsule_id: str):
 def v2_search(q:str,top_k:int=5,high_risk:bool=False):
     q, top_k = validate_search_params(q, top_k)
     from .memory_runtime.evidence import build_evidence_card
-    results=search_capsules(q,top_k=top_k,high_risk=high_risk)
-    return {'query':q,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
+    results, retrieval = search_capsules_with_status(q,top_k=top_k,high_risk=high_risk)
+    return {'query':q,'retrieval':retrieval,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
 
 @app.post('/memory/v2/command')
 def v2_command(req: CommandLoopIn):
