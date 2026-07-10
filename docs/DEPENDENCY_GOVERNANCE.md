@@ -5,6 +5,11 @@ upgrade pull requests are created and reviewed by humans. Automated version-upda
 pull requests and automated security-update pull requests are intentionally
 disabled to avoid unreviewed major-version churn and excessive CI/reviewer load.
 
+Removing `.github/dependabot.yml` disables scheduled version-update pull requests.
+GitHub's separate `automated-security-fixes` repository setting is also disabled;
+removing the file alone would not disable security-update pull requests. These
+controls do not disable Dependabot vulnerability alerts.
+
 ## Detection That Remains Enabled
 
 - GitHub dependency graph and Dependabot vulnerability alerts
@@ -38,6 +43,10 @@ compatibility risks, files changed, and validation performed. At minimum run:
 
 ```powershell
 .\scripts\verify.ps1 -SkipInstall -IncludeArena
+```
+
+```bash
+WANWEI_SKIP_INSTALL=1 WANWEI_INCLUDE_ARENA=1 bash scripts/verify.sh
 ```
 
 The pull request must also pass the repository CI and Security workflows. Container
