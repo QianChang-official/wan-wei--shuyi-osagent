@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,10 +50,6 @@ def _resolve_bridge_path() -> Path | None:
     # pin the trusted executable explicitly instead of inheriting PATH order.
     if is_production_mode():
         return None
-
-    discovered = shutil.which(DEFAULT_BRIDGE_NAME)
-    if discovered:
-        return Path(discovered)
 
     installed = Path("/usr/local/bin") / DEFAULT_BRIDGE_NAME
     return installed if installed.is_file() else None

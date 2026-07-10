@@ -66,17 +66,17 @@ cmake --build build/kylin-sdk-bridge --parallel
 sudo cmake --install build/kylin-sdk-bridge
 ```
 
-Development mode discovers the bridge through `PATH`, then
-`/usr/local/bin/wanwei-kylin-sdk-bridge`. Production mode requires an explicit,
-absolute `WANWEI_KYLIN_SDK_BRIDGE` path so process execution does not inherit
-untrusted PATH ordering.
+Development mode uses only the fixed CMake install path
+`/usr/local/bin/wanwei-kylin-sdk-bridge`; custom locations must be configured
+through an absolute `WANWEI_KYLIN_SDK_BRIDGE` path. Production mode requires
+that explicit path so process execution does not inherit untrusted PATH ordering.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WANWEI_KYLIN_NATIVE_MODE` | `auto` | Set to `off` only to force FTS fallback. |
-| `WANWEI_KYLIN_SDK_BRIDGE` | discovered executable in development | Absolute trusted bridge path; required in production. |
+| `WANWEI_KYLIN_SDK_BRIDGE` | `/usr/local/bin/wanwei-kylin-sdk-bridge` in development | Absolute trusted bridge path; required in production and for custom locations. |
 | `WANWEI_KYLIN_EMBEDDING_MODEL` | first text model returned by SDK | Pin a vendor model name. |
 | `WANWEI_KYLIN_VECTOR_DB` | sibling `kylin-vector.db` next to `memory.db` | Local vector database file. |
 | `WANWEI_KYLIN_VECTOR_COLLECTION` | `wanwei_memory_capsules` | Vector collection name. |

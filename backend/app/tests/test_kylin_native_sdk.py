@@ -128,7 +128,6 @@ def test_bridge_rejects_ambiguous_protocol_output(monkeypatch):
 def test_production_requires_an_explicit_bridge_path(monkeypatch):
     monkeypatch.setenv("WANWEI_PRODUCTION", "1")
     monkeypatch.delenv("WANWEI_KYLIN_SDK_BRIDGE", raising=False)
-    monkeypatch.setattr(native.shutil, "which", lambda _name: "/unexpected/bridge")
 
     assert native._resolve_bridge_path() is None
     sdk = native.KylinNativeSdk(
