@@ -1,7 +1,14 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { setApiKey } from '@/api/client'
 import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()
+const apiKey = ref('wanwei-dev-key')
+
+function updateApiKey() {
+  setApiKey(apiKey.value)
+}
 
 const navGroups = [
   {
@@ -57,6 +64,18 @@ const navGroups = [
           </RouterLink>
         </section>
       </nav>
+      <div class="api-auth">
+        <label for="api-key">API Key</label>
+        <input
+          id="api-key"
+          v-model="apiKey"
+          type="password"
+          autocomplete="off"
+          placeholder="生产模式密钥"
+          @input="updateApiKey"
+        />
+        <small>仅保存在当前页面内存</small>
+      </div>
       <div class="rail-foot">
         <span class="dot" :class="{ on: online }"></span>
         <span>{{ online ? '后端在线' : '后端离线' }}</span>
@@ -107,6 +126,14 @@ const navGroups = [
 .ni-txt { display: flex; flex-direction: column; line-height: 1.25; }
 .ni-txt b { font-size: 14px; font-weight: 600; }
 .ni-txt i { font-size: 10.5px; opacity: .55; font-style: normal; }
+.api-auth { padding: 12px 0; border-top: 1px solid rgba(233,223,200,.15); }
+.api-auth label { display: block; margin-bottom: 6px; font-size: 10px; letter-spacing: 1px; opacity: .65; }
+.api-auth input {
+  width: 100%; box-sizing: border-box; border: 1px solid rgba(233,223,200,.2);
+  border-radius: 4px; background: rgba(255,255,255,.05); color: #F3E9CE; padding: 7px 9px;
+}
+.api-auth input:focus { outline: 1px solid var(--cinnabar); border-color: var(--cinnabar); }
+.api-auth small { display: block; margin-top: 5px; font-size: 9px; opacity: .45; }
 .rail-foot { display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .8; padding-top: 14px; border-top: 1px solid rgba(233,223,200,.15); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-soft); }
 .dot.on { background: var(--jade); box-shadow: 0 0 8px var(--jade); }

@@ -70,6 +70,7 @@ def test_chinese_search_hits_real_capsule_not_latest_fallback(tmp_path):
     assert client.get("/memory/v2/search", params={"q": "不存在关键词"}, headers={"x-api-key": "test-key"}).json()["results"] == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses ACLs instead of POSIX mode bits")
 def test_db_file_permission_600(tmp_path):
     client = _client(tmp_path)
     assert client.get("/health").status_code == 200

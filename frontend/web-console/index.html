@@ -220,7 +220,7 @@
 
 <script>
 // same-origin when served from FastAPI /console ; falls back to :8000 if opened as static file
-const API = (location.protocol === 'file:' || location.port === '8765') ? 'http://localhost:8000' : '';
+const API = location.protocol === 'file:' ? 'http://127.0.0.1:8010' : '';
 
 const PILLARS = [
   ['石渠校验',' input & residue check','入库前质量、格式、source_layer 校验','石'],

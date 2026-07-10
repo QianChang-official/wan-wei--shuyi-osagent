@@ -8,26 +8,13 @@
 4. 列表和统计功能正常
 """
 
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
 
 
 @pytest.fixture
-def test_db():
+def test_db(isolated_db):
     """使用临时数据库进行测试"""
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
-        db_path = f.name
-
-    os.environ['WANWEI_MEMORY_DB'] = db_path
-
-    yield db_path
-
-    # 清理
-    if Path(db_path).exists():
-        Path(db_path).unlink()
+    return isolated_db
 
 
 def test_workflow_persistence_basic(test_db):

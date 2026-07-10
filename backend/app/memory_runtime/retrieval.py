@@ -30,7 +30,7 @@ def _zh_terms(q: str) -> list[str]:
 
 def _match_query(q: str) -> str:
     parts = [p for p in q.replace('"', ' ').split() if p]
-    return " OR ".join(parts) if parts else q
+    return " OR ".join(f'"{part}"' for part in parts) if parts else q
 
 
 def _fts_rows(conn, q: str, limit: int):

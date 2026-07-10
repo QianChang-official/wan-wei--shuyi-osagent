@@ -36,6 +36,31 @@ def test_production_requires_api_key(tmp_path):
         get_api_key()
 
 
+@pytest.mark.parametrize("production_value", ["1", "true", "yes", "TRUE"])
+def test_production_truthy_values_require_api_key(monkeypatch, production_value):
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_PRODUCTION", production_value)
+
+    from backend.app.security.auth import get_api_key
+
+    with pytest.raises(RuntimeError, match="WANWEI_PRODUCTION=1 requires WANWEI_API_KEY"):
+        get_api_key()
+
+
+def test_production_app_fails_during_startup_without_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_PRODUCTION", "true")
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "memory.db"))
+
+    import importlib
+    import backend.app.main as main_mod
+
+    importlib.reload(main_mod)
+    with pytest.raises(RuntimeError, match="WANWEI_PRODUCTION=1 requires WANWEI_API_KEY"):
+        with TestClient(main_mod.app):
+            pass
+
+
 def test_protected_get_endpoints_require_auth(tmp_path):
     """Sensitive GET endpoints require X-API-Key."""
     client = _client(tmp_path, api_key="test-key")
@@ -76,7 +101,7 @@ def test_constant_time_comparison():
 def test_forget_confirm_exact_matching(tmp_path):
     """Verify code uses exact JSON matching, not LIKE wildcards."""
     main_py = Path(__file__).parent.parent / "main.py"
-    content = main_py.read_text()
+    content = main_py.read_text(encoding="utf-8")
 
     # Should use json.loads for exact field matching
     assert "json.loads(row['payload'])" in content or "json.loads(preview['payload'])" in content

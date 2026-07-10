@@ -38,7 +38,6 @@ async function realSmoke(provider: ModelProvider) {
       dry_run: false,
       prompt_preview: smokePrompt.value,
       model: provider.model,
-      api_base: provider.api_base,
       max_tokens: 96,
     })
   } finally {
@@ -73,7 +72,7 @@ onMounted(load)
         <p>{{ provider.notes }}</p>
         <div class="button-row">
           <button :disabled="!!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run' }}</button>
-          <button v-if="provider.provider === 'openai_compatible'" :disabled="!!testingProvider" @click="realSmoke(provider)">{{ testingProvider === provider.provider ? '调用中…' : '真实 smoke' }}</button>
+          <button v-if="provider.provider === 'openai_compatible' && provider.enabled" :disabled="!!testingProvider" @click="realSmoke(provider)">{{ testingProvider === provider.provider ? '调用中…' : '真实 smoke' }}</button>
         </div>
       </article>
     </div>

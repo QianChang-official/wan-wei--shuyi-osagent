@@ -4,4 +4,8 @@ set -e
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ"
 echo "=== Running Production MemoryArena-Lite (v0.6) ==="
-PYTHONPATH="$PROJ/backend" python3 -m app.memory_arena.runner "$@"
+PYTHON="${WANWEI_PYTHON:-$PROJ/backend/.venv/bin/python}"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="python3"
+fi
+PYTHONPATH="$PROJ/backend" "$PYTHON" -m app.memory_arena.runner "$@"
