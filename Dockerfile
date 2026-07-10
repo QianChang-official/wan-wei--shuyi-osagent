@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:20.20.2-bookworm-slim AS frontend-builder
+FROM node:26.5.0-bookworm-slim AS frontend-builder
 
 WORKDIR /build/frontend/console-vue
 COPY frontend/console-vue/package.json frontend/console-vue/package-lock.json ./
