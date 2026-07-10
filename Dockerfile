@@ -7,7 +7,7 @@ RUN npm ci
 COPY frontend/console-vue/ ./
 RUN npm run build
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 
 ARG APP_VERSION=v0.10.0-delivery-hardening
 LABEL org.opencontainers.image.title="Wanwei Shuyi MemoryOps Autopilot" \
