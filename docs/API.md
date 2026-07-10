@@ -19,7 +19,7 @@
 | GET | `/health/ready` | 否 | 检查 SQLite 查询与控制台静态资源 |
 | GET | `/metrics` | 是 | Prometheus 文本格式进程/HTTP 指标 |
 | GET | `/kylin/sdk/status` | 是 | 原生 SDK Bridge 可用性与能力，不返回请求内容或凭据 |
-| POST | `/kylin/sdk/reindex?limit=25` | 是 | 有界迁移既有合规 Capsule 到原生向量索引；未迁移数据继续通过 FTS5 后备检索 |
+| POST | `/kylin/sdk/reindex?limit=10&retry_failed=false` | 是 | 异步、有界迁移既有合规 Capsule 到原生向量索引；默认 10、最大 25，返回 `202` 后通过 status 观察进度 |
 
 ## MemoryCapsule 与检索
 

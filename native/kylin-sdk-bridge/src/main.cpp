@@ -23,11 +23,18 @@
 namespace {
 
 using json = nlohmann::json;
+constexpr const char* kResponsePrefix = "WANWEI_KYLIN_RESPONSE:";
 
 class NativeError : public std::runtime_error {
 public:
     explicit NativeError(const std::string& message) : std::runtime_error(message) {}
 };
+
+void emit_response(const json& response) {
+    // Vendor libraries can emit diagnostics to stdout.  Prefixing the one
+    // protocol envelope lets the Python caller reject incidental JSON logs.
+    std::cout << kResponsePrefix << response.dump() << std::endl;
+}
 
 void require_status(const VectorDB::Status& status, const char* operation) {
     if (!status.IsOk()) {
@@ -338,12 +345,12 @@ int main() {
     try {
         json request;
         std::cin >> request;
-        std::cout << dispatch(request).dump() << std::endl;
+        emit_response(dispatch(request));
         return 0;
     } catch (const std::exception&) {
         // The Python caller records only a generic failure, so bridge errors
         // cannot accidentally place input text in stdout or audit storage.
-        std::cout << json{{"ok", false}, {"error", "native_operation_failed"}}.dump() << std::endl;
+        emit_response(json{{"ok", false}, {"error", "native_operation_failed"}});
         return 0;
     }
 }

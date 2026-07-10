@@ -39,13 +39,13 @@ def _write(text):
     return cs.write_capsule(memory_class="knowledge", content={"text": text})
 
 
-def test_bridge_uses_stdin_json_and_parses_final_json_line(monkeypatch):
+def test_bridge_uses_stdin_json_and_parses_its_protocol_envelope(monkeypatch):
     captured = {}
 
     def fake_run(args, **kwargs):
         captured["args"] = args
         captured["input"] = kwargs["input"]
-        return subprocess.CompletedProcess(args, 0, "sdk-log\n{\"ok\":true,\"hits\":[]}\n", "")
+        return subprocess.CompletedProcess(args, 0, f"sdk-log\n{native.RESPONSE_PREFIX}{{\"ok\":true,\"hits\":[]}}\n", "")
 
     monkeypatch.setattr(native.subprocess, "run", fake_run)
     sdk = native.KylinNativeSdk(
@@ -72,7 +72,9 @@ def test_bridge_rejects_unsuccessful_native_response(monkeypatch):
     monkeypatch.setattr(
         native.subprocess,
         "run",
-        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, '{"ok":false,"error":"hidden"}\n', ""),
+        lambda args, **kwargs: subprocess.CompletedProcess(
+            args, 0, f'{native.RESPONSE_PREFIX}{{"ok":false,"error":"hidden"}}\n', ""
+        ),
     )
     sdk = native.KylinNativeSdk(
         native.NativeSdkConfig(Path("/opt/kylin/bridge"), "collection", "app", None, Path("/var/lib/wanwei/vector.db"), 3, "auto")
@@ -89,7 +91,7 @@ def test_status_exposes_model_only_after_a_successful_probe(monkeypatch):
         lambda args, **kwargs: subprocess.CompletedProcess(
             args,
             0,
-            '{"ok":true,"capabilities":{"embedding":true,"vector_database":true},"model":"kylin-test-model","dimension":768}\n',
+            f'{native.RESPONSE_PREFIX}{{"ok":true,"capabilities":{{"embedding":true,"vector_database":true}},"model":"kylin-test-model","dimension":768}}\n',
             "",
         ),
     )
@@ -106,6 +108,33 @@ def test_status_exposes_model_only_after_a_successful_probe(monkeypatch):
         "model": "kylin-test-model",
         "dimension": 768,
     }
+
+
+def test_bridge_rejects_ambiguous_protocol_output(monkeypatch):
+    payload = f'{native.RESPONSE_PREFIX}{{"ok":true,"hits":[]}}\n'
+    monkeypatch.setattr(
+        native.subprocess,
+        "run",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, payload + payload, ""),
+    )
+    sdk = native.KylinNativeSdk(
+        native.NativeSdkConfig(Path("/opt/kylin/bridge"), "collection", "app", None, Path("/var/lib/wanwei/vector.db"), 3, "auto")
+    )
+
+    with pytest.raises(native.KylinNativeSdkError):
+        sdk.search(text="query", top_k=3)
+
+
+def test_production_requires_an_explicit_bridge_path(monkeypatch):
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+    monkeypatch.delenv("WANWEI_KYLIN_SDK_BRIDGE", raising=False)
+    monkeypatch.setattr(native.shutil, "which", lambda _name: "/unexpected/bridge")
+
+    assert native._resolve_bridge_path() is None
+    sdk = native.KylinNativeSdk(
+        native.NativeSdkConfig(None, "collection", "app", None, Path("/var/lib/wanwei/vector.db"), 3, "auto")
+    )
+    assert sdk.availability() == {"available": False, "reason": "bridge_path_required_in_production"}
 
 
 def test_write_prefers_native_vector_index_when_bridge_is_available(isolated_db, monkeypatch):
@@ -169,7 +198,7 @@ def test_legacy_capsules_use_fts_until_reindexed(isolated_db, monkeypatch):
     assert written["native_index"]["reason"] == "bridge_not_installed"
     assert status["backend"] == "fts_fallback"
     assert status["fallback_reason"] == "native_index_backfill_pending"
-    assert status["native_index"] == {"eligible": 1, "indexed": 0, "pending": 1}
+    assert status["native_index"] == {"eligible": 1, "indexed": 0, "failed": 0, "pending": 1}
     assert [item["capsule_id"] for item in results] == [written["capsule_id"]]
 
 
@@ -187,7 +216,7 @@ def test_reindex_migrates_legacy_capsules_to_native_search(isolated_db, monkeypa
     assert reindex["backend"] == "kylin_native"
     assert reindex["attempted"] == 1
     assert reindex["indexed"] == 1
-    assert reindex["index"] == {"eligible": 1, "indexed": 1, "pending": 0}
+    assert reindex["index"] == {"eligible": 1, "indexed": 1, "failed": 0, "pending": 0}
     assert status["backend"] == "kylin_native"
     assert [item["capsule_id"] for item in results] == [written["capsule_id"]]
 
@@ -207,7 +236,54 @@ def test_reindex_reports_fallback_when_a_native_upsert_fails(isolated_db, monkey
     assert reindex["backend"] == "fts_fallback"
     assert reindex["failed"] == 1
     assert reindex["reason"] == "native_reindex_failed"
-    assert reindex["index"]["pending"] == 1
+    assert reindex["index"] == {"eligible": 1, "indexed": 0, "failed": 1, "pending": 0}
+    assert vi.sync_pending_vectors(limit=25)["attempted"] == 0
+
+
+def test_failed_vector_uses_narrow_fts_fallback_without_disabling_native_search(isolated_db, monkeypatch):
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+    healthy = _write("native healthy record")
+    native_upsert = adapter.upsert
+
+    def selectively_fail(*, vector_id, capsule_id, text):
+        if "fallbackneedle" in text:
+            raise native.KylinNativeSdkError("vendor rejected this one Capsule")
+        return native_upsert(vector_id=vector_id, capsule_id=capsule_id, text=text)
+
+    adapter.upsert = selectively_fail
+    failed = _write("unindexable fallbackneedle record")
+    adapter.search_hits = [{"vector_id": healthy["native_index"]["vector_id"], "score": 0.8}]
+
+    results, status = rt.search_capsules_with_status("fallbackneedle", top_k=3)
+
+    assert status["backend"] == "kylin_native"
+    assert status["fallback_reason"] == "native_index_failed_capsules"
+    assert status["native_index"] == {"eligible": 2, "indexed": 1, "failed": 1, "pending": 0}
+    by_id = {item["capsule_id"]: item for item in results}
+    assert by_id[healthy["capsule_id"]]["retrieval_backend"] == "kylin_native"
+    assert by_id[failed["capsule_id"]]["retrieval_backend"] == "fts_fallback"
+    assert by_id[failed["capsule_id"]]["retrieval_fallback_reason"] == "native_index_failed_capsule"
+
+
+def test_reindex_endpoint_queues_a_bounded_native_task(isolated_db, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.app import main as main_module
+
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setenv("WANWEI_API_KEY", "reindex-test-key")
+    monkeypatch.setattr(main_module, "get_native_sdk", lambda: adapter)
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+
+    with TestClient(main_module.app) as client:
+        response = client.post(
+            "/kylin/sdk/reindex?limit=10",
+            headers={"X-API-Key": "reindex-test-key"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["scheduled"] is True
+    assert response.json()["limit"] == 10
 
 
 def test_forget_deletes_native_vector_after_capsule_forget(isolated_db, monkeypatch):

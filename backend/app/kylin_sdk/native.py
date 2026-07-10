@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from ..db import database_path
+from ..security.auth import is_production_mode
 
 
 DEFAULT_BRIDGE_NAME = "wanwei-kylin-sdk-bridge"
 DEFAULT_COLLECTION = "wanwei_memory_capsules"
 DEFAULT_APP_ID = "wanwei-shuyi-osagent"
+RESPONSE_PREFIX = "WANWEI_KYLIN_RESPONSE:"
 
 
 class KylinNativeSdkError(RuntimeError):
@@ -43,7 +45,12 @@ def _resolve_bridge_path() -> Path | None:
     explicit = os.environ.get("WANWEI_KYLIN_SDK_BRIDGE")
     if explicit:
         candidate = Path(explicit).expanduser()
-        return candidate if candidate.is_file() else None
+        return candidate if candidate.is_absolute() and candidate.is_file() else None
+
+    # The bridge receives governed memory content.  Production deployments must
+    # pin the trusted executable explicitly instead of inheriting PATH order.
+    if is_production_mode():
+        return None
 
     discovered = shutil.which(DEFAULT_BRIDGE_NAME)
     if discovered:
@@ -93,6 +100,8 @@ class KylinNativeSdk:
         if self.config.mode == "off":
             return {"available": False, "reason": "disabled_by_configuration"}
         if not self.config.bridge_path:
+            if is_production_mode() and not os.environ.get("WANWEI_KYLIN_SDK_BRIDGE"):
+                return {"available": False, "reason": "bridge_path_required_in_production"}
             return {"available": False, "reason": "bridge_not_installed"}
         return {"available": True, "reason": None, "bridge_path": str(self.config.bridge_path)}
 
@@ -154,23 +163,27 @@ class KylinNativeSdk:
         if completed.returncode != 0:
             raise KylinNativeSdkError("bridge_operation_failed")
 
-        response = _last_json_line(completed.stdout)
+        response = _protocol_response(completed.stdout)
         if not isinstance(response, dict) or not response.get("ok"):
             raise KylinNativeSdkError("bridge_invalid_response")
         return response
 
 
-def _last_json_line(stdout: str) -> dict[str, Any] | None:
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if not line:
+def _protocol_response(stdout: str) -> dict[str, Any] | None:
+    """Parse exactly one bridge response without trusting incidental SDK logs."""
+    responses: list[dict[str, Any]] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(RESPONSE_PREFIX):
             continue
         try:
-            parsed = json.loads(line)
+            parsed = json.loads(line[len(RESPONSE_PREFIX):])
         except json.JSONDecodeError:
-            continue
-        return parsed if isinstance(parsed, dict) else None
-    return None
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        responses.append(parsed)
+    return responses[0] if len(responses) == 1 else None
 
 
 def get_native_sdk() -> KylinNativeSdk:

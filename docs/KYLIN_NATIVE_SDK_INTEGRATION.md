@@ -8,8 +8,10 @@
 - `kysdk-vector-engine-client`: local database loading, collection management, upsert, cosine search and delete.
 
 The Python runtime invokes the bridge through one JSON request on stdin. Text is
-never passed through command-line arguments. The bridge is optional so the
-standard Docker image and non-Kylin development hosts remain runnable.
+never passed through command-line arguments. The bridge emits one response line
+prefixed with `WANWEI_KYLIN_RESPONSE:`; incidental vendor diagnostics cannot be
+mistaken for a successful response. The bridge is optional so the standard
+Docker image and non-Kylin development hosts remain runnable.
 
 ## Runtime Behavior
 
@@ -27,6 +29,9 @@ standard Docker image and non-Kylin development hosts remain runnable.
 5. Capsules written before the bridge was installed remain on the FTS fallback
    until they are migrated through the bounded reindex operation. This prevents
    an empty native index from silently hiding existing eligible memory.
+6. An isolated `index_failed` Capsule does not disable native retrieval for
+   healthy Capsules. Its matching FTS result is surfaced with
+   `retrieval_backend=fts_fallback` and `native_index_failed_capsule`.
 
 An empty successful vector search remains an empty native result; it does not
 silently fall back to keyword search.
@@ -61,15 +66,17 @@ cmake --build build/kylin-sdk-bridge --parallel
 sudo cmake --install build/kylin-sdk-bridge
 ```
 
-The default discovery path is `PATH`, then
-`/usr/local/bin/wanwei-kylin-sdk-bridge`.
+Development mode discovers the bridge through `PATH`, then
+`/usr/local/bin/wanwei-kylin-sdk-bridge`. Production mode requires an explicit,
+absolute `WANWEI_KYLIN_SDK_BRIDGE` path so process execution does not inherit
+untrusted PATH ordering.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WANWEI_KYLIN_NATIVE_MODE` | `auto` | Set to `off` only to force FTS fallback. |
-| `WANWEI_KYLIN_SDK_BRIDGE` | discovered executable | Absolute bridge override. |
+| `WANWEI_KYLIN_SDK_BRIDGE` | discovered executable in development | Absolute trusted bridge path; required in production. |
 | `WANWEI_KYLIN_EMBEDDING_MODEL` | first text model returned by SDK | Pin a vendor model name. |
 | `WANWEI_KYLIN_VECTOR_DB` | sibling `kylin-vector.db` next to `memory.db` | Local vector database file. |
 | `WANWEI_KYLIN_VECTOR_COLLECTION` | `wanwei_memory_capsules` | Vector collection name. |
@@ -84,15 +91,19 @@ curl http://127.0.0.1:8010/kylin/sdk/status
 
 `available=true` proves that the bridge initialized an official embedding
 session and model and connected to the configured vector-engine database. The
-response also exposes the selected model, dimension, and eligible/indexed/
-pending Capsule counts without returning memory content or credentials.
+response also exposes the selected model, dimension, eligible/indexed/failed/
+pending Capsule counts, and reindex activity without returning memory content
+or credentials.
 
-After installing the bridge against an existing memory database, migrate in
-bounded batches until `index.pending` is zero. The endpoint requires the normal
-`X-API-Key`:
+After installing the bridge against an existing memory database, queue bounded
+background batches until `index.pending` is zero. The endpoint defaults to 10
+Capsules and accepts at most 25, returning `202 Accepted` when a batch is
+queued. Poll `/kylin/sdk/status` for progress. Failed Capsules are not retried
+unless `retry_failed=true` is supplied after the operator has corrected the
+underlying SDK issue. The endpoint requires the normal `X-API-Key`:
 
 ```bash
-curl -X POST 'http://127.0.0.1:8010/kylin/sdk/reindex?limit=25' \
+curl -X POST 'http://127.0.0.1:8010/kylin/sdk/reindex?limit=10' \
   -H "X-API-Key: $WANWEI_API_KEY"
 ```
 

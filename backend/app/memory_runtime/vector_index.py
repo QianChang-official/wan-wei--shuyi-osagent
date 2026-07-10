@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
 from ..audit.service import record
@@ -19,7 +20,10 @@ from ..utils.datetime_utils import utc_now_iso_compact
 
 PROVIDER = "kylin_native_sdk"
 ELIGIBLE_POLICY_RESULTS = ("allow", "redact")
-MAX_REINDEX_BATCH_SIZE = 500
+DEFAULT_REINDEX_BATCH_SIZE = 10
+MAX_REINDEX_BATCH_SIZE = 25
+_reindex_state_lock = threading.Lock()
+_reindex_active = False
 
 
 def init_vector_schema() -> None:
@@ -102,16 +106,20 @@ def native_index_coverage(collection_name: str) -> dict[str, int]:
             """
             SELECT
                 COUNT(*) AS eligible,
-                COALESCE(SUM(CASE
-                    WHEN ref.provider=? AND ref.collection_name=? AND ref.status='indexed' THEN 1
-                    ELSE 0
-                END), 0) AS indexed
+            COALESCE(SUM(CASE
+                WHEN ref.provider=? AND ref.collection_name=? AND ref.status='indexed' THEN 1
+                ELSE 0
+            END), 0) AS indexed,
+            COALESCE(SUM(CASE
+                WHEN ref.provider=? AND ref.collection_name=? AND ref.status='index_failed' THEN 1
+                ELSE 0
+            END), 0) AS failed
             FROM memory_capsules_v2 AS capsule
             LEFT JOIN memory_vector_refs AS ref ON ref.capsule_id=capsule.capsule_id
             WHERE json_extract(capsule.state,'$.lifecycle')='active'
               AND json_extract(capsule.governance,'$.policy_result') IN (?, ?)
             """,
-            (PROVIDER, collection_name, *ELIGIBLE_POLICY_RESULTS),
+            (PROVIDER, collection_name, PROVIDER, collection_name, *ELIGIBLE_POLICY_RESULTS),
         ).fetchone()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc).lower():
@@ -120,13 +128,33 @@ def native_index_coverage(collection_name: str) -> dict[str, int]:
         # that do not enter the FastAPI lifespan.  Treat an uninitialized
         # runtime as an empty index; the application lifespan creates it before
         # normal request handling.
-        return {"eligible": 0, "indexed": 0, "pending": 0}
+        return {"eligible": 0, "indexed": 0, "failed": 0, "pending": 0}
     eligible = int(row["eligible"] or 0)
     indexed = int(row["indexed"] or 0)
-    return {"eligible": eligible, "indexed": indexed, "pending": max(0, eligible - indexed)}
+    failed = int(row["failed"] or 0)
+    return {
+        "eligible": eligible,
+        "indexed": indexed,
+        "failed": failed,
+        "pending": max(0, eligible - indexed - failed),
+    }
 
 
-def sync_pending_vectors(*, limit: int = 25) -> dict[str, Any]:
+def failed_vector_capsule_ids(collection_name: str) -> list[str]:
+    """Return IDs whose vector write failed but whose FTS fallback remains safe."""
+    init_vector_schema()
+    rows = get_conn().execute(
+        """
+        SELECT capsule_id FROM memory_vector_refs
+        WHERE provider=? AND collection_name=? AND status='index_failed'
+        ORDER BY updated_at ASC
+        """,
+        (PROVIDER, collection_name),
+    ).fetchall()
+    return [row["capsule_id"] for row in rows]
+
+
+def sync_pending_vectors(*, limit: int = DEFAULT_REINDEX_BATCH_SIZE, retry_failed: bool = False) -> dict[str, Any]:
     """Index one bounded batch of eligible Capsules that predate native setup."""
     limit = max(1, min(int(limit), MAX_REINDEX_BATCH_SIZE))
     adapter = get_native_sdk()
@@ -142,7 +170,7 @@ def sync_pending_vectors(*, limit: int = 25) -> dict[str, Any]:
         }
 
     init_vector_schema()
-    rows = _pending_capsules(adapter.collection, limit)
+    rows = _pending_capsules(adapter.collection, limit, retry_failed=retry_failed)
     indexed = 0
     failed = 0
     for row in rows:
@@ -193,6 +221,31 @@ def sync_pending_vectors(*, limit: int = 25) -> dict[str, Any]:
     return result
 
 
+def reserve_vector_sync() -> bool:
+    """Reserve the one in-process background reindex slot."""
+    global _reindex_active
+    with _reindex_state_lock:
+        if _reindex_active:
+            return False
+        _reindex_active = True
+        return True
+
+
+def run_reserved_vector_sync(*, limit: int, retry_failed: bool = False) -> None:
+    """Run a reserved reindex task and always release its scheduler slot."""
+    global _reindex_active
+    try:
+        sync_pending_vectors(limit=limit, retry_failed=retry_failed)
+    finally:
+        with _reindex_state_lock:
+            _reindex_active = False
+
+
+def vector_sync_active() -> bool:
+    with _reindex_state_lock:
+        return _reindex_active
+
+
 def native_candidates(query: str, *, top_k: int) -> tuple[list[tuple[str, float]] | None, dict[str, Any]]:
     """Return native candidates, or ``None`` when FTS must handle the request."""
     adapter = get_native_sdk()
@@ -219,9 +272,18 @@ def native_candidates(query: str, *, top_k: int) -> tuple[list[tuple[str, float]
     hits = response.get("hits")
     if not isinstance(hits, list):
         return None, {"backend": "fts_fallback", "fallback_reason": "native_search_invalid_response"}
+    metadata: dict[str, Any] = {
+        "backend": "kylin_native",
+        "model": response.get("model"),
+        "collection": adapter.collection,
+        "native_index": coverage,
+    }
+    if coverage["failed"]:
+        metadata["fallback_reason"] = "native_index_failed_capsules"
+        metadata["_failed_capsule_ids"] = failed_vector_capsule_ids(adapter.collection)
     vector_ids = [hit.get("vector_id") for hit in hits if isinstance(hit, dict) and isinstance(hit.get("vector_id"), int)]
     if not vector_ids:
-        return [], {"backend": "kylin_native", "model": response.get("model"), "collection": adapter.collection}
+        return [], metadata
 
     by_vector_id = _capsules_for_vector_ids(vector_ids, adapter.collection)
     candidates: list[tuple[str, float]] = []
@@ -234,7 +296,7 @@ def native_candidates(query: str, *, top_k: int) -> tuple[list[tuple[str, float]
             continue
         score = hit.get("score", 0.0)
         candidates.append((capsule_id, float(score) if isinstance(score, (int, float)) else 0.0))
-    return candidates, {"backend": "kylin_native", "model": response.get("model"), "collection": adapter.collection}
+    return candidates, metadata
 
 
 def remove_vectors(capsule_ids: list[str]) -> dict[str, Any]:
@@ -302,9 +364,10 @@ def _get_or_create_vector_ref(capsule_id: str, collection_name: str) -> int:
     return int(cursor.lastrowid)
 
 
-def _pending_capsules(collection_name: str, limit: int) -> list[Any]:
+def _pending_capsules(collection_name: str, limit: int, *, retry_failed: bool) -> list[Any]:
+    status_clause = "ref.status!='indexed'" if retry_failed else "ref.status NOT IN ('indexed','index_failed')"
     return get_conn().execute(
-        """
+        f"""
         SELECT capsule.capsule_id,capsule.content,capsule.index_refs
         FROM memory_capsules_v2 AS capsule
         LEFT JOIN memory_vector_refs AS ref
@@ -313,7 +376,7 @@ def _pending_capsules(collection_name: str, limit: int) -> list[Any]:
          AND ref.collection_name=?
         WHERE json_extract(capsule.state,'$.lifecycle')='active'
           AND json_extract(capsule.governance,'$.policy_result') IN (?, ?)
-          AND (ref.vector_id IS NULL OR ref.status!='indexed')
+          AND (ref.vector_id IS NULL OR {status_clause})
         ORDER BY capsule.updated_at ASC
         LIMIT ?
         """,
