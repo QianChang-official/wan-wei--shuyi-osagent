@@ -83,6 +83,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_eval.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -SkipInstall
 ```
 
+受版本控制的 `frontend/console-vue/dist` 由 CI 的 Node `20.20.2` canonical Linux 构建生成。`verify` 脚本会在隔离目录中连续构建两次，避免不同 Node 主版本重写受版本控制的静态资源并造成无意义的 hash 差异。
+
 HTTP smoke 会验证健康检查、控制台静态文件、未授权拒绝、鉴权后的记忆写入/检索和 workflow dry-run。
 
 ## 6. 可选本地模型

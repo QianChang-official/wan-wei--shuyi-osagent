@@ -27,17 +27,23 @@ try {
 
     & $python -m compileall -q backend\app
     if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed.' }
+    $tmp = Join-Path $root 'tmp'
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     & $python -m pytest --basetemp .\tmp\pytest-verify -p no:cacheprovider
     if ($LASTEXITCODE -ne 0) { throw 'Backend test suite failed.' }
-    $distDigestBefore = & $python (Join-Path $PSScriptRoot 'tree_digest.py') (Join-Path $frontend 'dist')
+    $verifyDist = Join-Path $tmp 'frontend-verify-dist'
+    $verifyDistForVite = $verifyDist.Replace('\', '/')
     Push-Location $frontend
     try {
-        npm run build
+        npm run build -- --outDir $verifyDistForVite
         if ($LASTEXITCODE -ne 0) { throw 'Frontend production build failed.' }
+        $distDigestFirst = & $python (Join-Path $PSScriptRoot 'tree_digest.py') $verifyDist
+        npm run build -- --outDir $verifyDistForVite
+        if ($LASTEXITCODE -ne 0) { throw 'Second frontend production build failed.' }
     }
     finally { Pop-Location }
-    $distDigestAfter = & $python (Join-Path $PSScriptRoot 'tree_digest.py') (Join-Path $frontend 'dist')
-    if ($distDigestBefore -ne $distDigestAfter) { throw 'Frontend production build is not reproducible.' }
+    $distDigestSecond = & $python (Join-Path $PSScriptRoot 'tree_digest.py') $verifyDist
+    if ($distDigestFirst -ne $distDigestSecond) { throw 'Frontend production build is not reproducible.' }
     if ($IncludeArena) {
         $env:PYTHONPATH = Join-Path $root 'backend'
         & $python -m app.memory_arena.runner --output-dir (Join-Path $root 'tmp\arena-verify')

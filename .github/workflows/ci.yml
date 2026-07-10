@@ -35,7 +35,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m compileall -q backend/app
-      - run: python -m pytest --basetemp tmp/pytest-ci -p no:cacheprovider
+      - run: python -m pytest --basetemp .pytest-ci -p no:cacheprovider
 
   frontend:
     name: Frontend production build
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "20.20.2"
           cache: npm
           cache-dependency-path: frontend/console-vue/package-lock.json
       - working-directory: frontend/console-vue

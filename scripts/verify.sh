@@ -9,16 +9,19 @@ if [ ! -x "$PYTHON" ]; then
 fi
 
 cd "$ROOT"
+mkdir -p "$ROOT/tmp"
 if [ "${WANWEI_SKIP_INSTALL:-0}" != "1" ]; then
   "$PYTHON" -m pip install -r backend/requirements-dev.txt
   npm --prefix frontend/console-vue ci
 fi
 "$PYTHON" -m compileall -q backend/app
 "$PYTHON" -m pytest --basetemp ./tmp/pytest-verify -p no:cacheprovider
-before="$($PYTHON "$ROOT/scripts/tree_digest.py" "$ROOT/frontend/console-vue/dist")"
-npm --prefix frontend/console-vue run build
-after="$($PYTHON "$ROOT/scripts/tree_digest.py" "$ROOT/frontend/console-vue/dist")"
-if [ "$before" != "$after" ]; then
+verify_dist="$ROOT/tmp/frontend-verify-dist"
+npm --prefix frontend/console-vue run build -- --outDir "$verify_dist"
+first="$($PYTHON "$ROOT/scripts/tree_digest.py" "$verify_dist")"
+npm --prefix frontend/console-vue run build -- --outDir "$verify_dist"
+second="$($PYTHON "$ROOT/scripts/tree_digest.py" "$verify_dist")"
+if [ "$first" != "$second" ]; then
   echo "Frontend production build is not reproducible." >&2
   exit 1
 fi
