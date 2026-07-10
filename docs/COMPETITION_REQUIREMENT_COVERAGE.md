@@ -15,7 +15,8 @@
 | 偏好跨场景适配 | 玄珠偏好、司南调参舱 | scene/task_type/production_context 字段已存在；跨场景策略仍为设计 | `/console/#/tuning` | `backend/app/schemas.py`, `backend/app/tuning/service.py` | partial |
 | 知识结构化整合 | 琅嬛知识、兰台鉴证 | knowledge Capsule、provenance、Evidence Cards、引用治理 case | `/console/#/search` | `backend/app/memory_runtime/evidence.py`, `backend/app/memory_arena/cases/docs_reference_governance.json` | done |
 | 冲突融合 | 琅嬛知识、建木网络 | relation_edges 与 conflicted/supersedes 设计；冲突融合算法尚未完整落地 | `/console/#/platform` | `docs/MEMORY_CAPSULE_V2_SCHEMA.md`, `backend/app/platform/service.py` | partial |
-| 关联检索 | 建木网络、枢忆核 | SQLite + FTS5 检索已可运行；多跳图谱召回仍待深化 | `/console/#/search` | `backend/app/memory_runtime/retrieval.py`, `backend/app/db.py` | partial |
+| 关联检索 | 建木网络、枢忆核 | Kylin native Bridge 可优先执行 embedding/vector 检索，SQLite + FTS5 保留为失败后备；目标机 SDK smoke 尚未完成 | `/memory/v2/search` | `backend/app/kylin_sdk/native.py`, `backend/app/memory_runtime/vector_index.py`, `backend/app/memory_runtime/retrieval.py` | partial |
+| 端侧 embedding / 向量数据库 SDK | 枢忆核、建木网络 | 官方 C/C++ SDK Bridge、向量 ID 映射、upsert/search/delete 生命周期已实现；Kylin 实机构建与性能证据待补齐 | `/kylin/sdk/status` | `native/kylin-sdk-bridge/`, `docs/KYLIN_NATIVE_SDK_INTEGRATION.md` | partial |
 | 流程/案例/模板复用 | 琅嬛知识、归藏评测舱 | MemoryArena cases、reports、知识模板文档；模板库 UI 待深化 | `/console/#/`, `/console/#/platform` | `backend/app/memory_arena/cases/*.json`, `reports/production_memory_eval_report.md` | partial |
 | 端侧轻量部署 | 枢忆核、FastAPI Runtime | FastAPI + SQLite + Vue dist 挂载 `/console`，无外部数据库依赖 | `http://localhost:8010/console/` | `backend/app/main.py`, `frontend/console-vue/dist/`, `docs/DEPLOYMENT.md` | done |
 | 检索延迟目标 | 太微观测舱、司南调参舱 | latency_target_ms 已标注 pending_measurement；尚未做实测 benchmark | `/console/#/tuning` | `backend/app/tuning/service.py` | pending |

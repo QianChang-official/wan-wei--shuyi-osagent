@@ -100,11 +100,13 @@ def test_protected_get_endpoints_require_auth(tmp_path):
     # Without key
     assert client.get("/audit/logs").status_code == 401
     assert client.get("/memory/v2/search?q=test").status_code == 401
+    assert client.get("/kylin/sdk/status").status_code == 401
     assert client.get("/workflow/runs").status_code == 401
 
     # With valid key
     headers = {"X-API-Key": "test-key"}
     assert client.get("/memory/v2/search?q=test", headers=headers).status_code == 200
+    assert client.get("/kylin/sdk/status", headers=headers).status_code == 200
 
 
 def test_write_endpoints_require_auth(tmp_path):
@@ -114,10 +116,12 @@ def test_write_endpoints_require_auth(tmp_path):
 
     # Without key
     assert client.post("/memory/v2/capsules", json=body).status_code == 401
+    assert client.post("/kylin/sdk/reindex").status_code == 401
 
     # With valid key
     headers = {"X-API-Key": "test-key"}
     assert client.post("/memory/v2/capsules", json=body, headers=headers).status_code == 200
+    assert client.post("/kylin/sdk/reindex", headers=headers).status_code == 200
 
 
 def test_constant_time_comparison():

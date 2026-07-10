@@ -18,6 +18,8 @@
 | GET | `/health/live` | 否 | 进程存活探针，不检查外部状态 |
 | GET | `/health/ready` | 否 | 检查 SQLite 查询与控制台静态资源 |
 | GET | `/metrics` | 是 | Prometheus 文本格式进程/HTTP 指标 |
+| GET | `/kylin/sdk/status` | 是 | 原生 SDK Bridge 可用性与能力，不返回请求内容或凭据 |
+| POST | `/kylin/sdk/reindex?limit=25` | 是 | 有界迁移既有合规 Capsule 到原生向量索引；未迁移数据继续通过 FTS5 后备检索 |
 
 ## MemoryCapsule 与检索
 
@@ -26,7 +28,7 @@
 | POST | `/memory/v2/capsules` | 写入受治理的 MemoryCapsule |
 | GET | `/memory/v2/capsules` | 列出 Capsule |
 | GET | `/memory/v2/capsules/{capsule_id}` | 读取单个 Capsule |
-| GET | `/memory/v2/search` | FTS5/中文 substring 召回与证据卡 |
+| GET | `/memory/v2/search` | Kylin native 向量检索优先；SDK 不可用时 FTS5/中文 substring 后备，并返回 retrieval 状态 |
 | POST | `/memory/v2/command` | 风险分级与指挥闭环 |
 | POST | `/memory/v2/reflection` | 任务复盘与演化动作 |
 | POST | `/memory/forget/preview` | 精准遗忘预览 |

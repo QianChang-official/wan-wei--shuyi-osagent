@@ -117,7 +117,25 @@ def write_capsule(
         conn.execute("INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)", (capsule_id, text))
     conn.commit()
     audit_id = record("capsule_write", {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class})
-    return {"capsule_id": capsule_id, "memory_class": memory_class, "governance": governance, "state": state, "audit_id": audit_id}
+    native_index = {"backend": "fts_fallback", "indexed": False, "reason": "policy_not_indexable"}
+    # The vector copy is optional and is never created for rejected,
+    # quarantined, or confirmation-pending memories.
+    if state["lifecycle"] == "active":
+        try:
+            from .vector_index import index_capsule
+
+            native_index = index_capsule(capsule_id=capsule_id, content=content, index_refs=index_refs)
+        except Exception:
+            record("kylin_sdk_vector_index", {"capsule_id": capsule_id, "status": "fallback"})
+            native_index = {"backend": "fts_fallback", "indexed": False, "reason": "native_index_exception"}
+    return {
+        "capsule_id": capsule_id,
+        "memory_class": memory_class,
+        "governance": governance,
+        "state": state,
+        "audit_id": audit_id,
+        "native_index": native_index,
+    }
 
 
 _JSON_COLUMNS = [
@@ -225,7 +243,18 @@ def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dic
         deleted.append(capsule_id)
     conn.commit()
     audit_id = record("forget_confirm", {"deleted_capsule_ids": deleted, "mode": mode})
-    return {"status": "forgotten", "deleted_capsule_ids": deleted, "audit_id": audit_id}
+    try:
+        from .vector_index import remove_vectors
+
+        native_vector = remove_vectors(deleted)
+    except Exception:
+        native_vector = {"backend": "fts_fallback", "deleted_vector_ids": [], "pending_vector_ids": []}
+    return {
+        "status": "forgotten",
+        "deleted_capsule_ids": deleted,
+        "audit_id": audit_id,
+        "native_vector": native_vector,
+    }
 
 
 def allowed_for_context(cap: dict[str, Any], *, high_risk: bool = False) -> bool:

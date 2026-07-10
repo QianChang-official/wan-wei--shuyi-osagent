@@ -39,6 +39,7 @@ Do not replace a failed or unrun item with a planned result.
 | Boot and desktop | successful installer completion, kernel version, desktop session, shutdown and reboot |
 | Network | DHCP/NAT address, DNS lookup, HTTPS request, package repository reachability |
 | Runtime | Python, SQLite, Node, npm, Docker availability and versions |
+| Native AI SDK | bridge build, `pkg-config` versions, embedding/upsert/search/delete smoke, fallback proof |
 | Backend | `bash scripts/setup.sh`, application startup, `/health/ready`, `bash scripts/smoke.sh` |
 | Frontend | `npm --prefix frontend/console-vue ci`, production build, committed dist consistency |
 | Memory runtime | SQLite/FTS initialization, MemoryArena-Lite, audit and workflow smoke paths |

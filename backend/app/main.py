@@ -1,7 +1,7 @@
 import uuid,json
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
@@ -16,7 +16,8 @@ from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record
 from .retrieval.service import search as do_search
 from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule, forget_capsules
-from .memory_runtime.retrieval import search_capsules
+from .memory_runtime.retrieval import search_capsules, search_capsules_with_status
+from .kylin_sdk.native import get_native_sdk
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
@@ -135,6 +136,25 @@ def health_live():
 def health_ready():
     report = readiness_report((_vue_dist / 'index.html', _legacy_console / 'index.html'))
     return JSONResponse(report, status_code=200 if report['status'] == 'ready' else 503)
+
+@app.get('/kylin/sdk/status')
+def kylin_sdk_status():
+    """Expose native SDK readiness without leaking bridge input or credentials."""
+    from .memory_runtime.vector_index import native_index_coverage
+
+    sdk = get_native_sdk()
+    status = sdk.status()
+    status["index"] = native_index_coverage(sdk.collection)
+    return status
+
+@app.post('/kylin/sdk/reindex')
+def kylin_sdk_reindex(limit: int = 25):
+    """Migrate a bounded batch of existing eligible Capsules to the native index."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    from .memory_runtime.vector_index import sync_pending_vectors
+
+    return sync_pending_vectors(limit=limit)
 
 @app.get('/metrics')
 def prometheus_metrics():
@@ -418,8 +438,8 @@ def v2_get_capsule(capsule_id: str):
 def v2_search(q:str,top_k:int=5,high_risk:bool=False):
     q, top_k = validate_search_params(q, top_k)
     from .memory_runtime.evidence import build_evidence_card
-    results=search_capsules(q,top_k=top_k,high_risk=high_risk)
-    return {'query':q,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
+    results, retrieval = search_capsules_with_status(q,top_k=top_k,high_risk=high_risk)
+    return {'query':q,'retrieval':retrieval,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
 
 @app.post('/memory/v2/command')
 def v2_command(req: CommandLoopIn):
