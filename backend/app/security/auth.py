@@ -1,7 +1,7 @@
 """API key authentication with fail-closed security.
 
 - WANWEI_API_KEY env variable sets the API key.
-- In production (WANWEI_PRODUCTION=1), API key is REQUIRED.
+- In production (WANWEI_PRODUCTION=1/true/yes), API key is REQUIRED.
 - In dev mode, defaults to 'wanwei-dev-key' if not set.
 - Uses constant-time comparison to prevent timing attacks.
 - Protects sensitive GET endpoints (audit logs, memory search, workflow runs).
@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse
 
 def is_production_mode() -> bool:
     """Check if running in production mode."""
-    return os.getenv("WANWEI_PRODUCTION", "").strip() == "1"
+    return os.getenv("WANWEI_PRODUCTION", "").strip().lower() in {"1", "true", "yes"}
 
 
 def get_api_key() -> str:

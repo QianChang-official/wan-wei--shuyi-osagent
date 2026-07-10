@@ -1,27 +1,17 @@
 from __future__ import annotations
 
 import os
-import json
 import time
 import uuid
-from urllib.parse import urlparse
 
 import httpx
 
 from .schemas import ModelGatewayTestIn, ModelGatewayTestOut, ModelProvider
 from ..security.ssrf import SSRFError, validate_external_url
 
-# Security hotspot review (v0.9.6.1): the hardcoded IP below is a dev-only
-# fallback for the WSL -> Windows-host local llama.cpp OpenAI-compatible server.
-# - The env var WANWEI_OPENAI_COMPATIBLE_BASE always takes precedence; production
-#   deployments must set it explicitly instead of relying on this fallback.
-# - Users cannot override api_base via API requests (ModelGatewayTestIn has no
-#   api_base field); only this catalog value is used, after SSRF validation.
-# - This does NOT open up 172.16.0.0/12: validate_external_url() still blocks
-#   private ranges unless the exact host is explicitly allowlisted via
-#   WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST.
-LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://172.29.128.1:8084/v1")  # NOSONAR (dev fallback, env-overridable)
-LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "C:\\LLMShare\\Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q4_K.gguf")
+LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "").strip()
+LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "").strip()
+LOCAL_LLAMA_CONFIGURED = bool(LOCAL_LLAMA_BASE and LOCAL_LLAMA_MODEL)
 
 PROVIDERS: list[ModelProvider] = [
     ModelProvider(
@@ -29,9 +19,9 @@ PROVIDERS: list[ModelProvider] = [
         api_base=LOCAL_LLAMA_BASE,
         api_key_alias="NONE_LOCAL_LLAMA_CPP",
         model=LOCAL_LLAMA_MODEL,
-        enabled=True,
-        status="available_local_llama_cpp",
-        notes="Local llama.cpp OpenAI-compatible endpoint; base can be overridden by WANWEI_OPENAI_COMPATIBLE_BASE env. URL must be HTTP(S) and not in SSRF block list. No API key is stored.",
+        enabled=LOCAL_LLAMA_CONFIGURED,
+        status="available_configured" if LOCAL_LLAMA_CONFIGURED else "configuration_required",
+        notes="Set WANWEI_OPENAI_COMPATIBLE_BASE and WANWEI_OPENAI_COMPATIBLE_MODEL to enable a real local smoke call. No API key is stored.",
     ),
     ModelProvider(
         provider="anthropic",
@@ -110,6 +100,15 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
             status="ok",
             request_id=request_id,
             message=f"Dry-run accepted for {provider.provider}; prompt preview length={len(req.prompt_preview)}.",
+        )
+    if not provider.enabled:
+        return ModelGatewayTestOut(
+            provider=provider.provider,
+            model=model,
+            dry_run=False,
+            status="not_configured",
+            request_id=request_id,
+            message="Provider is not configured. Set the documented environment variables and restart the service.",
         )
     if provider.provider != "openai_compatible":
         return ModelGatewayTestOut(

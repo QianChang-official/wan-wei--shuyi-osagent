@@ -65,6 +65,7 @@ export interface ResearchTechnology {
   v08_actions: string[]
   v09_risk_controls: string[]
   evidence_files: string[]
+  source_urls: string[]
 }
 
 export interface AdoptionRoute {
@@ -88,10 +89,20 @@ export interface VersionMapping {
   evidence_files: string[]
 }
 
+let apiKey = 'wanwei-dev-key'
+
+export function setApiKey(value: string): void {
+  apiKey = value.trim()
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set('Content-Type', 'application/json')
+  if (apiKey) headers.set('X-API-Key', apiKey)
+
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers,
   })
   if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`)
   return res.json() as Promise<T>

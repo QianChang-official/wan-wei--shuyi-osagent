@@ -5,8 +5,16 @@ __pycache__/
 .venv/
 venv/
 .env
+.cache/
+node_modules/
+tmp/
+.pytest_cache/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
 .DS_Store
 Thumbs.db

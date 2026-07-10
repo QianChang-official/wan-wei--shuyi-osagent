@@ -1,102 +1,84 @@
 # OSAgent Model Gateway Flow
 
-本图说明本地 llama.cpp 模型通过 OpenAI-compatible API 接入后，宛委·枢忆 OSAgent 的完整运行链路。当前接入点是 `openai_compatible` provider，WSL 通过 Windows WSL vEthernet 地址访问 Windows 上的 `llama-server`。
+本文说明可选的本地 llama.cpp/OpenAI-compatible 模型如何接入宛委·枢忆。项目默认不绑定任何开发者私有地址或模型文件；只有显式设置环境变量后，`openai_compatible` provider 才会启用。
 
 ## Current Runtime State
 
-- Frontend: `frontend/console-vue` built dist mounted at `/console/`.
-- Backend: FastAPI `app.main:app`.
-- Model gateway API: `GET /model-gateway/providers`, `POST /model-gateway/test`.
-- Local model endpoint: `http://172.29.128.1:8084/v1`.
-- Windows llama.cpp server: `llama-server` OpenAI-compatible `/v1/chat/completions`.
-- Model file: `C:\LLMShare\Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q4_K.gguf`.
-- Key policy: no API key is stored, echoed, or printed for the local endpoint.
+- Frontend：Vue 生产构建挂载在 `/console/`。
+- Backend：FastAPI `app.main:app`，默认 `http://127.0.0.1:8010`。
+- Model gateway API：`GET /model-gateway/providers`、`POST /model-gateway/test`。
+- Offline default：`local_mock` 可执行 deterministic dry-run。
+- Optional real smoke：需要 `WANWEI_OPENAI_COMPATIBLE_BASE` 与 `WANWEI_OPENAI_COMPATIBLE_MODEL`。
+- Key policy：本地 endpoint 不保存、不回显、不打印真实 key。
+
+## Configuration
+
+Windows 示例：
+
+```powershell
+$env:WANWEI_OPENAI_COMPATIBLE_BASE='http://127.0.0.1:8084/v1'
+$env:WANWEI_OPENAI_COMPATIBLE_MODEL='your-model-id'
+$env:WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST='127.0.0.1'
+.\scripts\run_dev.ps1
+```
+
+本机与私网地址默认受 SSRF 防护阻止。只把实际 endpoint 的精确主机加入 `WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST`，不要加入通配网段。
 
 ## End-to-End Flow
 
 ```mermaid
 flowchart LR
-    U[User / Judge / Operator] --> UI[Vue MemoryOps Studio\n/console]
-    UI --> MGW[通玄模型舱\nModelGatewayView]
-    MGW --> API[FastAPI Backend\n/model-gateway/test]
-
-    API --> CATALOG[Provider Catalog\nopenai_compatible]
-    CATALOG --> BASE[api_base\nhttp://172.29.128.1:8084/v1]
-    BASE --> LCPP[Windows llama-server\nOpenAI-compatible API]
-    LCPP --> GGUF[Huihui Qwen3.6 35B A3B GGUF\nQ4_K]
-    GGUF --> RESP[chat.completions response]
-
-    RESP --> API
-    API --> LOG[Smoke Result\nstatus / latency_ms / response_preview]
-    LOG --> MGW
-    MGW --> UI
-
-    API --> POLICY[司契 Policy Gate\npermission / dry-run boundary]
-    POLICY --> MEM[枢忆核 MemoryCapsule\nSQLite + FTS5]
-    POLICY --> EVID[兰台 Evidence Cards\nsource_layer + audit]
-    POLICY --> LOOP[指挥闭环 Command Loop\ntool plan + model output]
-    LOOP --> REFLECT[复盘演化 Reflection]
-    REFLECT --> ARENA[MemoryArena-Lite\nreports metrics]
-    ARENA --> UI
+    U[User / Operator] --> UI[Vue MemoryOps Studio]
+    UI --> API[POST /model-gateway/test]
+    API --> CATALOG{Provider configured?}
+    CATALOG -->|No| BLOCK[not_configured]
+    CATALOG -->|Yes| SSRF[URL validation + exact allowlist]
+    SSRF --> LCPP[OpenAI-compatible /v1/chat/completions]
+    LCPP --> RESULT[status / latency_ms / response_preview]
+    RESULT --> UI
 ```
 
-## OSAgent Control Loop After Model Access
+## Control Boundary
 
 ```mermaid
 sequenceDiagram
-    participant User as User
+    participant User
     participant Console as Vue Console
-    participant Backend as FastAPI OSAgent Runtime
-    participant Policy as Policy Gate
-    participant Memory as MemoryCapsule / FTS5
+    participant Backend as FastAPI Runtime
     participant Gateway as Model Gateway
-    participant Llama as llama-server 8084
-    participant Audit as Evidence / Audit / Arena
+    participant Model as Local Endpoint
 
-    User->>Console: Submit task or run model smoke
-    Console->>Backend: POST /model-gateway/test or runtime API
-    Backend->>Policy: classify risk and execution mode
-    Policy->>Memory: retrieve relevant capsules and evidence handles
-    Backend->>Gateway: select openai_compatible provider
-    Gateway->>Llama: POST /v1/chat/completions
-    Llama-->>Gateway: assistant message
-    Gateway-->>Backend: status, latency_ms, response_preview
-    Backend->>Audit: record evidence boundary and result summary
-    Backend-->>Console: structured response
-    Console-->>User: visual panel + dry-run/real-smoke result
+    User->>Console: Run dry-run or real smoke
+    Console->>Backend: POST /model-gateway/test
+    Backend->>Gateway: Select catalog provider
+    alt dry-run
+        Gateway-->>Backend: Deterministic result, no network
+    else real smoke and configured
+        Gateway->>Gateway: SSRF validation
+        Gateway->>Model: POST /chat/completions
+        Model-->>Gateway: Assistant message
+        Gateway-->>Backend: Bounded response preview
+    else real smoke and not configured
+        Gateway-->>Backend: not_configured
+    end
+    Backend-->>Console: Structured result
 ```
 
-## Source Layer Boundary
-
-```mermaid
-flowchart TD
-    INPUT[Incoming signal] --> LAYER{source_layer?}
-    LAYER -->|file_content / git_tracked / runtime_log| ACCEPT[Accept as engineering evidence]
-    LAYER -->|chat_render / copied_text / tool_display| IGNORE[Ignore as residue evidence]
-    ACCEPT --> CONTRACT[Contract Truth\nAPI + schema + frontend + smoke + docs]
-    CONTRACT --> VERIFY[compile / npm build / API smoke / visual fallback]
-    IGNORE --> NOTE[Do not report as repository pollution]
-```
-
-## What Is Implemented
-
-- `backend/app/model_gateway/service.py` now registers `openai_compatible` as an enabled local llama.cpp provider.
-- `POST /model-gateway/test` supports real smoke for the local OpenAI-compatible endpoint when `dry_run=false`.
-- `frontend/console-vue/src/views/ModelGatewayView.vue` exposes both `Dry-run` and `真实 smoke` buttons.
-- The model response is returned only as a short `response_preview`; no raw key is stored or displayed.
-
-## What Remains Partial
-
-- The model is currently connected for gateway smoke and demonstration, not yet wired into every OSAgent runtime decision path.
-- The command loop still needs a formal provider-selection policy before model output can drive broader task execution.
-- Cost tracking is still relative / planned; real token accounting from llama.cpp is not yet persisted.
-- Long-session model evaluation and visual QA over generated responses are planned follow-ups.
+真实 smoke 是连通性验证，不会自动把模型输出用于工具执行、记忆写入或 Command Loop。更高影响的模型驱动动作仍需要正式的 provider-selection policy、证据绑定、权限检查和人工确认。
 
 ## Verification Commands
 
-```bash
-curl http://127.0.0.1:8011/model-gateway/providers
-curl -X POST http://127.0.0.1:8011/model-gateway/test \
-  -H 'Content-Type: application/json' \
-  -d '{"provider":"openai_compatible","dry_run":false,"prompt_preview":"请用一句中文确认模型接入。","max_tokens":96}'
+```powershell
+$headers = @{ 'X-API-Key' = 'wanwei-dev-key' }
+Invoke-RestMethod http://127.0.0.1:8010/model-gateway/providers
+Invoke-RestMethod http://127.0.0.1:8010/model-gateway/test `
+  -Method Post -Headers $headers -ContentType 'application/json' `
+  -Body '{"provider":"openai_compatible","dry_run":false,"prompt_preview":"请用一句中文确认模型接入。","max_tokens":96}'
 ```
+
+## Remaining Partial Work
+
+- Anthropic/Gemini 仍是 catalog/stub。
+- Command Loop 尚未消费真实模型响应。
+- llama.cpp token usage 尚未持久化为成本指标。
+- 长会话模型评测与生成结果视觉 QA 仍为 planned。

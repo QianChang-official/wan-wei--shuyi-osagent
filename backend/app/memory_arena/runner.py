@@ -309,6 +309,11 @@ def compute_metrics(case_results: list[dict]) -> dict:
 # report writer
 # ---------------------------------------------------------------------------
 
+def _print_console(text: str) -> None:
+    encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+    print(text.encode(encoding, errors='replace').decode(encoding))
+
+
 def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = utc_now().strftime('%Y%m%dT%H%M%SZ')
@@ -339,9 +344,9 @@ def write_report(case_results: list[dict], metrics: dict, out_dir: pathlib.Path)
     (out_dir / 'production_memory_eval_report.md').write_text(md, encoding='utf-8')
     mj = json.dumps(metrics, ensure_ascii=False, indent=2)
     (out_dir / 'production_memory_eval_metrics.json').write_text(mj, encoding='utf-8')
-    print(md)
+    _print_console(md)
     print('\n--- metrics.json ---')
-    print(mj)
+    _print_console(mj)
 
 
 # ---------------------------------------------------------------------------

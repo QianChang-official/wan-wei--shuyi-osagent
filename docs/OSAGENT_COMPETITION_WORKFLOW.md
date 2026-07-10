@@ -96,7 +96,7 @@ Partial:
 - 关系图谱是 relation_edges 结构，不是完整图数据库。
 - embedding SDK 适配尚未接真实麒麟 SDK。
 - 精准遗忘已有 preview/confirm 审计，级联删除和 purge 验证仍需实现。
-- 模型网关已真实 smoke，但尚未完整进入 Command Loop 自动生成计划。
+- 模型网关在显式配置本地 OpenAI-compatible endpoint 后可执行真实 smoke，但尚未完整进入 Command Loop 自动生成计划。
 
 Planned:
 

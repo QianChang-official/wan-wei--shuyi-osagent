@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ResearchTechnology(BaseModel):
@@ -13,6 +13,7 @@ class ResearchTechnology(BaseModel):
     v08_actions: list[str]
     v09_risk_controls: list[str]
     evidence_files: list[str]
+    source_urls: list[str] = Field(default_factory=list)
 
 
 class AdoptionRoute(BaseModel):

@@ -102,6 +102,11 @@ onMounted(async () => {
           </div>
           <div class="ratio"><i :style="{ width: percent(item.adoption_ratio) }"></i><b>{{ percent(item.adoption_ratio) }}</b></div>
           <p class="idea">{{ item.core_idea }}</p>
+          <div class="sources">
+            <a v-for="(url, index) in item.source_urls" :key="url" :href="url" target="_blank" rel="noreferrer">
+              来源 {{ index + 1 }}
+            </a>
+          </div>
           <div class="chips"><span v-for="mod in item.target_modules" :key="mod">{{ mod }}</span></div>
           <div class="status-line">{{ statusName(item.current_status) }}</div>
           <div class="action-block">
@@ -178,6 +183,9 @@ onMounted(async () => {
 .ratio i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--mineral), var(--gamboge)); }
 .ratio b { position: absolute; right: 8px; top: 4px; font-size: 11px; color: var(--ink); }
 .idea { color: var(--ink-soft); font-size: 12.5px; line-height: 1.58; min-height: 58px; }
+.sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; }
+.sources a { color: var(--mineral); font-size: 10.5px; text-decoration: none; border-bottom: 1px solid currentColor; }
+.sources a:hover { color: var(--cinnabar); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
 .chips span, .support span { border: 1px solid var(--line-soft); background: rgba(255,255,255,.35); color: var(--mineral); padding: 2px 6px; font-size: 10.5px; }
 .status-line { color: var(--cinnabar); font-family: var(--mono); font-size: 11px; margin-bottom: 8px; }

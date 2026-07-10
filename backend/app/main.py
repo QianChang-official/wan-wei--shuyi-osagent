@@ -3,12 +3,12 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from .security.auth import APIKeyMiddleware
+from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
 from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
 from .security.headers import SecurityHeadersMiddleware
 from .security.rate_limit import RateLimitMiddleware
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
-from .db import get_conn
+from .db import close_all, get_conn
 from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record
 from .retrieval.service import search as do_search
@@ -77,26 +77,21 @@ from .reproduction.service import (
     workbench as reproduction_workbench,
 )
 
-# v0.9.5: Migrate from @app.on_event to lifespan
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    try:
-        from .init_db import main as init_db
-        init_db()
-    except Exception:
-        pass
-    # v0.9.5: Initialize workflow persistence
-    try:
-        from .workflow.persistence import init_workflow_persistence
-        init_workflow_persistence()
-    except Exception:
-        pass
+    from .init_db import main as init_db
+    from .workflow.persistence import init_workflow_persistence
 
-    yield
-    # Shutdown: nothing to clean up yet
+    if is_production_mode():
+        get_api_key()
+    init_db()
+    init_workflow_persistence()
+    try:
+        yield
+    finally:
+        close_all()
 
-_prod_mode = __import__('os').getenv('WANWEI_PRODUCTION', '').lower() in {'1','true','yes'}
+_prod_mode = is_production_mode()
 app=FastAPI(
     title='宛委·枢忆 MemoryOps Autopilot Platform',
     docs_url=None if _prod_mode else '/docs',

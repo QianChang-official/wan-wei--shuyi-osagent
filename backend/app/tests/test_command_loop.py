@@ -49,7 +49,7 @@ def test_execution_mode_mapping():
     assert execution_mode_for("critical") == "read_only_mode"
 
 
-def test_run_command_loop_low_risk_no_confirmation():
+def test_run_command_loop_low_risk_no_confirmation(isolated_db):
     r = run_command_loop(goal="介绍天气情况")
     assert r["risk_assessment"]["risk_class"] == "low"
     assert r["confirmation_points"] == []
@@ -57,7 +57,7 @@ def test_run_command_loop_low_risk_no_confirmation():
     assert r["execution_mode"] == "advisory_mode"
 
 
-def test_run_command_loop_high_risk_has_confirmation():
+def test_run_command_loop_high_risk_has_confirmation(isolated_db):
     r = run_command_loop(goal="删除旧日志文件")
     assert r["risk_assessment"]["risk_class"] == "high"
     assert len(r["confirmation_points"]) == 1
@@ -66,7 +66,7 @@ def test_run_command_loop_high_risk_has_confirmation():
     assert r["execution_mode"] == "supervised_mode"
 
 
-def test_run_command_loop_critical_blocks_autonomous_execution():
+def test_run_command_loop_critical_blocks_autonomous_execution(isolated_db):
     r = run_command_loop(goal="格式化生产数据库")
     assert r["risk_assessment"]["risk_class"] == "critical"
     assert "execute_without_human_approval" in r["blocked_actions"]
@@ -75,7 +75,7 @@ def test_run_command_loop_critical_blocks_autonomous_execution():
     assert r["confirmation_points"][0]["reason"] == "critical_risk"
 
 
-def test_run_command_loop_result_shape():
+def test_run_command_loop_result_shape(isolated_db):
     r = run_command_loop(goal="做个周报计划", scene="reporting")
     assert r["task_understanding"]["scene"] == "reporting"
     assert r["task_understanding"]["task_id"].startswith("task_")
@@ -85,7 +85,7 @@ def test_run_command_loop_result_shape():
     assert r["reflection_plan"]["required"] is True
 
 
-def test_run_command_loop_unsafe_autonomy_always_false():
+def test_run_command_loop_unsafe_autonomy_always_false(isolated_db):
     # 安全红线：即便 critical，也不得出现 unsafe autonomy
     for goal in ["介绍天气", "做计划", "删除文件", "格式化磁盘"]:
         r = run_command_loop(goal=goal)

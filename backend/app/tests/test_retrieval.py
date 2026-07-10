@@ -45,7 +45,7 @@ def test_zh_terms_short_cjk_no_bigram():
 
 
 def test_match_query_or_join():
-    assert rt._match_query("a b c") == "a OR b OR c"
+    assert rt._match_query("a b c") == '"a" OR "b" OR "c"'
     assert rt._match_query("") == ""
 
 
@@ -103,3 +103,10 @@ def test_search_english_fts(isolated_db):
     _write("weekly report formal tone three part")
     results = rt.search_capsules("weekly", top_k=5)
     assert len(results) >= 1
+
+
+def test_search_hyphenated_phrase(isolated_db):
+    written = _write("deployment marker wanwei-smoke-12345")
+    results = rt.search_capsules("wanwei-smoke-12345", top_k=5)
+    assert results
+    assert results[0]["capsule_id"] == written["capsule_id"]
