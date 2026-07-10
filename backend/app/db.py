@@ -38,6 +38,10 @@ def _db_path() -> Path:
     return p
 
 
+def database_path() -> Path:
+    return _db_path()
+
+
 # v0.9.6 (T3): thread-local connection reuse.
 #
 # Rationale / boundaries:

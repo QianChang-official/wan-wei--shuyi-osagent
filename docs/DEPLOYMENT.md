@@ -1,6 +1,18 @@
 # 部署指南
 
-本文档对应当前 `main` 分支的 FastAPI + SQLite + Vue 3 单机部署。默认端口统一为 `8010`，生产构建由 FastAPI 挂载在 `/console/`。
+本文档对应 `v0.10.0-delivery-hardening` 的 FastAPI + SQLite + Vue 3 单机部署。默认端口统一为 `8010`，生产构建由 FastAPI 挂载在 `/console/`。
+
+## 0. 推荐：安全默认容器部署
+
+```powershell
+Copy-Item .env.example .env
+.\scripts\init_secret.ps1
+docker compose config
+docker compose build
+docker compose up -d
+```
+
+Compose 默认只绑定 `127.0.0.1:8010`，使用非 root 用户、只读根文件系统、持久化数据卷和 secret 文件。生产上线前读取本地 secret 并运行 `scripts/smoke.py`。
 
 ## 1. 环境要求
 
@@ -38,10 +50,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -Production
 ## 3. Linux / 麒麟 OS
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/python -m pip install -r backend/requirements.txt
-cd frontend/console-vue && npm ci && npm run build && cd ../..
-./scripts/run_dev.sh
+bash scripts/setup.sh
+bash scripts/run_dev.sh
 ```
 
 如脚本不可执行，先运行 `chmod +x scripts/*.sh`。
@@ -70,7 +80,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke.ps1
 $env:PYTHONPATH='backend'
 .\backend\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File .\scripts\run_eval.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -SkipInstall
 ```
+
+受版本控制的 `frontend/console-vue/dist` 由 CI 的 Node `20.20.2` canonical Linux 构建生成。`verify` 脚本会在隔离目录中连续构建两次，避免不同 Node 主版本重写受版本控制的静态资源并造成无意义的 hash 差异。
 
 HTTP smoke 会验证健康检查、控制台静态文件、未授权拒绝、鉴权后的记忆写入/检索和 workflow dry-run。
 
@@ -94,7 +107,9 @@ $env:WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST='127.0.0.1'
 | `WANWEI_MEMORY_DB` | SQLite 文件路径 | 平台数据目录；项目脚本使用 `data/runtime/memory.db` |
 | `WANWEI_DATA_DIR` | 未指定数据库时的数据目录 | Windows `%LOCALAPPDATA%/wanwei-shuyi`；Linux `$XDG_DATA_HOME/wanwei-shuyi` |
 | `WANWEI_API_KEY` | API 鉴权密钥 | 开发模式 `wanwei-dev-key` |
+| `WANWEI_API_KEY_FILE` | 从只读文件加载 API Key | 未配置；容器使用 `/run/secrets/wanwei_api_key` |
 | `WANWEI_PRODUCTION` | 禁用 OpenAPI 文档并强制密钥 | 未设置 |
+| `WANWEI_TRUSTED_PROXY_IPS` | 允许用于限流分桶的直接代理 IP/CIDR | 未配置，不信任转发头 |
 | `WANWEI_OPENAI_COMPATIBLE_BASE` | 本地模型 API 根地址 | 未配置 |
 | `WANWEI_OPENAI_COMPATIBLE_MODEL` | 本地模型 ID | 未配置 |
 | `WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST` | SSRF 精确主机白名单 | 未配置 |
@@ -106,3 +121,12 @@ $env:WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST='127.0.0.1'
 - Anthropic/Gemini 目前是 catalog/stub，不执行真实调用。
 - MCP/Skills、多设备同步、图召回和部分观测模块仍为 partial/planned。
 - 仓库当前没有正式 Release、版本 tag 或许可证文件；对外分发前需由项目所有者补齐许可证和发布流程。
+
+## 9. 健康、指标与备份
+
+- 存活：`GET /health/live`
+- 就绪：`GET /health/ready`
+- 指标：`GET /metrics`，必须提供 API Key
+- 备份：`scripts/backup.ps1` / `scripts/backup.sh`
+
+密钥轮换、可信代理、在线备份、停机恢复、升级回滚和灾备演练见 `docs/OPERATIONS.md`。

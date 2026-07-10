@@ -4,10 +4,22 @@
 统一版本号，供 /health 端点和其他模块使用。
 """
 
-VERSION = "v0.9.6-rate-limit-and-test-hardening"
+VERSION = "v0.10.0-delivery-hardening"
 
 # 版本历史
 VERSION_HISTORY = [
+    {
+        "version": "v0.10.0-delivery-hardening",
+        "date": "2026-07-10",
+        "features": [
+            "容器化单节点交付与 Docker Compose 安全默认值",
+            "跨平台 CI、生产构建、HTTP smoke 与容器验收",
+            "存活/就绪探针、请求关联 ID 与 Prometheus 文本指标",
+            "SQLite 在线备份、完整性校验、停机恢复与安全副本",
+            "生产密钥文件与最低强度校验、可信代理限流边界",
+        ],
+        "status": "in_progress",
+    },
     {
         "version": "v0.9.6-rate-limit-and-test-hardening",
         "date": "2026-07-06",
@@ -20,7 +32,7 @@ VERSION_HISTORY = [
             "单进程内存令牌桶限流（rate limit）",
             "pytest 第三方 warnings 过滤，项目代码 warnings 视为错误",
         ],
-        "status": "in_progress",
+        "status": "released",
     },
     {
         "version": "v0.9.5-workflow-persistence",

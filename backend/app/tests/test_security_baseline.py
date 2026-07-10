@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 
 def _client(tmp_path: Path, *, api_key: str = "test-key", production: bool = False):
+    if production and api_key == "test-key":
+        api_key = "test-key-for-production-32-characters"
     os.environ["WANWEI_API_KEY"] = api_key
     os.environ["WANWEI_MEMORY_DB"] = str(tmp_path / "memory.db")
     if production:

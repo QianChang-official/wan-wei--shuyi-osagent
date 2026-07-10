@@ -314,12 +314,12 @@ VERSION_MAP: list[VersionMapping] = [
 
 
 def list_technologies() -> dict:
-    return {"items": [item.dict() for item in TECHNOLOGIES]}
+    return {"items": [item.model_dump() for item in TECHNOLOGIES]}
 
 
 def list_routes() -> dict:
-    return {"items": [item.dict() for item in ROUTES]}
+    return {"items": [item.model_dump() for item in ROUTES]}
 
 
 def version_map() -> dict:
-    return {"items": [item.dict() for item in VERSION_MAP]}
+    return {"items": [item.model_dump() for item in VERSION_MAP]}

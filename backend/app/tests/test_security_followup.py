@@ -47,6 +47,38 @@ def test_production_truthy_values_require_api_key(monkeypatch, production_value)
         get_api_key()
 
 
+def test_production_rejects_short_api_key(monkeypatch):
+    monkeypatch.setenv("WANWEI_API_KEY", "too-short")
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+
+    from backend.app.security.auth import get_api_key
+
+    with pytest.raises(RuntimeError, match="at least 32"):
+        get_api_key()
+
+
+def test_production_reads_api_key_file(tmp_path, monkeypatch):
+    secret_file = tmp_path / "api-key"
+    secret_file.write_text("a-strong-production-key-with-40-characters\n", encoding="utf-8")
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_API_KEY_FILE", str(secret_file))
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+
+    from backend.app.security.auth import get_api_key
+
+    assert get_api_key() == "a-strong-production-key-with-40-characters"
+
+
+def test_missing_api_key_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_API_KEY_FILE", str(tmp_path / "missing"))
+
+    from backend.app.security.auth import get_api_key
+
+    with pytest.raises(RuntimeError, match="Unable to read"):
+        get_api_key()
+
+
 def test_production_app_fails_during_startup_without_api_key(tmp_path, monkeypatch):
     monkeypatch.delenv("WANWEI_API_KEY", raising=False)
     monkeypatch.setenv("WANWEI_PRODUCTION", "true")

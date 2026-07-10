@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import threading
 import time
+import ipaddress
+import os
 from collections import OrderedDict
 
 from fastapi import Request, status
@@ -99,13 +101,41 @@ class RateLimiter:
 _limiter = RateLimiter(_LIMITS_PER_MIN)
 
 
+def resolve_client_ip(peer: str, forwarded_for: str | None, trusted_proxy_ips: str = "") -> str:
+    if not forwarded_for or not trusted_proxy_ips:
+        return peer
+    try:
+        peer_address = ipaddress.ip_address(peer)
+        networks = tuple(
+            ipaddress.ip_network(value.strip(), strict=False)
+            for value in trusted_proxy_ips.split(",")
+            if value.strip()
+        )
+        forwarded_chain = tuple(
+            ipaddress.ip_address(value.strip())
+            for value in forwarded_for.split(",")
+            if value.strip()
+        )
+    except ValueError:
+        return peer
+    if not networks or not forwarded_chain or not any(peer_address in network for network in networks):
+        return peer
+    # Walk from the application outward. A trusted proxy that appends to an
+    # untrusted incoming X-Forwarded-For chain cannot make its leftmost value
+    # control the rate-limit bucket.
+    for candidate in reversed(forwarded_chain):
+        if not any(candidate in network for network in networks):
+            return str(candidate)
+    return peer
+
+
 def _client_ip(request: Request) -> str:
-    # Honour X-Forwarded-For first hop when present (reverse-proxy deployments),
-    # otherwise fall back to the direct peer. Not used for auth — only bucketing.
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else "unknown"
+    return resolve_client_ip(
+        peer,
+        request.headers.get("x-forwarded-for"),
+        os.getenv("WANWEI_TRUSTED_PROXY_IPS", ""),
+    )
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -123,5 +153,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     {"detail": "Rate limit exceeded. Retry later."},
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    headers={"Retry-After": "1"},
                 )
         return await call_next(request)

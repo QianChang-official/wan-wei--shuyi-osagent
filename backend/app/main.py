@@ -1,12 +1,15 @@
 import uuid,json
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
 from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
 from .security.headers import SecurityHeadersMiddleware
 from .security.rate_limit import RateLimitMiddleware
+from .operations.health import readiness_report
+from .operations.observability import ObservabilityMiddleware, metrics
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import close_all, get_conn
 from .memory_runtime.policy_gate import evaluate_policy
@@ -106,6 +109,7 @@ app.add_middleware(APIKeyMiddleware)
 # outermost — a burst is rejected before auth/body work. Single-process only;
 # multi-process shared limiting is deferred to v1.0.
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(ObservabilityMiddleware)
 
 # Mount frontend console at /console (same-origin, no CORS needed).
 # Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.
@@ -121,6 +125,21 @@ if _legacy_console.exists():
 def health():
     from .version import VERSION
     return {'status':'ok','name':'wanwei-shuyi-memoryops-autopilot','version':VERSION}
+
+@app.get('/health/live')
+def health_live():
+    from .version import VERSION
+    return {'status': 'alive', 'version': VERSION}
+
+@app.get('/health/ready')
+def health_ready():
+    report = readiness_report((_vue_dist / 'index.html', _legacy_console / 'index.html'))
+    return JSONResponse(report, status_code=200 if report['status'] == 'ready' else 503)
+
+@app.get('/metrics')
+def prometheus_metrics():
+    from .version import VERSION
+    return Response(metrics.render(VERSION), media_type='text/plain; version=0.0.4')
 
 @app.get('/arena/metrics')
 def arena_metrics():
@@ -332,7 +351,7 @@ def deepening_visual_verification_checklist_dry_run_view(req: VisualChecklistIn)
 def add_event(event:MemoryEventIn):
     event_id='evt_'+uuid.uuid4().hex[:12]; text=json.dumps(event.content,ensure_ascii=False); guard=evaluate_policy(text=text); quality=0.9 if len(text)>8 else 0.5
     if guard['policy_result'] == 'reject':
-        audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.dict()})
+        audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.model_dump()})
         return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
     conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
     capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.commit()
@@ -351,7 +370,7 @@ def forget_preview(req:ForgetPreviewIn):
 @app.post('/memory/forget/confirm')
 def forget_confirm(req:ForgetConfirmIn):
     if not req.confirm:
-        audit_id=record('forget_confirm_cancelled',req.dict()); return {'status':'cancelled','audit_id':audit_id}
+        audit_id=record('forget_confirm_cancelled',req.model_dump()); return {'status':'cancelled','audit_id':audit_id}
     conn=get_conn()
     # Use JSON extraction for exact matching instead of LIKE wildcard
     # This prevents SQL wildcard injection (% and _) from matching unintended records
@@ -379,13 +398,13 @@ def forget_confirm(req:ForgetConfirmIn):
         conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
     conn.commit()
     result=forget_capsules(capsule_ids, mode=req.mode)
-    audit_id=record('forget_confirm',{'request':req.dict(),'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids})
+    audit_id=record('forget_confirm',{'request':req.model_dump(),'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids})
     return {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids}
 
 # v0.6 MemoryOps Runtime endpoints
 @app.post('/memory/v2/capsules')
 def v2_write_capsule(req: CapsuleWriteIn):
-    return write_capsule(**req.dict())
+    return write_capsule(**req.model_dump())
 
 @app.get('/memory/v2/capsules')
 def v2_list_capsules(limit:int=50):
@@ -409,7 +428,7 @@ def v2_command(req: CommandLoopIn):
 
 @app.post('/memory/v2/reflection')
 def v2_reflection(req: ReflectionIn):
-    return reflect_task(req.task_id, req.dict())
+    return reflect_task(req.task_id, req.model_dump())
 
 @app.get('/audit/logs')
 def audit_logs(limit:int=50,trace_id:str|None=None):

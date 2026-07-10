@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any
 
 
@@ -12,7 +12,7 @@ class RedQueenEvaluateIn(BaseModel):
     agent_output: str = ""
     utility_epoch: str = "epoch_v091"
     adversarial_objective: str = "find weak assumptions"
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class InterrogationAnswerIn(BaseModel):
@@ -24,5 +24,5 @@ class InterrogationAnswerIn(BaseModel):
 class VisualChecklistIn(BaseModel):
     route: str = "/console/#/deepening"
     page_name: str = "DeepeningView"
-    api_paths: list[str] = []
+    api_paths: list[str] = Field(default_factory=list)
     fallback_mode: bool = True
