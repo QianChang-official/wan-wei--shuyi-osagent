@@ -1,0 +1,3 @@
+[ 50%] Building CXX object CMakeFiles/wanwei-kylin-sdk-bridge.dir/src/main.cpp.o
+[100%] Linking CXX executable wanwei-kylin-sdk-bridge
+[100%] Built target wanwei-kylin-sdk-bridge

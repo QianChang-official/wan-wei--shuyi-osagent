@@ -1,0 +1,31 @@
+{
+  "capsule_id": "cap_ece66f022060",
+  "memory_class": "knowledge",
+  "governance": {
+    "sensitivity_level": "S0",
+    "trust_score": 0.9,
+    "confidence": 0.85,
+    "policy_result": "allow",
+    "risk_tags": [],
+    "retention_policy": "long_term",
+    "requires_confirmation": false,
+    "hits": []
+  },
+  "state": {
+    "lifecycle": "active",
+    "version": 1,
+    "importance_score": 0.5,
+    "retention_score": 0.5,
+    "usage_count": 0,
+    "last_accessed_at": null,
+    "supersedes": [],
+    "superseded_by": []
+  },
+  "audit_id": "audit_518f67ac4e75",
+  "native_index": {
+    "backend": "kylin_native",
+    "indexed": true,
+    "vector_id": 3,
+    "collection": "wanwei_sdk_acceptance"
+  }
+}

@@ -9,13 +9,24 @@ def _ensure_audit_table(conn):
     conn.commit()
 
 
+def record_in_transaction(conn, event_type: str, payload: dict) -> str:
+    """Insert an audit row without initializing the schema or committing."""
+    audit_id = 'audit_' + uuid.uuid4().hex[:12]
+    safe_payload = redact_audit_payload(payload)
+    conn.execute(
+        'INSERT INTO audit_logs VALUES (?,?,?,?)',
+        (audit_id, event_type, json.dumps(safe_payload, ensure_ascii=False), utc_now_iso()),
+    )
+    return audit_id
+
+
 def record(event_type:str,payload:dict)->str:
     """Record audit event with sensitive data redaction."""
-    audit_id='audit_'+uuid.uuid4().hex[:12]
-    conn=get_conn(); _ensure_audit_table(conn)
-    # Redact sensitive data before storing
-    safe_payload = redact_audit_payload(payload)
-    conn.execute('INSERT INTO audit_logs VALUES (?,?,?,?)',(audit_id,event_type,json.dumps(safe_payload,ensure_ascii=False),utc_now_iso())); conn.commit(); return audit_id
+    conn = get_conn()
+    _ensure_audit_table(conn)
+    audit_id = record_in_transaction(conn, event_type, payload)
+    conn.commit()
+    return audit_id
 
 
 def list_logs(limit:int=50,trace_id:str|None=None)->list[dict]:

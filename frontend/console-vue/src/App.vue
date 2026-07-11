@@ -4,7 +4,7 @@ import { setApiKey } from '@/api/client'
 import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()
-const apiKey = ref('wanwei-dev-key')
+const apiKey = ref('')
 
 function updateApiKey() {
   setApiKey(apiKey.value)

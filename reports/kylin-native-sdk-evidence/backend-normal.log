@@ -1,0 +1,13 @@
+INFO:     Started server process [17749]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     request_complete method=GET route=/health status=200 duration_ms=2.06 request_id=req_e1c4f4ac13b14fbca008c2a5b7f76427
+initialized
+INFO:     127.0.0.1:45688 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/health status=200 duration_ms=0.92 request_id=req_9e3e3bfcff2f4ea18f18ec9a0744aa97
+INFO:     127.0.0.1:45698 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=178.30 request_id=req_bf504b9e40d24c71a4460cb734188c6a
+INFO:     127.0.0.1:45706 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=209.79 request_id=req_e2e6e431e339475184df733588f814b8
+INFO:     127.0.0.1:45712 - "GET /memory/v2/search?q=%e6%8b%9c%e8%ae%bf%e7%bb%93%e6%9d%9f%e5%90%8e%e6%8a%8a%e8%b0%88%e8%af%9d%e9%87%8d%e7%82%b9%e5%81%9a%e6%88%90%e6%96%87%e6%a1%a3%e7%bb%99%e5%9b%a2%e9%98%9f&top_k=2 HTTP/1.1" 200 OK

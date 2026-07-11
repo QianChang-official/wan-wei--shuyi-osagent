@@ -1,0 +1,64 @@
+{
+  "created_with_native_off": [
+    {
+      "capsule_id": "cap_d8a0530d5e71",
+      "memory_class": "knowledge",
+      "governance": {
+        "sensitivity_level": "S0",
+        "trust_score": 0.9,
+        "confidence": 0.85,
+        "policy_result": "allow",
+        "risk_tags": [],
+        "retention_policy": "long_term",
+        "requires_confirmation": false,
+        "hits": []
+      },
+      "state": {
+        "lifecycle": "active",
+        "version": 1,
+        "importance_score": 0.5,
+        "retention_score": 0.5,
+        "usage_count": 0,
+        "last_accessed_at": null,
+        "supersedes": [],
+        "superseded_by": []
+      },
+      "audit_id": "audit_6108fd43c450",
+      "native_index": {
+        "backend": "fts_fallback",
+        "indexed": false,
+        "reason": "native_index_exception"
+      }
+    },
+    {
+      "capsule_id": "cap_cbd3ca72057e",
+      "memory_class": "knowledge",
+      "governance": {
+        "sensitivity_level": "S0",
+        "trust_score": 0.9,
+        "confidence": 0.85,
+        "policy_result": "allow",
+        "risk_tags": [],
+        "retention_policy": "long_term",
+        "requires_confirmation": false,
+        "hits": []
+      },
+      "state": {
+        "lifecycle": "active",
+        "version": 1,
+        "importance_score": 0.5,
+        "retention_score": 0.5,
+        "usage_count": 0,
+        "last_accessed_at": null,
+        "supersedes": [],
+        "superseded_by": []
+      },
+      "audit_id": "audit_843493bc26b0",
+      "native_index": {
+        "backend": "fts_fallback",
+        "indexed": false,
+        "reason": "native_index_exception"
+      }
+    }
+  ]
+}

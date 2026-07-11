@@ -62,9 +62,8 @@ _PUBLIC_PATHS = {
     "/health/ready",
     "/",
     "/console",
-    "/console-legacy",
 }
-_PUBLIC_PREFIXES = ("/console/", "/console-legacy/")
+_PUBLIC_PREFIXES = ("/console/",)
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 # Sensitive GET endpoints that require authentication
@@ -76,9 +75,12 @@ _PROTECTED_GET_PATHS = {
     "/memory/search",
     "/kylin/sdk/status",
     "/metrics",
+    "/workflow/stats",
 }
 _PROTECTED_GET_PREFIXES = (
+    "/memory/v2/capsules/",
     "/workflow/runs",
+    "/console-legacy",
 )
 
 

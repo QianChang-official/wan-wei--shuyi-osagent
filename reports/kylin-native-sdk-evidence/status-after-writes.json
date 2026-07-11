@@ -1,0 +1,19 @@
+{
+  "backend": "kylin_native",
+  "available": true,
+  "reason": null,
+  "bridge_path": "/usr/local/bin/wanwei-kylin-sdk-bridge",
+  "capabilities": {
+    "embedding": true,
+    "vector_database": true
+  },
+  "model": "ensemble-embd_gte-base_uint8-text",
+  "dimension": 768,
+  "index": {
+    "eligible": 3,
+    "indexed": 3,
+    "failed": 0,
+    "pending": 0
+  },
+  "reindex_in_progress": false
+}

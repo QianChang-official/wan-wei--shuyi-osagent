@@ -13,6 +13,7 @@
 
 #include <kylin-ai/coreai/embedding/embedding.h>
 #include <kylin-ai/coreai/embedding/modelinfo.h>
+#include <kylin-ai/common/error.h>
 
 #include <Database.h>
 #include <types/Constants.h>
@@ -24,6 +25,7 @@ namespace {
 
 using json = nlohmann::json;
 constexpr const char* kResponsePrefix = "WANWEI_KYLIN_RESPONSE:";
+constexpr const char* kDefaultEmbeddingModel = "ensemble-embd_gte-base_uint8-text";
 
 class NativeError : public std::runtime_error {
 public:
@@ -128,42 +130,53 @@ private:
     void select_model(const std::string& requested_model) {
         int error_code = 0;
         EmbeddingModelList* models = text_embedding_get_model_list(session_, &error_code);
-        if (models == nullptr || error_code != 0) {
+        const EmbeddingModelInfo* selected = nullptr;
+        bool initialize_model = true;
+        if (models != nullptr && error_code == 0) {
+            const int count = embedding_model_list_get_count(models, &error_code);
+            if (count <= 0 || error_code != 0) {
+                throw NativeError("embedding_model_count_failed_" + std::to_string(error_code));
+            }
+
+            for (int index = 0; index < count; ++index) {
+                const EmbeddingModelInfo* candidate = embedding_model_list_get_model(models, index, &error_code);
+                if (candidate == nullptr || error_code != 0) {
+                    continue;
+                }
+                const char* candidate_name = embedding_model_info_get_model_name(candidate, &error_code);
+                if (candidate_name == nullptr || error_code != 0) {
+                    continue;
+                }
+                if (requested_model.empty() || requested_model == candidate_name) {
+                    selected = candidate;
+                    model_name_ = candidate_name;
+                    break;
+                }
+            }
+
+            if (selected == nullptr) {
+                throw NativeError("embedding_model_not_found");
+            }
+
+            dimension_ = embedding_model_info_get_model_dim(selected, &error_code);
+            if (dimension_ <= 0 || error_code != 0) {
+                throw NativeError("embedding_model_dimension_failed_" + std::to_string(error_code));
+            }
+        } else if (error_code == AI_COMMON_RUNTIME_OUTDATED) {
+            model_name_ = requested_model.empty() ? kDefaultEmbeddingModel : requested_model;
+            if (model_name_ != kDefaultEmbeddingModel) {
+                throw NativeError("embedding_model_selection_unsupported");
+            }
+            initialize_model = false;
+        } else {
             throw NativeError("embedding_model_list_failed_" + std::to_string(error_code));
         }
 
-        const int count = embedding_model_list_get_count(models, &error_code);
-        if (count <= 0 || error_code != 0) {
-            throw NativeError("embedding_model_count_failed_" + std::to_string(error_code));
-        }
-
-        const EmbeddingModelInfo* selected = nullptr;
-        for (int index = 0; index < count; ++index) {
-            const EmbeddingModelInfo* candidate = embedding_model_list_get_model(models, index, &error_code);
-            if (candidate == nullptr || error_code != 0) {
-                continue;
+        if (initialize_model) {
+            const int init_code = text_embedding_init_model(session_, model_name_.c_str());
+            if (init_code != 0) {
+                throw NativeError("embedding_model_init_failed_" + std::to_string(init_code));
             }
-            const char* candidate_name = embedding_model_info_get_model_name(candidate, &error_code);
-            if (candidate_name == nullptr || error_code != 0) {
-                continue;
-            }
-            if (requested_model.empty() || requested_model == candidate_name) {
-                selected = candidate;
-                model_name_ = candidate_name;
-                break;
-            }
-        }
-        if (selected == nullptr) {
-            throw NativeError("embedding_model_not_found");
-        }
-
-        dimension_ = embedding_model_info_get_model_dim(selected, &error_code);
-        if (dimension_ <= 0 || error_code != 0) {
-            throw NativeError("embedding_model_dimension_failed_" + std::to_string(error_code));
-        }
-        const int init_code = text_embedding_init_model(session_, model_name_.c_str());
-        if (init_code != 0) {
-            throw NativeError("embedding_model_init_failed_" + std::to_string(init_code));
         }
     }
 
@@ -314,11 +327,12 @@ json handle_probe(const json& request) {
     // vector-engine connection have both succeeded.
     EmbeddingRuntime embedding(request);
     VectorRuntime vector_db(request);
+    const std::vector<float> vector = embedding.embed("wanwei native sdk probe");
     return {
         {"ok", true},
         {"capabilities", {{"embedding", true}, {"vector_database", true}}},
         {"model", embedding.model_name()},
-        {"dimension", embedding.dimension()},
+        {"dimension", static_cast<int>(vector.size())},
     };
 }
 

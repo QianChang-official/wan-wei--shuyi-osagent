@@ -20,11 +20,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Control referrer information
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
-        # Content Security Policy (relaxed for Vue SPA compatibility)
-        # Allow inline styles and scripts from same origin for frontend build
+        # Content Security Policy for the Vue SPA. Inline styles are still used
+        # by component rendering, but scripts must come from same-origin assets.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self' data:; "

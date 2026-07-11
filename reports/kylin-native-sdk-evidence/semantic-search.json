@@ -1,0 +1,277 @@
+{
+  "http_status": 200,
+  "query": "三个月一次，将公司的收支材料制成电子文档交给负责核验账目的人",
+  "forbidden_shared_terms": [
+    "季度",
+    "财务",
+    "报表",
+    "PDF",
+    "审计"
+  ],
+  "fts_exact_query_hits": [],
+  "elapsed_ms": 278.783,
+  "response": {
+    "query": "三个月一次，将公司的收支材料制成电子文档交给负责核验账目的人",
+    "retrieval": {
+      "backend": "kylin_native",
+      "model": "ensemble-embd_gte-base_uint8-text",
+      "collection": "wanwei_sdk_acceptance",
+      "native_index": {
+        "eligible": 3,
+        "indexed": 3,
+        "failed": 0,
+        "pending": 0
+      }
+    },
+    "results": [
+      {
+        "capsule_id": "cap_5ae59f34f5a4",
+        "memory_class": "knowledge",
+        "content": {
+          "text": "每逢季度末，请把财务报表整理为 PDF 后发送给审计负责人。",
+          "topic": "财务流程"
+        },
+        "source_events": [],
+        "provenance": {
+          "evidence_ids": [],
+          "origin": "human",
+          "source_ids": [],
+          "source_type": "user_input",
+          "verification_method": "manual",
+          "verified": true,
+          "writer_identity": "runtime"
+        },
+        "governance": {
+          "confidence": 0.85,
+          "hits": [],
+          "policy_result": "allow",
+          "requires_confirmation": false,
+          "retention_policy": "long_term",
+          "risk_tags": [],
+          "sensitivity_level": "S0",
+          "trust_score": 0.9
+        },
+        "state": {
+          "importance_score": 0.5,
+          "last_accessed_at": "2026-07-11T04:25:20Z",
+          "lifecycle": "active",
+          "retention_score": 0.5,
+          "superseded_by": [],
+          "supersedes": [],
+          "usage_count": 1,
+          "version": 1
+        },
+        "production_context": {
+          "risk_class": "low",
+          "scene": "office",
+          "task_type": "planning",
+          "tenant_scope": "local",
+          "validity_scope": "project"
+        },
+        "alignment_metadata": {
+          "confirmation_status": "not_required",
+          "constraint_links": [],
+          "human_preference_links": [],
+          "last_human_feedback": "unknown",
+          "oversight_required": false,
+          "policy_links": []
+        },
+        "affective_metadata": {},
+        "relation_edges": [],
+        "index_refs": {
+          "fts_ref": "cap_5ae59f34f5a4",
+          "graph_node_id": "cap_5ae59f34f5a4",
+          "vector_backend": {
+            "collection": "wanwei_sdk_acceptance",
+            "dimension": 768,
+            "model": "ensemble-embd_gte-base_uint8-text",
+            "provider": "kylin_native_sdk"
+          },
+          "vector_ref": "kylin-native:1"
+        },
+        "created_at": "2026-07-11T04:24:34Z",
+        "updated_at": "2026-07-11T04:24:35Z",
+        "vector_score": 0.6465,
+        "retrieval_score": 0.7346,
+        "retrieval_backend": "kylin_native"
+      },
+      {
+        "capsule_id": "cap_ece66f022060",
+        "memory_class": "knowledge",
+        "content": {
+          "text": "软件发布前先运行自动化测试并检查安全扫描结果。",
+          "topic": "工程流程"
+        },
+        "source_events": [],
+        "provenance": {
+          "evidence_ids": [],
+          "origin": "human",
+          "source_ids": [],
+          "source_type": "user_input",
+          "verification_method": "manual",
+          "verified": true,
+          "writer_identity": "runtime"
+        },
+        "governance": {
+          "confidence": 0.85,
+          "hits": [],
+          "policy_result": "allow",
+          "requires_confirmation": false,
+          "retention_policy": "long_term",
+          "risk_tags": [],
+          "sensitivity_level": "S0",
+          "trust_score": 0.9
+        },
+        "state": {
+          "importance_score": 0.5,
+          "last_accessed_at": "2026-07-11T04:25:20Z",
+          "lifecycle": "active",
+          "retention_score": 0.5,
+          "superseded_by": [],
+          "supersedes": [],
+          "usage_count": 1,
+          "version": 1
+        },
+        "production_context": {
+          "risk_class": "low",
+          "scene": "engineering",
+          "task_type": "planning",
+          "tenant_scope": "local",
+          "validity_scope": "project"
+        },
+        "alignment_metadata": {
+          "confirmation_status": "not_required",
+          "constraint_links": [],
+          "human_preference_links": [],
+          "last_human_feedback": "unknown",
+          "oversight_required": false,
+          "policy_links": []
+        },
+        "affective_metadata": {},
+        "relation_edges": [],
+        "index_refs": {
+          "fts_ref": "cap_ece66f022060",
+          "graph_node_id": "cap_ece66f022060",
+          "vector_backend": {
+            "collection": "wanwei_sdk_acceptance",
+            "dimension": 768,
+            "model": "ensemble-embd_gte-base_uint8-text",
+            "provider": "kylin_native_sdk"
+          },
+          "vector_ref": "kylin-native:3"
+        },
+        "created_at": "2026-07-11T04:24:35Z",
+        "updated_at": "2026-07-11T04:24:35Z",
+        "vector_score": 0.5172,
+        "retrieval_score": 0.7217,
+        "retrieval_backend": "kylin_native"
+      },
+      {
+        "capsule_id": "cap_97b05671abb5",
+        "memory_class": "knowledge",
+        "content": {
+          "text": "周末给阳台绿植浇水，保持土壤湿润。",
+          "topic": "生活提醒"
+        },
+        "source_events": [],
+        "provenance": {
+          "evidence_ids": [],
+          "origin": "human",
+          "source_ids": [],
+          "source_type": "user_input",
+          "verification_method": "manual",
+          "verified": true,
+          "writer_identity": "runtime"
+        },
+        "governance": {
+          "confidence": 0.85,
+          "hits": [],
+          "policy_result": "allow",
+          "requires_confirmation": false,
+          "retention_policy": "long_term",
+          "risk_tags": [],
+          "sensitivity_level": "S0",
+          "trust_score": 0.9
+        },
+        "state": {
+          "importance_score": 0.5,
+          "last_accessed_at": "2026-07-11T04:25:20Z",
+          "lifecycle": "active",
+          "retention_score": 0.5,
+          "superseded_by": [],
+          "supersedes": [],
+          "usage_count": 1,
+          "version": 1
+        },
+        "production_context": {
+          "risk_class": "low",
+          "scene": "home",
+          "task_type": "planning",
+          "tenant_scope": "local",
+          "validity_scope": "project"
+        },
+        "alignment_metadata": {
+          "confirmation_status": "not_required",
+          "constraint_links": [],
+          "human_preference_links": [],
+          "last_human_feedback": "unknown",
+          "oversight_required": false,
+          "policy_links": []
+        },
+        "affective_metadata": {},
+        "relation_edges": [],
+        "index_refs": {
+          "fts_ref": "cap_97b05671abb5",
+          "graph_node_id": "cap_97b05671abb5",
+          "vector_backend": {
+            "collection": "wanwei_sdk_acceptance",
+            "dimension": 768,
+            "model": "ensemble-embd_gte-base_uint8-text",
+            "provider": "kylin_native_sdk"
+          },
+          "vector_ref": "kylin-native:2"
+        },
+        "created_at": "2026-07-11T04:24:35Z",
+        "updated_at": "2026-07-11T04:24:35Z",
+        "vector_score": 0.4548,
+        "retrieval_score": 0.7155,
+        "retrieval_backend": "kylin_native"
+      }
+    ],
+    "evidence_cards": [
+      {
+        "evidence_id": "ev_cap_5ae59f34f5a4",
+        "capsule_id": "cap_5ae59f34f5a4",
+        "memory_class": "knowledge",
+        "claim": "{'text': '每逢季度末，请把财务报表整理为 PDF 后发送给审计负责人。', 'topic': '财务流程'}",
+        "source": "user_input",
+        "confidence": 0.85,
+        "trust_score": 0.9,
+        "used_for": "planning",
+        "limitations": "runtime-lite evidence card; verify source for high-risk decisions"
+      },
+      {
+        "evidence_id": "ev_cap_ece66f022060",
+        "capsule_id": "cap_ece66f022060",
+        "memory_class": "knowledge",
+        "claim": "{'text': '软件发布前先运行自动化测试并检查安全扫描结果。', 'topic': '工程流程'}",
+        "source": "user_input",
+        "confidence": 0.85,
+        "trust_score": 0.9,
+        "used_for": "planning",
+        "limitations": "runtime-lite evidence card; verify source for high-risk decisions"
+      },
+      {
+        "evidence_id": "ev_cap_97b05671abb5",
+        "capsule_id": "cap_97b05671abb5",
+        "memory_class": "knowledge",
+        "claim": "{'text': '周末给阳台绿植浇水，保持土壤湿润。', 'topic': '生活提醒'}",
+        "source": "user_input",
+        "confidence": 0.85,
+        "trust_score": 0.9,
+        "used_for": "planning",
+        "limitations": "runtime-lite evidence card; verify source for high-risk decisions"
+      }
+    ]
+  }
+}

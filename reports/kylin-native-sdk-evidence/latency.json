@@ -1,0 +1,253 @@
+{
+  "sample_count": 30,
+  "measurement": "client-observed end-to-end HTTP latency on Kylin VM loopback",
+  "warmup_requests_excluded": 1,
+  "p50_ms": 195.32,
+  "p95_ms": 246.473,
+  "min_ms": 183.542,
+  "max_ms": 278.624,
+  "mean_ms": 203.218,
+  "all_native": true,
+  "samples": [
+    {
+      "iteration": 1,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 204.105,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 2,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 207.243,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 3,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 213.428,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 4,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 195.971,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 5,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 201.562,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 6,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 202.462,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 7,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 191.592,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 8,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 278.624,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 9,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 196.791,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 10,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 201.739,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 11,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 193.019,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 12,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 189.039,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 13,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 192.51,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 14,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 192.677,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 15,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 199.586,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 16,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 192.656,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 17,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 183.542,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 18,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 186.154,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 19,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 190.22,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 20,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 192.517,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 21,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 200.959,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 22,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 194.177,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 23,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 243.919,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 24,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 244.257,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 25,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 246.473,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 26,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 197.818,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 27,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 190.563,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 28,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 187.523,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    },
+    {
+      "iteration": 29,
+      "query": "拜访结束后把谈话重点做成文档给团队",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 190.742,
+      "top_capsule_id": "cap_d8a0530d5e71"
+    },
+    {
+      "iteration": 30,
+      "query": "运维机器多久核对一次系统修复并留下记录",
+      "http_status": 200,
+      "backend": "kylin_native",
+      "elapsed_ms": 194.67,
+      "top_capsule_id": "cap_cbd3ca72057e"
+    }
+  ]
+}

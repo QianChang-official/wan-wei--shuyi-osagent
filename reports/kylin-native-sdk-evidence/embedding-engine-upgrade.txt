@@ -1,0 +1,19 @@
+正在读取软件包列表...
+正在分析软件包的依赖关系树...
+正在读取状态信息...
+下列软件包是自动安装的并且现在不需要了：
+  archdetect-deb dmeventd finalrd libaio1t64 libboost-filesystem1.83.0
+  libdebian-installer4 libdevmapper-event1.02.1 liblvm2cmd2.03 lvm2 user-setup
+使用'sudo apt autoremove'来卸载它(它们)。
+下列软件包将被升级：
+  libkylin-ondevice-embedding-engine
+升级了 1 个软件包，新安装了 0 个软件包，要卸载 0 个软件包，有 269 个软件包未被升级。
+需要下载 77.4 kB 的归档。
+解压缩后会消耗 86.0 kB 的额外空间。
+获取:1 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 libkylin-ondevice-embedding-engine amd64 1.2.0.0-0k1.0 [77.4 kB]
+已下载 77.4 kB，耗时 0秒 (394 kB/s)
+(正在读取数据库 ... (正在读取数据库 ... 5%(正在读取数据库 ... 10%(正在读取数据库 ... 15%(正在读取数据库 ... 20%(正在读取数据库 ... 25%(正在读取数据库 ... 30%(正在读取数据库 ... 35%(正在读取数据库 ... 40%(正在读取数据库 ... 45%(正在读取数据库 ... 50%(正在读取数据库 ... 55%(正在读取数据库 ... 60%(正在读取数据库 ... 65%(正在读取数据库 ... 70%(正在读取数据库 ... 75%(正在读取数据库 ... 80%(正在读取数据库 ... 85%(正在读取数据库 ... 90%(正在读取数据库 ... 95%(正在读取数据库 ... 100%(正在读取数据库 ... 系统当前共安装有 223857 个文件和目录。)
+准备解压 .../libkylin-ondevice-embedding-engine_1.2.0.0-0k1.0_amd64.deb  ...
+正在解压 libkylin-ondevice-embedding-engine:amd64 (1.2.0.0-0k1.0) 并覆盖 (1.2.0.0-0k0.10) ...
+正在设置 libkylin-ondevice-embedding-engine:amd64 (1.2.0.0-0k1.0) ...
+正在处理用于 libc-bin (2.38-1ok6.9k0.11) 的触发器 ...

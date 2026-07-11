@@ -5,7 +5,7 @@ from typing import Any
 
 from ..db import get_conn
 from .capsule_store import get_capsules_batch, allowed_for_context, bump_usage_batch, now
-from .vector_index import native_candidates
+from .vector_index import PROVIDER, native_candidates
 
 
 def _has_cjk(text: str) -> bool:
@@ -34,58 +34,71 @@ def _match_query(q: str) -> str:
     return " OR ".join(f'"{part}"' for part in parts) if parts else q
 
 
-def _fts_rows(conn, q: str, limit: int, *, only_capsule_ids: set[str] | None = None):
+def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None):
     try:
-        if only_capsule_ids:
-            placeholders = ",".join("?" for _ in only_capsule_ids)
-            return conn.execute(
-                f"""
-                SELECT capsule_id FROM memory_capsules_v2_fts
-                WHERE memory_capsules_v2_fts MATCH ? AND capsule_id IN ({placeholders})
-                LIMIT ?
-                """,
-                (_match_query(q), *sorted(only_capsule_ids), limit),
-            ).fetchall()
+        failed_join = ""
+        params: list[Any] = []
+        if failed_collection is not None:
+            failed_join = """
+                JOIN memory_vector_refs AS ref
+                  ON ref.capsule_id=memory_capsules_v2_fts.capsule_id
+                 AND ref.provider=? AND ref.collection_name=? AND ref.status='index_failed'
+            """
+            params.extend((PROVIDER, failed_collection))
+        params.extend((_match_query(q), limit))
         return conn.execute(
-            "SELECT capsule_id FROM memory_capsules_v2_fts WHERE memory_capsules_v2_fts MATCH ? LIMIT ?",
-            (_match_query(q), limit),
+            f"""
+            SELECT memory_capsules_v2_fts.capsule_id
+            FROM memory_capsules_v2_fts
+            JOIN memory_capsules_v2 AS capsule
+              ON capsule.capsule_id=memory_capsules_v2_fts.capsule_id
+            {failed_join}
+            WHERE memory_capsules_v2_fts MATCH ?
+              AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
+              AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
+            LIMIT ?
+            """,
+            params,
         ).fetchall()
     except Exception:
         return []
 
 
-def _substring_rows(conn, q: str, limit: int, *, only_capsule_ids: set[str] | None = None):
+def _substring_rows(conn, q: str, limit: int, *, failed_collection: str | None = None):
     terms = _zh_terms(q)
     if not terms:
         return []
     clauses = " OR ".join(["content LIKE ?" for _ in terms])
-    params: list[Any] = [f"%{term}%" for term in terms]
-    id_filter = ""
-    if only_capsule_ids:
-        placeholders = ",".join("?" for _ in only_capsule_ids)
-        id_filter = f" AND capsule_id IN ({placeholders})"
-        params.extend(sorted(only_capsule_ids))
+    failed_join = ""
+    params: list[Any] = []
+    if failed_collection is not None:
+        failed_join = """
+            JOIN memory_vector_refs AS ref
+              ON ref.capsule_id=capsule.capsule_id
+             AND ref.provider=? AND ref.collection_name=? AND ref.status='index_failed'
+        """
+        params.extend((PROVIDER, failed_collection))
+    params.extend(f"%{term}%" for term in terms)
     params.append(limit)
     return conn.execute(
         f"""
-        SELECT capsule_id FROM memory_capsules_v2
+        SELECT capsule.capsule_id FROM memory_capsules_v2 AS capsule
+        {failed_join}
         WHERE ({clauses})
-          AND json_extract(state,'$.lifecycle') NOT IN ('forgotten','deleted','rejected','quarantined')
-          {id_filter}
-        ORDER BY updated_at DESC LIMIT ?
+          AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
+          AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
+        ORDER BY capsule.updated_at DESC LIMIT ?
         """,
         params,
     ).fetchall()
 
 
-def _fts_candidate_ids(q: str, *, limit: int, only_capsule_ids: set[str] | None = None) -> list[str]:
-    if only_capsule_ids is not None and not only_capsule_ids:
-        return []
+def _fts_candidate_ids(q: str, *, limit: int, failed_collection: str | None = None) -> list[str]:
     conn = get_conn()
-    rows = _fts_rows(conn, q, limit, only_capsule_ids=only_capsule_ids)
+    rows = _fts_rows(conn, q, limit, failed_collection=failed_collection)
     if _has_cjk(q):
         seen = {r["capsule_id"] for r in rows}
-        for row in _substring_rows(conn, q, limit, only_capsule_ids=only_capsule_ids):
+        for row in _substring_rows(conn, q, limit, failed_collection=failed_collection):
             if row["capsule_id"] not in seen:
                 rows.append(row)
                 seen.add(row["capsule_id"])
@@ -99,11 +112,6 @@ def _normalized_native_score(score: float) -> float:
 
 def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     native_rows, status = native_candidates(q, top_k=top_k * 4)
-    failed_vector_capsule_ids = {
-        capsule_id
-        for capsule_id in status.pop("_failed_capsule_ids", [])
-        if isinstance(capsule_id, str)
-    }
     native_scores: dict[str, float] = {}
     fts_fallback_ids: set[str] = set()
     if native_rows is None:
@@ -117,11 +125,10 @@ def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = Fal
         # An isolated permanently-unindexable Capsule must not disable native
         # retrieval for every other Capsule.  Preserve it through a narrow,
         # observable FTS fallback instead of a whole-index fallback.
-        for capsule_id in _fts_candidate_ids(
-            q,
-            limit=top_k * 4,
-            only_capsule_ids=failed_vector_capsule_ids,
-        ):
+        failed_collection = None
+        if status.get("native_index", {}).get("failed"):
+            failed_collection = status.get("collection")
+        for capsule_id in _fts_candidate_ids(q, limit=top_k * 4, failed_collection=failed_collection):
             if capsule_id not in native_scores:
                 candidate_ids.append(capsule_id)
                 fts_fallback_ids.add(capsule_id)

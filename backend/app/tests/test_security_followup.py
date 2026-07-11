@@ -96,17 +96,77 @@ def test_production_app_fails_during_startup_without_api_key(tmp_path, monkeypat
 def test_protected_get_endpoints_require_auth(tmp_path):
     """Sensitive GET endpoints require X-API-Key."""
     client = _client(tmp_path, api_key="test-key")
+    from backend.app.workflow.persistence import init_workflow_persistence
+
+    init_workflow_persistence()
 
     # Without key
     assert client.get("/audit/logs").status_code == 401
     assert client.get("/memory/v2/search?q=test").status_code == 401
     assert client.get("/kylin/sdk/status").status_code == 401
     assert client.get("/workflow/runs").status_code == 401
+    assert client.get("/workflow/stats").status_code == 401
 
     # With valid key
     headers = {"X-API-Key": "test-key"}
     assert client.get("/memory/v2/search?q=test", headers=headers).status_code == 200
     assert client.get("/kylin/sdk/status", headers=headers).status_code == 200
+    assert client.get("/workflow/stats", headers=headers).status_code == 200
+
+
+def test_count_and_cleanup_parameters_are_bounded(tmp_path):
+    client = _client(tmp_path, api_key="test-key")
+    headers = {"X-API-Key": "test-key"}
+
+    assert client.get("/memory/v2/capsules?limit=-1", headers=headers).status_code == 422
+    assert client.get("/memory/v2/capsules?limit=201", headers=headers).status_code == 422
+    assert client.get("/workflow/runs?limit=-1", headers=headers).status_code == 422
+    assert client.get("/workflow/runs?limit=201", headers=headers).status_code == 422
+    assert client.get("/workflow/runs?offset=-1", headers=headers).status_code == 422
+    assert client.post("/workflow/cleanup?ttl_days=-1", headers=headers).status_code == 422
+    assert client.post(
+        "/memory/v2/command",
+        json={"goal": "bounded command", "top_k": -1},
+        headers=headers,
+    ).status_code == 422
+    assert client.post(
+        "/memory/v2/command",
+        json={"goal": "bounded command", "top_k": 51},
+        headers=headers,
+    ).status_code == 422
+
+
+def test_middleware_generated_errors_keep_security_headers(tmp_path):
+    client = _client(tmp_path, api_key="test-key")
+    headers = {"X-API-Key": "test-key"}
+    responses = [client.get("/audit/logs")]
+    responses.append(
+        client.post(
+            "/memory/v2/capsules",
+            content=b"x" * (5 * 1024 * 1024 + 1),
+            headers={**headers, "Content-Type": "application/json"},
+        )
+    )
+    rate_responses = [client.get("/kylin/sdk/status", headers=headers) for _ in range(11)]
+    responses.append(rate_responses[-1])
+
+    assert [response.status_code for response in responses] == [401, 413, 429]
+    for response in responses:
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"
+        assert "Content-Security-Policy" in response.headers
+
+
+def test_capsule_detail_requires_auth(tmp_path):
+    client = _client(tmp_path, api_key="test-key")
+    headers = {"X-API-Key": "test-key"}
+    capsule_id = client.post(
+        "/memory/v2/capsules",
+        json={"memory_class": "knowledge", "content": {"text": "private capsule"}},
+        headers=headers,
+    ).json()["capsule_id"]
+
+    assert client.get(f"/memory/v2/capsules/{capsule_id}").status_code == 401
+    assert client.get(f"/memory/v2/capsules/{capsule_id}", headers=headers).status_code == 200
 
 
 def test_write_endpoints_require_auth(tmp_path):
@@ -121,7 +181,7 @@ def test_write_endpoints_require_auth(tmp_path):
     # With valid key
     headers = {"X-API-Key": "test-key"}
     assert client.post("/memory/v2/capsules", json=body, headers=headers).status_code == 200
-    assert client.post("/kylin/sdk/reindex", headers=headers).status_code == 200
+    assert client.post("/kylin/sdk/reindex", headers=headers).status_code in {200, 202}
 
 
 def test_constant_time_comparison():
@@ -135,14 +195,12 @@ def test_constant_time_comparison():
 
 
 def test_forget_confirm_exact_matching(tmp_path):
-    """Verify code uses exact JSON matching, not LIKE wildcards."""
+    """Verify ticket lookup uses an exact parameterized ID, not LIKE wildcards."""
     main_py = Path(__file__).parent.parent / "main.py"
     content = main_py.read_text(encoding="utf-8")
 
-    # Should use json.loads for exact field matching
-    assert "json.loads(row['payload'])" in content or "json.loads(preview['payload'])" in content
-    # Should iterate and match exact field
-    assert "payload.get('forget_request_id') ==" in content
+    assert "WHERE forget_request_id=?" in content
+    assert "forget_request_id LIKE" not in content
 
 
 def test_input_limits_exist():
@@ -167,8 +225,43 @@ def test_security_headers(tmp_path):
     headers_lower = {k.lower(): v for k, v in response.headers.items()}
     assert headers_lower.get("x-content-type-options") == "nosniff"
     assert "x-frame-options" in headers_lower
+    csp = headers_lower.get("content-security-policy", "")
     assert "content-security-policy" in headers_lower
+    assert "script-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp.split("style-src", 1)[0]
     assert "referrer-policy" in headers_lower
+
+
+def test_legacy_console_disabled_by_default(tmp_path, monkeypatch):
+    """The old single-file console is not exposed unless explicitly enabled."""
+    monkeypatch.delenv("WANWEI_ENABLE_LEGACY_CONSOLE", raising=False)
+    client = _client(tmp_path, api_key="test-key")
+
+    assert client.get("/console-legacy/").status_code == 401
+    assert client.get("/console-legacy/", headers={"X-API-Key": "test-key"}).status_code == 404
+
+
+def test_legacy_console_opt_in_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_ENABLE_LEGACY_CONSOLE", "1")
+    client = _client(tmp_path, api_key="test-key")
+
+    assert client.get("/console-legacy/").status_code == 401
+    assert client.get("/console-legacy/", headers={"X-API-Key": "test-key"}).status_code == 200
+
+
+def test_vue_console_does_not_ship_default_dev_api_key():
+    console_root = Path(__file__).resolve().parents[3] / "frontend" / "console-vue"
+    app_vue = (console_root / "src" / "App.vue").read_text(encoding="utf-8")
+    client_ts = (console_root / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    dist_scripts = list((console_root / "dist" / "assets").glob("*.js"))
+
+    assert "wanwei-dev-key" not in app_vue
+    assert "wanwei-dev-key" not in client_ts
+    assert dist_scripts
+    assert all(
+        "wanwei-dev-key" not in script.read_text(encoding="utf-8")
+        for script in dist_scripts
+    )
 
 
 def test_policy_patterns_precompiled():

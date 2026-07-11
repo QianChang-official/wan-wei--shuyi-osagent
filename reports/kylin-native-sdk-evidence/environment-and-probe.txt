@@ -1,0 +1,149 @@
+# Kylin native SDK environment evidence
+2026-07-11T12:43:01+08:00
+
+## OS
+NAME="Kylin"
+FULL_NAME="kylin"
+VERSION="银河麒麟桌面操作系统V11"
+VERSION_US="Kylin Linux Desktop V11"
+ID=kylin
+PRETTY_NAME="Kylin V11"
+VERSION_ID="v11"
+HOME_URL="http://www.kylinos.cn/"
+VERSION_CODENAME=kylin
+KYLIN_RELEASE_ID="2603"
+ID_LIKE=openKylin
+Linux wanwei-pc 6.6.0-63-generic #63-KYLINOS SMP PREEMPT_DYNAMIC Sat Feb  7 12:39:56 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+
+## Maintenance state
+Maintain Mode
+
+## Package policy
+libkylin-coreai-embedding-dev:
+  已安装：1.2.0.0-0k0.4
+  候选： 1.2.0.0-0k0.4
+  版本列表：
+ *** 1.2.0.0-0k0.4 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+libkysdk-vector-engine-client-dev:
+  已安装：1.2.0.0-0k1.1
+  候选： 1.2.0.0-0k1.1
+  版本列表：
+ *** 1.2.0.0-0k1.1 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+libkylin-ai-proto-dev:
+  已安装：1.2.0.1-0k0.1
+  候选： 1.2.0.1-0k0.1
+  版本列表：
+ *** 1.2.0.1-0k0.1 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+libkysdk-ai-common-dev:
+  已安装：1.2.0.2-0k1.0
+  候选： 1.2.0.2-0k1.0
+  版本列表：
+ *** 1.2.0.2-0k1.0 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+kylin-ai-runtime:
+  已安装：1.2.0.4-0k0.1
+  候选： 1.2.0.4-0k0.1
+  版本列表：
+ *** 1.2.0.4-0k0.1 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+     1.0.0.0-ok0.16 500
+        500 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin/universe amd64 Packages
+kytensor-client:
+  已安装：2.49.0.6-ok7k0.14
+  候选： 2.49.0.6-ok7k0.14
+  版本列表：
+ *** 2.49.0.6-ok7k0.14 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+kylin-ai-vector-engine:
+  已安装：1.2.0.1-0k1.0
+  候选： 1.2.0.1-0k1.0
+  版本列表：
+ *** 1.2.0.1-0k1.0 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+libkylin-ondevice-embedding-engine:
+  已安装：1.2.0.0-0k1.0
+  候选： 1.2.0.0-0k1.0
+  版本列表：
+ *** 1.2.0.0-0k1.0 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+kylin-ai-abstract-models:
+  已安装：1.2.0.1-0k1.0
+  候选： 1.2.0.1-0k1.0
+  版本列表：
+ *** 1.2.0.1-0k1.0 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+onnxruntime-backend:
+  已安装：1.0.1-ok6k0.1
+  候选： 1.0.1-ok6k0.1
+  版本列表：
+ *** 1.0.1-ok6k0.1 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+kylin-gte-base-model:
+  已安装：1.0.0.1-0k0.9
+  候选： 1.0.0.1-0k0.9
+  版本列表：
+ *** 1.0.0.1-0k0.9 550
+        550 http://archive.kylinos.cn/kylin/KYLIN-ALL 11.0-kylin-2603/main amd64 Packages
+        100 /var/lib/dpkg/status
+
+## Installed versions
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+
+## pkg-config
+1.0.0
+-I/usr/include/kylin-ai -I/usr/include/kysdk-vector-engine-client -lkysdk-coreai-embedding -lkysdk-vector-engine-client
+
+## Vendor source commits
+63aed6f3e947926f5def476997ee1baa6735dd8f
+bed675f418d32c052a6ab4c5c49bae148d90f678
+
+## Project source
+9f5c9e4f73befe77cd7c078ed689d6445cea7c28
+
+## Bridge
+/usr/local/bin/wanwei-kylin-sdk-bridge: verified
+e4d11ba50bb52935df4ced1fabfd7ca16b903389acaa6166e50b39a0cbe99c68  /usr/local/bin/wanwei-kylin-sdk-bridge
+/usr/local/bin/wanwei-kylin-sdk-bridge: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=abf6d8e041c62d19ff47b971d3fc5f79c8a24deb, for GNU/Linux 3.2.0, not stripped
+
+## Services
+active
+active
+207559 /usr/bin/kylin-ai-runtime
+kytensor_http=200
+
+## Direct probe
+2026-07-11T12:43:01,502952350+08:00
+[1783744981519] [32minfo [0m Connection established successfully to  unix:path=/tmp/.kylin-ai-runtime-unix/1000/core-textembedding.sock 
+[1783744981519] [32minfo [0m Runtime version is  1.3.0 InitEngine call new init_v2 
+[1783744981537] [32minfo [0m Proxy init success,sessionId is: 828227534 
+[1783744981547] [32minfo [0m Proxy init model success,model: ensemble-embd_gte-base_uint8-text sessionId: 828227534 
+WANWEI_KYLIN_RESPONSE:{"capabilities":{"embedding":true,"vector_database":true},"dimension":768,"model":"ensemble-embd_gte-base_uint8-text","ok":true}
+2026-07-11T12:43:01,741609737+08:00
+
+## dpkg audit
