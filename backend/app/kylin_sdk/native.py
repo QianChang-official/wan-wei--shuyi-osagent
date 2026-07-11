@@ -22,6 +22,7 @@ DEFAULT_BRIDGE_NAME = "wanwei-kylin-sdk-bridge"
 DEFAULT_COLLECTION = "wanwei_memory_capsules"
 DEFAULT_APP_ID = "wanwei-shuyi-osagent"
 RESPONSE_PREFIX = "WANWEI_KYLIN_RESPONSE:"
+MAX_BRIDGE_TIMEOUT_SECONDS = 60.0
 
 
 class KylinNativeSdkError(RuntimeError):
@@ -35,7 +36,13 @@ def _native_mode() -> str:
 
 def _timeout_seconds() -> float:
     try:
-        return max(1.0, min(float(os.environ.get("WANWEI_KYLIN_SDK_TIMEOUT_SECONDS", "10")), 60.0))
+        return max(
+            1.0,
+            min(
+                float(os.environ.get("WANWEI_KYLIN_SDK_TIMEOUT_SECONDS", "10")),
+                MAX_BRIDGE_TIMEOUT_SECONDS,
+            ),
+        )
     except ValueError:
         return 10.0
 

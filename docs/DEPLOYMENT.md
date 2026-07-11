@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1
 - 健康检查：`http://127.0.0.1:8010/health`
 - 开发 API 文档：`http://127.0.0.1:8010/docs`
 
-开发模式默认 API Key 为 `wanwei-dev-key`，控制台已经预填。生产模式必须显式设置强密钥：
+开发模式后端在未配置时使用 `wanwei-dev-key`，但控制台不会预填或把它写入构建产物；开发者需在控制台侧栏显式输入。生产模式必须显式设置强密钥：
 
 ```powershell
 $env:WANWEI_API_KEY='replace-with-a-strong-random-key'

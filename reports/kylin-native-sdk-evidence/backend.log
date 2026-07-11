@@ -1,0 +1,142 @@
+INFO:     Started server process [208711]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     request_complete method=GET route=/health status=200 duration_ms=1.65 request_id=req_e51d0d30b7ce44b39767879b149f69c3
+initialized
+INFO:     127.0.0.1:41166 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/health status=200 duration_ms=0.71 request_id=req_a793058cd5f54da0ad4f4f8c3d7a652a
+INFO:     127.0.0.1:41180 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=282.52 request_id=req_a913b2a3eb084a8cb31d0e119aaad251
+INFO:     127.0.0.1:41184 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/v2/capsules status=200 duration_ms=320.65 request_id=req_5907082c19614e6d9bb3d36832fcddef
+initialized
+INFO:     127.0.0.1:51150 - "POST /memory/v2/capsules HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/v2/capsules status=200 duration_ms=247.07 request_id=req_308221be468d4b85b766e201ae3298a2
+initialized
+INFO:     127.0.0.1:51150 - "POST /memory/v2/capsules HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/v2/capsules status=200 duration_ms=228.42 request_id=req_253de01666bb4c55abb506170d40d4d4
+initialized
+INFO:     127.0.0.1:51150 - "POST /memory/v2/capsules HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=183.71 request_id=req_ca16c35b7d8443e2b8f6e71207f20cc0
+INFO:     127.0.0.1:51150 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=229.99 request_id=req_02dd754d8ac142e2ac08fb7410033c9b
+INFO:     127.0.0.1:35516 - "GET /memory/v2/search?q=%E4%B8%89%E4%B8%AA%E6%9C%88%E4%B8%80%E6%AC%A1%EF%BC%8C%E5%B0%86%E5%85%AC%E5%8F%B8%E7%9A%84%E6%94%B6%E6%94%AF%E6%9D%90%E6%96%99%E5%88%B6%E6%88%90%E7%94%B5%E5%AD%90%E6%96%87%E6%A1%A3%E4%BA%A4%E7%BB%99%E8%B4%9F%E8%B4%A3%E6%A0%B8%E9%AA%8C%E8%B4%A6%E7%9B%AE%E7%9A%84%E4%BA%BA&top_k=3 HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/preview status=200 duration_ms=5.02 request_id=req_b469c73d56b14a3b8a3bbf4fd90d42a7
+INFO:     127.0.0.1:48826 - "POST /memory/forget/preview HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/confirm status=200 duration_ms=2.69 request_id=req_f3c2711b6e6b4fea9ab3e4b0efa1beca
+initialized
+INFO:     127.0.0.1:48826 - "POST /memory/forget/confirm HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=264.54 request_id=req_b37b268da1d64bc4a84c20414dbbcea2
+INFO:     127.0.0.1:48826 - "GET /memory/v2/search?q=%E4%B8%89%E4%B8%AA%E6%9C%88%E4%B8%80%E6%AC%A1%EF%BC%8C%E5%B0%86%E5%85%AC%E5%8F%B8%E7%9A%84%E6%94%B6%E6%94%AF%E6%9D%90%E6%96%99%E5%88%B6%E6%88%90%E7%94%B5%E5%AD%90%E6%96%87%E6%A1%A3%E4%BA%A4%E7%BB%99%E8%B4%9F%E8%B4%A3%E6%A0%B8%E9%AA%8C%E8%B4%A6%E7%9B%AE%E7%9A%84%E4%BA%BA&top_k=3 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [208711]
+INFO:     Started server process [209505]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     request_complete method=GET route=/health status=200 duration_ms=1.43 request_id=req_3c6f0dad03784bc99243f074fa492571
+initialized
+INFO:     127.0.0.1:33816 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=199.76 request_id=req_cc3734ac28f2468d9d7537960f4b7a27
+INFO:     127.0.0.1:33832 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/preview status=200 duration_ms=674.72 request_id=req_93dd6a7f9ef64bf191a607e91feb33bd
+INFO:     127.0.0.1:54994 - "POST /memory/forget/preview HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/confirm status=200 duration_ms=184.94 request_id=req_b09163f977fd4deeb171c924c16cbcc1
+initialized
+INFO:     127.0.0.1:54994 - "POST /memory/forget/confirm HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=201.32 request_id=req_3a3637d59d404692a923b512485e7a07
+INFO:     127.0.0.1:54994 - "GET /memory/v2/search?q=%E4%B8%89%E4%B8%AA%E6%9C%88%E4%B8%80%E6%AC%A1%EF%BC%8C%E5%B0%86%E5%85%AC%E5%8F%B8%E7%9A%84%E6%94%B6%E6%94%AF%E6%9D%90%E6%96%99%E5%88%B6%E6%88%90%E7%94%B5%E5%AD%90%E6%96%87%E6%A1%A3%E4%BA%A4%E7%BB%99%E8%B4%9F%E8%B4%A3%E6%A0%B8%E9%AA%8C%E8%B4%A6%E7%9B%AE%E7%9A%84%E4%BA%BA&top_k=3 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=194.69 request_id=req_7feaf6e94fdf46949ba6cc7dfdbec186
+INFO:     127.0.0.1:54994 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [209505]
+INFO:     Started server process [209812]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     request_complete method=GET route=/health status=200 duration_ms=1.39 request_id=req_ad50b169dd1b4ecbae006302f78f5e29
+initialized
+INFO:     127.0.0.1:45322 - "GET /health HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=220.71 request_id=req_3997b34441c547fc81c33e3cd555d797
+INFO:     127.0.0.1:45324 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=201.57 request_id=req_2a7d043947b0418c8c9a87f6eb54a6ac
+INFO:     127.0.0.1:60542 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=5.16 request_id=req_5fcbac77ffe64b36988339159e4428a5
+INFO:     127.0.0.1:60542 - "GET /memory/v2/search?q=%E5%AE%A2%E6%88%B7%E6%8B%9C%E8%AE%BF&top_k=3 HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/kylin/sdk/reindex status=202 duration_ms=1.50 request_id=req_c7b9897e443a46379bf094b7f91e71f5
+INFO:     127.0.0.1:60542 - "POST /kylin/sdk/reindex?limit=10 HTTP/1.1" 202 Accepted
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=226.65 request_id=req_af81334b6c0d4cff99caa33c9479e725
+INFO:     127.0.0.1:60542 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=353.13 request_id=req_690d88ff19a8491087ac1a7114158531
+INFO:     127.0.0.1:60542 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/kylin/sdk/status status=200 duration_ms=181.76 request_id=req_ff589029d6c140779600c9d0b029f2fa
+INFO:     127.0.0.1:60542 - "GET /kylin/sdk/status HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=211.40 request_id=req_edc44ffec6b24662890f76dc639da35a
+INFO:     127.0.0.1:60542 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=211.24 request_id=req_96feef501f31459d8d57043fb8e68d5d
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=201.81 request_id=req_1fc1d32ac4b649db8c831716633161fb
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=205.37 request_id=req_78cae33f3ecf4ecfaddfa443b7a0ffea
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=212.03 request_id=req_c87f95964b9d4e369cf51cddd848092f
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=194.73 request_id=req_2f000d5b0baa4158aff35abb2b768845
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=200.19 request_id=req_0386a503aa55485abca95c6f7ca1ff64
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=201.22 request_id=req_7a5eb89027f54e22a72d6c16886e76e8
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=190.42 request_id=req_9ff88c6cd49b4b8098c5c4f56291c01e
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=277.43 request_id=req_c04efbec03a84d4f81378e3e6eb9e977
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=195.64 request_id=req_b3e6f58c598f43f286f4232fe2acb698
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=200.58 request_id=req_2771d60461eb4456bf357efa5373655b
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=191.71 request_id=req_4f87d739eaed49c586cc8c20d13cef72
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=187.73 request_id=req_a39fc94162b04e58b937dff0662605d4
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=191.25 request_id=req_772624c9230f48e59836c834671eda63
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=191.45 request_id=req_6f7d5ff8ccd54e378e7e1e2b00f3133e
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=198.36 request_id=req_017a5f8ba64d4c61b805f675ee04ab5d
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=191.48 request_id=req_7432764a1f444d1b9c147b866a016713
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=182.39 request_id=req_ceab7f4665b74114bab85c4cb7826fd1
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=184.99 request_id=req_3fae6fb483524028aea5569b88c1f919
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=188.68 request_id=req_8ae337454d104b55971fe34a813ed08c
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=191.21 request_id=req_651f3f488dcc4089b02f9870b13ed181
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=199.68 request_id=req_65fd10c64e4149998ba890e2d6ed247a
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=192.88 request_id=req_afe3d7ccc12a4c45835ff04248f1edd6
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=242.65 request_id=req_b168abe8af0143e4aace24c987f11469
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=242.64 request_id=req_8276230c76ff4c60b71c2687e9561dad
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=245.19 request_id=req_147789e90ead4e94b377496957258001
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=196.63 request_id=req_2b9dc05e20ff4c04a2f7e5911407e70f
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=189.22 request_id=req_420809b3effa4b6e936bd79d8fc1d1fc
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=186.34 request_id=req_13387a6770d24b02915386cdd805d9ff
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=189.41 request_id=req_ec7e7c26fc4a4460bcfc7f733421da71
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E6%8B%9C%E8%AE%BF%E7%BB%93%E6%9D%9F%E5%90%8E%E6%8A%8A%E8%B0%88%E8%AF%9D%E9%87%8D%E7%82%B9%E5%81%9A%E6%88%90%E6%96%87%E6%A1%A3%E7%BB%99%E5%9B%A2%E9%98%9F&top_k=2 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=193.51 request_id=req_9a9293c2740c4b5c857fa72ec2019641
+INFO:     127.0.0.1:49014 - "GET /memory/v2/search?q=%E8%BF%90%E7%BB%B4%E6%9C%BA%E5%99%A8%E5%A4%9A%E4%B9%85%E6%A0%B8%E5%AF%B9%E4%B8%80%E6%AC%A1%E7%B3%BB%E7%BB%9F%E4%BF%AE%E5%A4%8D%E5%B9%B6%E7%95%99%E4%B8%8B%E8%AE%B0%E5%BD%95&top_k=2 HTTP/1.1" 200 OK

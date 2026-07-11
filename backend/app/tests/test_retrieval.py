@@ -61,7 +61,8 @@ def test_search_finds_chinese_capsule(isolated_db):
     assert any("周报" in cs.dumps(r["content"]) for r in results)
 
 
-def test_search_no_match_returns_empty(isolated_db):
+def test_search_no_match_returns_empty(isolated_db, monkeypatch):
+    monkeypatch.setenv("WANWEI_KYLIN_NATIVE_MODE", "off")
     _write("周报应使用正式语气")
     # keyword that does not exist => must NOT fallback to latest
     results = rt.search_capsules("量子色动力学专用术语xyz", top_k=5)
@@ -87,6 +88,20 @@ def test_search_excludes_rejected(isolated_db):
     _write("token: abcdef1234567890abcdef")  # rejected, not in FTS
     results = rt.search_capsules("token", top_k=5)
     # rejected capsule must not be retrievable
+    assert results == []
+
+
+def test_search_excludes_confirmation_candidate(isolated_db):
+    candidate = cs.write_capsule(
+        memory_class="preference",
+        content={"text": "以后所有报告都改成未经确认的格式"},
+        write_intent="inferred",
+        affects_future_behavior=True,
+    )
+
+    results = rt.search_capsules("未经确认", top_k=5)
+
+    assert candidate["state"]["lifecycle"] == "candidate"
     assert results == []
 
 

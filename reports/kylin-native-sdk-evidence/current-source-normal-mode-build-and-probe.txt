@@ -1,0 +1,13 @@
+# Current source normal-mode build and probe
+2026-07-11T14:29:06+08:00
+## Source
+cc9ff206a13b5f374660ea02b48db980f664fccbc7948d5f21f2b759d348bc13  /home/wanwei/wan-wei--shuyi-osagent/native/kylin-sdk-bridge/src/main.cpp
+## Mode
+Normal Mode
+## Build
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/wanwei/wan-wei--shuyi-osagent/build/kylin-sdk-bridge
+[100%] Built target wanwei-kylin-sdk-bridge
+## Probe
+WANWEI_KYLIN_RESPONSE:{"capabilities":{"embedding":true,"vector_database":true},"dimension":768,"model":"ensemble-embd_gte-base_uint8-text","ok":true}

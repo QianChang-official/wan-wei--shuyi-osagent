@@ -163,6 +163,10 @@ def list_runs(
     返回:
         run 数据列表
     """
+    if not 1 <= limit <= 200:
+        raise ValueError("limit must be between 1 and 200")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
     conn = get_conn()
     cursor = conn.cursor()
 
@@ -197,6 +201,8 @@ def cleanup_old_runs(ttl_days: int = DEFAULT_TTL_DAYS) -> int:
     返回:
         删除的记录数
     """
+    if not 1 <= ttl_days <= 3650:
+        raise ValueError("ttl_days must be between 1 and 3650")
     conn = get_conn()
     cursor = conn.cursor()
 

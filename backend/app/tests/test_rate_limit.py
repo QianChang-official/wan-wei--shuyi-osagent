@@ -10,7 +10,9 @@ Verifies the per-IP token-bucket limiter:
 """
 from __future__ import annotations
 
-from backend.app.security.rate_limit import RateLimiter
+import pytest
+
+from backend.app.security.rate_limit import RateLimiter, build_default_rate_limiter
 
 
 def test_burst_up_to_capacity_then_reject():
@@ -62,6 +64,59 @@ def test_unlimited_endpoint_always_allows():
         assert rl.allow("a", "/not-limited", now=t) is True
 
 
+def test_default_write_limit_covers_unlisted_mutating_paths():
+    rl = RateLimiter({}, default_write_limit_per_min=2)
+    t = 500.0
+
+    assert rl.allow("a", "/new-heavy-action", method="POST", now=t) is True
+    assert rl.allow("a", "/new-heavy-action", method="POST", now=t) is True
+    assert rl.allow("a", "/new-heavy-action", method="POST", now=t) is False
+    assert rl.allow("a", "/new-heavy-action", method="GET", now=t) is True
+
+
+def test_default_write_limit_shares_bucket_across_unlisted_paths():
+    rl = RateLimiter({}, default_write_limit_per_min=2)
+    t = 500.0
+
+    assert rl.allow("a", "/unlisted-one", method="POST", now=t) is True
+    assert rl.allow("a", "/unlisted-two", method="POST", now=t) is True
+    assert rl.allow("a", "/unlisted-three", method="POST", now=t) is False
+
+
+def test_protected_get_limit_covers_sensitive_prefixes():
+    rl = RateLimiter(
+        {},
+        protected_get_limit_per_min=1,
+        protected_get_paths={"/audit/logs"},
+        protected_get_prefixes=("/workflow/runs",),
+    )
+    t = 500.0
+
+    assert rl.allow("a", "/audit/logs", method="GET", now=t) is True
+    assert rl.allow("a", "/audit/logs", method="GET", now=t) is False
+    assert rl.allow("a", "/workflow/runs/run-1/trace", method="GET", now=t) is True
+    assert rl.allow("a", "/workflow/runs/run-2/artifacts", method="GET", now=t) is False
+    assert rl.allow("a", "/health", method="GET", now=t) is True
+
+
+def test_default_limiter_covers_capsule_detail_reads():
+    limiter = build_default_rate_limiter()
+
+    assert limiter.limit_for("/memory/v2/capsules/cap_private", method="GET") == 120
+
+
+def test_default_limiter_tightly_limits_native_status_probe():
+    limiter = build_default_rate_limiter()
+
+    assert limiter.limit_for("/kylin/sdk/status", method="GET") == 10
+
+
+def test_default_limiter_covers_workflow_statistics():
+    limiter = build_default_rate_limiter()
+
+    assert limiter.limit_for("/workflow/stats", method="GET") == 60
+
+
 def test_lru_cap_bounds_memory():
     rl = RateLimiter({"/x": 1}, max_ips=10)
     t = 500.0
@@ -91,3 +146,77 @@ def test_middleware_returns_429_on_burst():
     codes = [client.get("/ping").status_code for _ in range(4)]
     assert codes[:3] == [200, 200, 200], f"first 3 should pass, got {codes}"
     assert codes[3] == 429, f"4th should be rate-limited, got {codes}"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/memory/forget/preview"),
+        ("post", "/memory/forget/confirm"),
+        ("post", "/memory/v2/command"),
+        ("post", "/memory/v2/reflection"),
+        ("post", "/kylin/sdk/reindex"),
+        ("post", "/workflow/cleanup"),
+        ("put", "/unlisted/state-change"),
+        ("patch", "/unlisted/state-change"),
+        ("delete", "/unlisted/state-change"),
+        ("get", "/workflow/runs/run-1/trace"),
+    ],
+)
+def test_middleware_rate_limits_heavy_state_changing_and_protected_paths(method, path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.app.security.rate_limit import RateLimitMiddleware
+
+    app = FastAPI()
+    limiter = RateLimiter(
+        {
+            "/memory/forget/preview": 1,
+            "/memory/forget/confirm": 1,
+            "/memory/v2/command": 1,
+            "/memory/v2/reflection": 1,
+            "/kylin/sdk/reindex": 1,
+            "/workflow/cleanup": 1,
+        },
+        default_write_limit_per_min=1,
+        protected_get_limit_per_min=1,
+        protected_get_prefixes=("/workflow/runs",),
+    )
+    app.add_middleware(RateLimitMiddleware, limiter=limiter)
+
+    async def ok():
+        return {"ok": True}
+
+    app.add_api_route(path, ok, methods=[method.upper()])
+    client = TestClient(app)
+
+    request = getattr(client, method)
+    assert request(path).status_code == 200
+    response = request(path)
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "1"
+
+
+def test_middleware_leaves_public_health_unlimited():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.app.security.rate_limit import RateLimitMiddleware
+
+    app = FastAPI()
+    limiter = RateLimiter(
+        {},
+        default_write_limit_per_min=1,
+        protected_get_limit_per_min=1,
+        protected_get_paths={"/metrics"},
+    )
+    app.add_middleware(RateLimitMiddleware, limiter=limiter)
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}
+
+    client = TestClient(app)
+    codes = [client.get("/health").status_code for _ in range(5)]
+    assert codes == [200, 200, 200, 200, 200]

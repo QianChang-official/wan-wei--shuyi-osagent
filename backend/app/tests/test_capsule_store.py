@@ -76,6 +76,30 @@ def test_write_capsule_rejects_secret_not_in_fts(isolated_db):
     assert hits == []
 
 
+def test_rejected_capsule_does_not_persist_blocked_content(isolated_db):
+    secret = "api_key=plain-text-secret-must-not-persist"
+
+    res = _write_basic(content={"nested": {"credential": secret}})
+
+    assert res["governance"]["policy_result"] == "reject"
+    assert cs.get_capsule(res["capsule_id"]) is None
+
+
+def test_confirmation_candidate_is_not_added_to_fts(isolated_db):
+    res = _write_basic(
+        content={"text": "未经确认的推断偏好"},
+        write_intent="inferred",
+        affects_future_behavior=True,
+    )
+
+    hits = cs.get_conn().execute(
+        "SELECT capsule_id FROM memory_capsules_v2_fts WHERE capsule_id=?",
+        (res["capsule_id"],),
+    ).fetchall()
+    assert res["state"]["lifecycle"] == "candidate"
+    assert hits == []
+
+
 def test_write_capsule_persists_row(isolated_db):
     res = _write_basic()
     got = cs.get_capsule(res["capsule_id"])
@@ -169,7 +193,7 @@ def test_forget_capsules_hard_delete_lifecycle(isolated_db):
     res = _write_basic()
     cs.forget_capsules([res["capsule_id"]], mode="hard_delete")
     got = cs.get_capsule(res["capsule_id"])
-    assert got["state"]["lifecycle"] == "deleted"
+    assert got is None
 
 
 def test_forget_capsules_skips_missing(isolated_db):
@@ -209,6 +233,28 @@ def test_allowed_for_context_blocks_forgotten():
         "state": {"lifecycle": "forgotten"},
     }
     assert cs.allowed_for_context(cap) is False
+
+
+def test_allowed_for_context_blocks_confirmation_candidate():
+    cap = {
+        "governance": {"policy_result": "require_confirmation", "sensitivity_level": "S1"},
+        "state": {"lifecycle": "candidate"},
+    }
+    assert cs.allowed_for_context(cap) is False
+
+
+def test_stale_usage_update_cannot_revive_forgotten_capsule(isolated_db):
+    res = _write_basic(content={"text": "遗忘状态不得被旧检索快照覆盖"})
+    stale_state = dict(res["state"])
+    stale_state["usage_count"] = 99
+    stale_state["last_accessed_at"] = "2099-01-01T00:00:00Z"
+
+    cs.forget_capsules([res["capsule_id"]])
+    cs.bump_usage_batch([(res["capsule_id"], stale_state)])
+
+    stored = cs.get_capsule(res["capsule_id"])
+    assert stored["state"]["lifecycle"] == "forgotten"
+    assert "forgotten_at" in stored["state"]
 
 
 def test_allowed_for_context_high_risk_blocks_conflicted():

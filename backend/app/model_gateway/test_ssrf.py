@@ -7,6 +7,7 @@ SSRF test vectors; hardcoded by design (NOSONAR). They exercise the denylist in
 backend/app/security/ssrf.py and must NOT be made configurable or weakened.
 """
 import pytest
+from ..security import ssrf
 from ..security.ssrf import SSRFError, validate_external_url
 from ..model_gateway.schemas import ModelGatewayTestIn
 from ..model_gateway.service import run_provider_test
@@ -38,7 +39,10 @@ def test_blocks_ipv6_loopback():
         validate_external_url("http://[::1]/v1")
 
 
-def test_allows_public_https():
+def test_allows_public_https(monkeypatch):
+    # The validation contract is independent of the test host's DNS policy.
+    # Live resolution can be sinkholed to a blocked address in offline VMs.
+    monkeypatch.setattr(ssrf, "_resolve_blocked", lambda _host: False)
     assert validate_external_url("https://api.anthropic.com/v1").startswith("https://")
 
 

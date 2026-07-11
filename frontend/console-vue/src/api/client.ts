@@ -89,7 +89,7 @@ export interface VersionMapping {
   evidence_files: string[]
 }
 
-let apiKey = 'wanwei-dev-key'
+let apiKey = ''
 
 export function setApiKey(value: string): void {
   apiKey = value.trim()

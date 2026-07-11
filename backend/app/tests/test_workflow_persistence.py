@@ -153,6 +153,33 @@ def test_workflow_cleanup(test_db):
     assert final_count == 1
 
 
+def test_workflow_cleanup_rejects_negative_ttl_without_deleting(test_db):
+    from backend.app.workflow.persistence import init_workflow_persistence, save_run, cleanup_old_runs, get_run_count
+
+    init_workflow_persistence()
+    save_run(
+        "wfr_keep",
+        {
+            "run_id": "wfr_keep",
+            "trace_id": "trace_keep",
+            "scenario": "keep",
+            "user_goal": "must survive invalid cleanup",
+            "status": "completed",
+            "dry_run": True,
+            "created_at": "2026-07-11T00:00:00Z",
+            "version": "v0.9.5",
+            "summary": {},
+            "trace": [],
+            "artifacts": {},
+        },
+    )
+
+    with pytest.raises(ValueError, match="ttl_days"):
+        cleanup_old_runs(ttl_days=-1)
+
+    assert get_run_count() == 1
+
+
 def test_workflow_storage_stats(test_db):
     """测试存储统计功能"""
     from backend.app.workflow.persistence import init_workflow_persistence, save_run, get_storage_stats

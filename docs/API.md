@@ -18,7 +18,7 @@
 | GET | `/health/live` | 否 | 进程存活探针，不检查外部状态 |
 | GET | `/health/ready` | 否 | 检查 SQLite 查询与控制台静态资源 |
 | GET | `/metrics` | 是 | Prometheus 文本格式进程/HTTP 指标 |
-| GET | `/kylin/sdk/status` | 是 | 原生 SDK Bridge 可用性与能力，不返回请求内容或凭据 |
+| GET | `/kylin/sdk/status` | 是 | 原生 SDK Bridge 可用性、能力、索引覆盖和 `delete_pending` 数量，不返回请求内容或凭据 |
 | POST | `/kylin/sdk/reindex?limit=10&retry_failed=false` | 是 | 异步、有界迁移既有合规 Capsule 到原生向量索引；默认 10、最大 25，返回 `202` 后通过 status 观察进度 |
 
 ## MemoryCapsule 与检索
@@ -31,10 +31,15 @@
 | GET | `/memory/v2/search` | Kylin native 向量检索优先；SDK 不可用时 FTS5/中文 substring 后备，并返回 retrieval 状态 |
 | POST | `/memory/v2/command` | 风险分级与指挥闭环 |
 | POST | `/memory/v2/reflection` | 任务复盘与演化动作 |
-| POST | `/memory/forget/preview` | 精准遗忘预览 |
-| POST | `/memory/forget/confirm` | 确认后执行遗忘 |
+| POST | `/memory/forget/preview` | 对 v2 Capsule 执行受治理语义检索，返回可选择的精准遗忘候选 |
+| POST | `/memory/forget/confirm` | 仅删除请求中 `capsule_ids` / `event_ids` 且已出现在对应预览里的条目；本地 Capsule、两套 FTS、票据、审计和向量删除意图在一个 SQLite 事务中提交，厂商删除在提交后幂等执行并可由后台恢复；`hard_delete` 会物理删除 v2 Capsule |
 
-兼容入口 `/memory/events`、`/memory/search` 与 `/memory/capsules/{capsule_id}` 仍保留，但新集成应优先使用 v2 路径。
+原生 upsert 使用持久 attempt generation 和每代独立 vector ID。过期 worker
+只能清理自己的旧 ID，不能覆盖或删除接管 worker 已发布的新向量。对并发遗忘、
+厂商暂态失败或进程崩溃仍不确定的 ID，会保存在 `delete_pending`/tombstone
+outbox 中，由启动即运行的有界 sweeper 重试；只有厂商明确确认后才报告完成。
+
+兼容入口 `/memory/events` 与 `/memory/search` 仍保留；Capsule 详情仅提供 `/memory/v2/capsules/{capsule_id}`，新集成应统一使用 v2 路径。
 
 ## Workflow 与审计
 

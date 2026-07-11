@@ -1,0 +1,85 @@
+{
+  "semantic_query": "拜访结束后把谈话重点做成文档给团队",
+  "before_status": {
+    "backend": "kylin_native",
+    "available": true,
+    "reason": null,
+    "bridge_path": "/usr/local/bin/wanwei-kylin-sdk-bridge",
+    "capabilities": {
+      "embedding": true,
+      "vector_database": true
+    },
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "index": {
+      "eligible": 2,
+      "indexed": 0,
+      "failed": 0,
+      "pending": 2
+    },
+    "reindex_in_progress": false
+  },
+  "before_search_retrieval": {
+    "backend": "fts_fallback",
+    "fallback_reason": "native_index_backfill_pending",
+    "native_index": {
+      "eligible": 2,
+      "indexed": 0,
+      "failed": 0,
+      "pending": 2
+    }
+  },
+  "schedule_http_status": 202,
+  "scheduled": {
+    "backend": "kylin_native",
+    "scheduled": true,
+    "limit": 10,
+    "retry_failed": false,
+    "index": {
+      "eligible": 2,
+      "indexed": 0,
+      "failed": 0,
+      "pending": 2
+    },
+    "reindex_in_progress": true
+  },
+  "poll_count": 3,
+  "after_status": {
+    "backend": "kylin_native",
+    "available": true,
+    "reason": null,
+    "bridge_path": "/usr/local/bin/wanwei-kylin-sdk-bridge",
+    "capabilities": {
+      "embedding": true,
+      "vector_database": true
+    },
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0
+    },
+    "reindex_in_progress": false
+  },
+  "after_search_http_status": 200,
+  "after_search_retrieval": {
+    "backend": "kylin_native",
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "collection": "wanwei_sdk_history",
+    "native_index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0
+    }
+  },
+  "after_search_result_ids": [
+    "cap_d8a0530d5e71",
+    "cap_cbd3ca72057e"
+  ],
+  "after_search_top_content": {
+    "text": "客户拜访结束后，把沟通要点整理成纪要发送给项目组。"
+  }
+}

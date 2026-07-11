@@ -1,0 +1,91 @@
+{
+  "result": "pass",
+  "environment": {
+    "mode": "Normal Mode",
+    "bridge_path": "/usr/local/bin/wanwei-kylin-sdk-bridge",
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "collection": "wanwei_atomic_final_1783763867"
+  },
+  "writes": [
+    {
+      "capsule_id": "cap_701016092776",
+      "backend": "kylin_native",
+      "vector_id": 1
+    },
+    {
+      "capsule_id": "cap_37549af1ea58",
+      "backend": "kylin_native",
+      "vector_id": 2
+    },
+    {
+      "capsule_id": "cap_3c1d97b9c811",
+      "backend": "kylin_native",
+      "vector_id": 3
+    }
+  ],
+  "semantic_preview": {
+    "backend": "kylin_native",
+    "fts_exact_hits": [],
+    "candidate_ids": [
+      "cap_701016092776",
+      "cap_3c1d97b9c811",
+      "cap_37549af1ea58"
+    ],
+    "target_rank": 1
+  },
+  "forget": {
+    "http_status": 200,
+    "deleted_capsule_ids": [
+      "cap_701016092776"
+    ],
+    "deleted_event_ids": [],
+    "native_vector": {
+      "backend": "kylin_native",
+      "deleted_vector_ids": [
+        1
+      ],
+      "pending_vector_ids": []
+    },
+    "replay_http_status": 200,
+    "replay_idempotent": true,
+    "lifecycle": "forgotten",
+    "fts_rows_after": 0,
+    "vector_id": 1,
+    "vector_ref_status": "deleted",
+    "ticket_status": "completed",
+    "confirm_audit_count": 1,
+    "target_recalled_after_forget": false
+  },
+  "final_status": {
+    "backend": "kylin_native",
+    "available": true,
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "native_index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0,
+      "delete_pending": 0
+    }
+  },
+  "checks": {
+    "initial_status_native": true,
+    "model_is_real": true,
+    "all_writes_native": true,
+    "non_keyword_fts_zero": true,
+    "target_selected_by_native_preview": true,
+    "confirm_succeeded": true,
+    "native_vector_deleted": true,
+    "replay_idempotent": true,
+    "local_lifecycle_forgotten": true,
+    "local_fts_removed": true,
+    "vector_ref_deleted": true,
+    "ticket_completed": true,
+    "single_confirm_audit": true,
+    "preview_audit_minimized": true,
+    "post_forget_not_recalled": true,
+    "delete_backlog_zero": true
+  }
+}

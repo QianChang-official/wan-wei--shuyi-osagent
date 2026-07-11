@@ -9,6 +9,8 @@ from typing import Any
 _PATTERNS = [
     # Passwords
     (re.compile(r'(password["\']?\s*[:=]\s*["\']?)([^"\'}\s]+)', re.IGNORECASE), r'\1***REDACTED***'),
+    # Generic credential assignments
+    (re.compile(r'((?:api[_-]?key|secret|token)["\']?\s*[:=]\s*["\']?)([^"\'}\s,]+)', re.IGNORECASE), r'\1***REDACTED***'),
     # Bearer tokens
     (re.compile(r'(Bearer\s+)([A-Za-z0-9\-._~+/]+=*)', re.IGNORECASE), r'\1***REDACTED***'),
     # OpenAI-style keys (sk-, sess-)
@@ -90,15 +92,21 @@ def redact_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     result = redact_dict(payload, in_place=False)
 
-    # For policy rejections, further reduce stored content
+    # Policy-rejected content is blocked from memory, including nested legacy
+    # event payloads. Keep decision metadata but discard every content field.
     is_reject = (result.get('policy_result') == 'reject'
-                 or result.get('guard', {}).get('policy_result') == 'reject')
-    if is_reject and 'content' in result:
-        content = result['content']
-        if isinstance(content, dict):
-            content = str(content)
-        # Store only preview and metadata, not full content
-        result['content'] = '[REDACTED - Policy Block]'
-        result['content_preview'] = redact_sensitive_text(content[:100]) if content else ''
+                  or result.get('guard', {}).get('policy_result') == 'reject')
+    if is_reject:
+        def strip_content(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: '[REDACTED - Policy Block]' if key == 'content' else strip_content(item)
+                    for key, item in value.items()
+                }
+            if isinstance(value, list):
+                return [strip_content(item) for item in value]
+            return value
+
+        result = strip_content(result)
 
     return result

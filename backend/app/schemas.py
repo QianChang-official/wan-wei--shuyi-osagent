@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Any
+from typing import Any, Literal
 
 class MemoryEventIn(BaseModel):
     source_type: str
@@ -8,12 +8,14 @@ class MemoryEventIn(BaseModel):
 
 class ForgetPreviewIn(BaseModel):
     instruction: str
-    scope: str='current_user'
+    scope: Literal['current_user']='current_user'
 
 class ForgetConfirmIn(BaseModel):
     forget_request_id: str
     confirm: bool=True
-    mode: str='cascade'
+    mode: Literal['cascade', 'soft_delete', 'hard_delete']='cascade'
+    capsule_ids: list[str] = Field(default_factory=list, max_length=50)
+    event_ids: list[str] = Field(default_factory=list, max_length=50)
 
 class CapsuleWriteIn(BaseModel):
     memory_class: str
@@ -33,7 +35,7 @@ class CapsuleWriteIn(BaseModel):
 class CommandLoopIn(BaseModel):
     goal: str
     scene: str = 'general'
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=50)
 
 class ReflectionIn(BaseModel):
     task_id: str

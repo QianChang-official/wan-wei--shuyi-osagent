@@ -1,0 +1,62 @@
+{
+  "result": "pass",
+  "source_bridge": "/home/wanwei/wan-wei--shuyi-osagent/build/kylin-sdk-bridge/wanwei-kylin-sdk-bridge",
+  "writes": [
+    {
+      "capsule_id": "cap_07aae89518a5",
+      "backend": "kylin_native",
+      "vector_id": 1
+    },
+    {
+      "capsule_id": "cap_4d23872636d2",
+      "backend": "kylin_native",
+      "vector_id": 2
+    },
+    {
+      "capsule_id": "cap_270bb795438e",
+      "backend": "kylin_native",
+      "vector_id": 3
+    }
+  ],
+  "semantic_preview": {
+    "backend": "kylin_native",
+    "target_rank": 1,
+    "target_present": true
+  },
+  "forget": {
+    "http_status": 200,
+    "lifecycle": "forgotten",
+    "vector_ref_status": "deleted",
+    "deleted_vector_ids": [
+      1
+    ],
+    "pending_vector_ids": [],
+    "replay_idempotent": true,
+    "target_recalled_after_forget": false
+  },
+  "audit": {
+    "ticket_status": "completed",
+    "preview_content_omitted": true,
+    "instruction_omitted": true
+  },
+  "status": {
+    "backend": "kylin_native",
+    "available": true,
+    "reason": null,
+    "bridge_path": "/home/wanwei/wan-wei--shuyi-osagent/build/kylin-sdk-bridge/wanwei-kylin-sdk-bridge",
+    "capabilities": {
+      "embedding": true,
+      "vector_database": true
+    },
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0,
+      "delete_pending": 0
+    },
+    "reindex_in_progress": false
+  }
+}

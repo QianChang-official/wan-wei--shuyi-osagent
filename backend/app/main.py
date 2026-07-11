@@ -1,7 +1,9 @@
+import os
 import uuid,json
+import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
@@ -13,9 +15,15 @@ from .operations.observability import ObservabilityMiddleware, metrics
 from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
 from .db import close_all, get_conn
 from .memory_runtime.policy_gate import evaluate_policy
-from .audit.service import list_logs, record
+from .audit.service import list_logs, record, record_in_transaction
 from .retrieval.service import search as do_search
-from .memory_runtime.capsule_store import write_capsule, list_capsules, get_capsule, forget_capsules
+from .memory_runtime.capsule_store import (
+    forget_capsules,
+    forget_capsules_in_transaction,
+    get_capsule,
+    list_capsules,
+    write_capsule,
+)
 from .memory_runtime.retrieval import search_capsules, search_capsules_with_status
 from .kylin_sdk.native import get_native_sdk
 from .memory_runtime.command_loop import run_command_loop
@@ -84,15 +92,27 @@ from .reproduction.service import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .init_db import main as init_db
+    from .memory_runtime.vector_index import run_vector_delete_sweeper
     from .workflow.persistence import init_workflow_persistence
 
     if is_production_mode():
         get_api_key()
     init_db()
     init_workflow_persistence()
+    delete_sweeper_stop = threading.Event()
+    delete_sweeper = threading.Thread(
+        target=run_vector_delete_sweeper,
+        args=(delete_sweeper_stop,),
+        kwargs={'limit': 10},
+        name='kylin-vector-delete-sweeper',
+        daemon=True,
+    )
+    delete_sweeper.start()
     try:
         yield
     finally:
+        delete_sweeper_stop.set()
+        delete_sweeper.join(timeout=65)
         close_all()
 
 _prod_mode = is_production_mode()
@@ -103,23 +123,25 @@ app=FastAPI(
     openapi_url=None if _prod_mode else '/openapi.json',
     lifespan=lifespan,
 )
-app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(APIKeyMiddleware)
-# v0.9.6 (T6): per-IP in-memory token-bucket rate limit. Added last so it runs
-# outermost — a burst is rejected before auth/body work. Single-process only;
-# multi-process shared limiting is deferred to v1.0.
+# v0.9.6 (T6): per-IP in-memory token-bucket rate limit. It wraps auth/body
+# parsing so a burst is rejected before heavier request work. Single-process
+# only; multi-process shared limiting is deferred to v1.0.
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(ObservabilityMiddleware)
+# Added last so it wraps middleware-generated 401/413/429 responses too.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Mount frontend console at /console (same-origin, no CORS needed).
-# Prefer the built Vue SPA (console-vue/dist); fall back to the single-file console.
+# Legacy console contains inline script and innerHTML rendering; keep it opt-in
+# for local compatibility instead of exposing it by default.
 _frontend = Path(__file__).parent.parent.parent / "frontend"
 _vue_dist = _frontend / "console-vue" / "dist"
 _legacy_console = _frontend / "web-console"
 if _vue_dist.exists():
     app.mount("/console", StaticFiles(directory=str(_vue_dist), html=True), name="console")
-if _legacy_console.exists():
+if _legacy_console.exists() and os.getenv("WANWEI_ENABLE_LEGACY_CONSOLE", "").strip().lower() in {"1", "true", "yes"}:
     app.mount("/console-legacy", StaticFiles(directory=str(_legacy_console), html=True), name="console-legacy")
 
 @app.get('/health')
@@ -287,11 +309,15 @@ def workflow_runs_artifacts(run_id: str):
 
 # v0.9.5: New workflow persistence management endpoints
 @app.get('/workflow/runs')
-def workflow_runs_list(limit: int = 100, offset: int = 0, scenario: str | None = None):
+def workflow_runs_list(
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    scenario: str | None = None,
+):
     return workflow_list_runs(limit=limit, offset=offset, scenario=scenario)
 
 @app.post('/workflow/cleanup')
-def workflow_cleanup(ttl_days: int = 7):
+def workflow_cleanup(ttl_days: int = Query(default=7, ge=1, le=3650)):
     return workflow_cleanup_old_runs(ttl_days=ttl_days)
 
 @app.get('/workflow/stats')
@@ -416,7 +442,7 @@ def add_event(event:MemoryEventIn):
         audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.model_dump()})
         return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
     conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
-    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.commit()
+    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
@@ -427,41 +453,359 @@ def search(q:str,scene:str='general',top_k:int=5):
 
 @app.post('/memory/forget/preview')
 def forget_preview(req:ForgetPreviewIn):
-    candidates=do_search(req.instruction,'general',10); forget_request_id='forget_'+uuid.uuid4().hex[:12]; record('forget_preview',{'forget_request_id':forget_request_id,'instruction':req.instruction,'candidates':candidates}); return {'forget_request_id':forget_request_id,'candidates':candidates}
+    instruction, _ = validate_search_params(req.instruction, 10)
+    capsules, retrieval = search_capsules_with_status(instruction, top_k=10)
+    candidates = [
+        {
+            'capsule_id': item['capsule_id'],
+            'memory_class': item['memory_class'],
+            'content': item['content'],
+            'retrieval_score': item.get('retrieval_score'),
+            'retrieval_backend': item.get('retrieval_backend'),
+            'vector_score': item.get('vector_score'),
+        }
+        for item in capsules
+    ]
+    legacy_candidates = do_search(instruction, 'general', 10)
+    candidates.extend(legacy_candidates)
+    forget_request_id='forget_'+uuid.uuid4().hex
+    payload = {
+        'forget_request_id': forget_request_id,
+        'instruction': instruction,
+        'scope': req.scope,
+        'retrieval': retrieval,
+        'candidates': candidates,
+    }
+    audit_candidates = [
+        {key: item[key] for key in ('capsule_id', 'event_id') if item.get(key)}
+        for item in candidates
+        if item.get('capsule_id') or item.get('event_id')
+    ]
+    conn = get_conn()
+    timestamp = utc_now_iso()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'INSERT INTO memory_forget_requests VALUES (?,?,?,?,?,?,?)',
+            (forget_request_id, req.scope, json.dumps(audit_candidates), 'pending', None, timestamp, timestamp),
+        )
+        record_in_transaction(
+            conn,
+            'forget_preview',
+            {
+                'forget_request_id': forget_request_id,
+                'scope': req.scope,
+                'retrieval': retrieval,
+                'candidates': audit_candidates,
+            },
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return payload
+
+
+def _replay_completed_forget(
+    conn,
+    forget_request_id: str,
+    completed: dict,
+    capsule_ids: list[str],
+    event_ids: list[str],
+    mode: str,
+):
+    if (
+        completed.get('selected_capsule_ids') != capsule_ids
+        or completed.get('selected_event_ids') != event_ids
+        or completed.get('selected_mode') != mode
+    ):
+        raise HTTPException(status_code=409, detail='forget_request_already_completed')
+    native_vector = completed.get('native_vector', {})
+    from .memory_runtime.vector_index import pending_delete_vector_ids, remove_vectors
+
+    durable_pending_vector_ids = pending_delete_vector_ids(
+        completed.get('deleted_capsule_ids', []),
+        conn=conn,
+    )
+    if native_vector.get('pending_vector_ids') or native_vector.get('reason') == 'native_delete_status_unknown' or durable_pending_vector_ids:
+
+        try:
+            completed['native_vector'] = remove_vectors(completed['deleted_capsule_ids'])
+        except Exception:
+            completed['native_vector'] = {
+                'backend': 'fts_fallback',
+                'deleted_vector_ids': native_vector.get('deleted_vector_ids', []),
+                'pending_vector_ids': native_vector.get('pending_vector_ids', []),
+                'reason': 'native_delete_status_unknown',
+            }
+        completed = _persist_completed_forget_result(
+            conn,
+            forget_request_id,
+            completed,
+        )
+    return {key: value for key, value in completed.items() if not key.startswith('selected_')}
+
+
+def _persist_completed_forget_result(
+    conn,
+    forget_request_id: str,
+    proposed: dict,
+) -> dict:
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        from .memory_runtime.vector_index import pending_delete_vector_ids
+
+        authoritative_pending_vector_ids = pending_delete_vector_ids(
+            proposed.get('deleted_capsule_ids', []),
+            conn=conn,
+        )
+        row = conn.execute(
+            'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
+            (forget_request_id,),
+        ).fetchone()
+        persisted = proposed
+        if row and row['status'] == 'completed' and row['result']:
+            current = json.loads(row['result'])
+            if isinstance(current, dict):
+                persisted = {
+                    **proposed,
+                    'native_vector': _merge_native_delete_results(
+                        current.get('native_vector'),
+                        proposed.get('native_vector'),
+                        authoritative_pending_vector_ids=authoritative_pending_vector_ids or set(),
+                    ),
+                }
+        conn.execute(
+            'UPDATE memory_forget_requests SET result=?, updated_at=? WHERE forget_request_id=?',
+            (json.dumps(persisted), utc_now_iso(), forget_request_id),
+        )
+        conn.commit()
+        return persisted
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _merge_native_delete_results(
+    current,
+    proposed,
+    *,
+    authoritative_pending_vector_ids: set[int] | None = None,
+) -> dict:
+    current = current if isinstance(current, dict) else {}
+    proposed = proposed if isinstance(proposed, dict) else {}
+    authoritative_pending_vector_ids = authoritative_pending_vector_ids or set()
+    current_states = _native_delete_states(current)
+    proposed_states = _native_delete_states(proposed)
+    vector_ids = current_states.keys() | proposed_states.keys()
+    if authoritative_pending_vector_ids:
+        vector_ids = vector_ids | authoritative_pending_vector_ids
+    if (
+        not authoritative_pending_vector_ids
+        and all(proposed_states.get(vector_id, 0) >= current_states.get(vector_id, 0) for vector_id in vector_ids)
+    ):
+        return proposed
+    if (
+        not authoritative_pending_vector_ids
+        and all(current_states.get(vector_id, 0) >= proposed_states.get(vector_id, 0) for vector_id in vector_ids)
+    ):
+        return current
+
+    merged = {**current, **proposed}
+    states = {}
+    for vector_id in vector_ids:
+        if vector_id in authoritative_pending_vector_ids:
+            states[vector_id] = 1
+        else:
+            states[vector_id] = max(current_states.get(vector_id, 0), proposed_states.get(vector_id, 0))
+    merged['deleted_vector_ids'] = sorted(vector_id for vector_id, state in states.items() if state == 2)
+    merged['pending_vector_ids'] = sorted(vector_id for vector_id, state in states.items() if state == 1)
+    if not merged['pending_vector_ids']:
+        merged.pop('reason', None)
+    return merged
+
+
+def _native_delete_states(result: dict) -> dict[int, int]:
+    states = {
+        vector_id: 1
+        for vector_id in result.get('pending_vector_ids', [])
+        if isinstance(vector_id, int)
+    }
+    states.update({
+        vector_id: 2
+        for vector_id in result.get('deleted_vector_ids', [])
+        if isinstance(vector_id, int)
+    })
+    return states
+
 
 @app.post('/memory/forget/confirm')
 def forget_confirm(req:ForgetConfirmIn):
-    if not req.confirm:
-        audit_id=record('forget_confirm_cancelled',req.model_dump()); return {'status':'cancelled','audit_id':audit_id}
     conn=get_conn()
-    # Use JSON extraction for exact matching instead of LIKE wildcard
-    # This prevents SQL wildcard injection (% and _) from matching unintended records
-    cursor = conn.execute(
-        "SELECT payload FROM audit_logs WHERE event_type='forget_preview' ORDER BY created_at DESC LIMIT 50"
-    )
-    preview = None
-    for row in cursor:
-        payload = json.loads(row['payload'])
-        if payload.get('forget_request_id') == req.forget_request_id:
-            preview = payload
-            break
-
-    if not preview:
+    ticket = conn.execute(
+        'SELECT * FROM memory_forget_requests WHERE forget_request_id=?',
+        (req.forget_request_id,),
+    ).fetchone()
+    if not ticket:
         audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
+    if not req.confirm:
+        if ticket['status'] == 'cancelled' and ticket['result']:
+            return json.loads(ticket['result'])
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            current = conn.execute(
+                'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
+                (req.forget_request_id,),
+            ).fetchone()
+            if current['status'] == 'completed':
+                raise HTTPException(status_code=409, detail='forget_request_already_completed')
+            if current['status'] == 'cancelled':
+                conn.rollback()
+                return json.loads(current['result']) if current['result'] else {'status': 'cancelled'}
+            if current['status'] != 'pending':
+                raise HTTPException(status_code=409, detail='forget_request_in_progress')
+            audit_id = record_in_transaction(conn, 'forget_confirm_cancelled', req.model_dump())
+            cancelled_result = {'status': 'cancelled', 'audit_id': audit_id}
+            conn.execute(
+                "UPDATE memory_forget_requests SET status='cancelled', result=?, updated_at=? WHERE forget_request_id=?",
+                (json.dumps(cancelled_result), utc_now_iso(), req.forget_request_id),
+            )
+            conn.commit()
+            return cancelled_result
+        except Exception:
+            conn.rollback()
+            raise
+    if ticket['status'] == 'cancelled':
+        raise HTTPException(status_code=409, detail='forget_request_cancelled')
 
-    capsule_ids=[]
-    event_ids=[]
-    for item in preview.get('candidates',[]):
-        if item.get('capsule_id'): capsule_ids.append(item['capsule_id'])
-        if item.get('event_id'): event_ids.append(item['event_id'])
-    for event_id in event_ids:
-        conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
-        conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
-    conn.commit()
-    result=forget_capsules(capsule_ids, mode=req.mode)
-    audit_id=record('forget_confirm',{'request':req.model_dump(),'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids})
-    return {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids}
+    preview_candidates = json.loads(ticket['candidates'])
+    preview_capsule_ids = {
+        item['capsule_id'] for item in preview_candidates if item.get('capsule_id')
+    }
+    preview_event_ids = {
+        item['event_id'] for item in preview_candidates if item.get('event_id')
+    }
+    capsule_ids = list(dict.fromkeys(req.capsule_ids))
+    event_ids = list(dict.fromkeys(req.event_ids))
+    invalid_capsule_ids = sorted(set(capsule_ids) - preview_capsule_ids)
+    invalid_event_ids = sorted(set(event_ids) - preview_event_ids)
+    if invalid_capsule_ids or invalid_event_ids:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                'error': 'forget_selection_not_in_preview',
+                'invalid_capsule_ids': invalid_capsule_ids,
+                'invalid_event_ids': invalid_event_ids,
+            },
+        )
+    if not capsule_ids and not event_ids:
+        audit_id=record('forget_confirm_selection_required',{'forget_request_id':req.forget_request_id})
+        return {
+            'status': 'selection_required',
+            'audit_id': audit_id,
+            'deleted_capsule_ids': [],
+            'deleted_event_ids': [],
+        }
+    if ticket['status'] == 'completed':
+        completed = json.loads(ticket['result'])
+        return _replay_completed_forget(
+            conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
+        )
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        claimed = conn.execute(
+            "UPDATE memory_forget_requests SET status='processing', updated_at=? "
+            "WHERE forget_request_id=? AND (status='pending' OR "
+            "(status='processing' AND julianday(updated_at)<=julianday('now','-1 hour')))",
+            (utc_now_iso(), req.forget_request_id),
+        )
+        if claimed.rowcount != 1:
+            current = conn.execute(
+                'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
+                (req.forget_request_id,),
+            ).fetchone()
+            conn.rollback()
+            if current and current['status'] == 'completed':
+                completed = json.loads(current['result'])
+                return _replay_completed_forget(
+                    conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
+                )
+            raise HTTPException(status_code=409, detail='forget_request_in_progress')
+        legacy_capsule_ids = {
+            row['event_id']: row['capsule_id']
+            for row in conn.execute(
+                f"SELECT event_id,capsule_id FROM memory_event_capsules WHERE event_id IN ({','.join('?' for _ in event_ids)})",
+                event_ids,
+            ).fetchall()
+        } if event_ids else {}
+        if len(legacy_capsule_ids) != len(event_ids):
+            for row in conn.execute("SELECT payload FROM audit_logs WHERE event_type='memory_write' ORDER BY created_at DESC"):
+                audit_payload = json.loads(row['payload'])
+                event_id = audit_payload.get('event_id')
+                capsule_id = audit_payload.get('capsule_id')
+                if event_id in event_ids and event_id not in legacy_capsule_ids and capsule_id:
+                    legacy_capsule_ids[event_id] = capsule_id
+                    conn.execute('INSERT OR IGNORE INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
+        missing_legacy_links = sorted(set(event_ids) - set(legacy_capsule_ids))
+        if missing_legacy_links:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'error': 'legacy_capsule_link_missing',
+                    'event_ids': missing_legacy_links,
+                },
+            )
+        for event_id in event_ids:
+            legacy_capsule_id = legacy_capsule_ids.get(event_id)
+            if legacy_capsule_id and req.mode == 'hard_delete':
+                conn.execute('DELETE FROM memory_capsules WHERE capsule_id=?',(legacy_capsule_id,))
+            elif legacy_capsule_id:
+                conn.execute("UPDATE memory_capsules SET lifecycle='forgotten' WHERE capsule_id=?",(legacy_capsule_id,))
+            conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
+            conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
+        result=forget_capsules_in_transaction(conn, capsule_ids, mode=req.mode)
+        audit_id=record_in_transaction(
+            conn,
+            'forget_confirm',
+            {
+                'request': req.model_dump(),
+                'deleted_capsule_ids': result['deleted_capsule_ids'],
+                'deleted_event_ids': event_ids,
+                'native_vector': result['native_vector'],
+            },
+        )
+        response = {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids,'native_vector':result['native_vector']}
+        stored_result = {
+            **response,
+            'selected_capsule_ids': capsule_ids,
+            'selected_event_ids': event_ids,
+            'selected_mode': req.mode,
+        }
+        conn.execute(
+            "UPDATE memory_forget_requests SET status='completed', result=?, updated_at=? WHERE forget_request_id=?",
+            (json.dumps(stored_result), utc_now_iso(), req.forget_request_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    from .memory_runtime.vector_index import remove_vectors
+
+    try:
+        response['native_vector'] = remove_vectors(response['deleted_capsule_ids'])
+    except Exception:
+        response['native_vector'] = {
+            'backend': 'fts_fallback',
+            'deleted_vector_ids': [],
+            'pending_vector_ids': result['native_vector'].get('pending_vector_ids', []),
+            'reason': 'native_delete_status_unknown',
+        }
+    stored_result['native_vector'] = response['native_vector']
+    stored_result = _persist_completed_forget_result(conn, req.forget_request_id, stored_result)
+    response['native_vector'] = stored_result['native_vector']
+    return response
 
 # v0.6 MemoryOps Runtime endpoints
 @app.post('/memory/v2/capsules')
@@ -469,7 +813,7 @@ def v2_write_capsule(req: CapsuleWriteIn):
     return write_capsule(**req.model_dump())
 
 @app.get('/memory/v2/capsules')
-def v2_list_capsules(limit:int=50):
+def v2_list_capsules(limit: int = Query(default=50, ge=1, le=200)):
     return {'items': list_capsules(limit)}
 
 @app.get('/memory/v2/capsules/{capsule_id}')

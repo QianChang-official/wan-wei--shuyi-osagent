@@ -1,0 +1,80 @@
+{
+  "target_capsule_id": "cap_5ae59f34f5a4",
+  "target_vector_id": 1,
+  "preview_http_status": 200,
+  "preview_retrieval": {
+    "backend": "kylin_native",
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "collection": "wanwei_sdk_acceptance",
+    "native_index": {
+      "eligible": 3,
+      "indexed": 3,
+      "failed": 0,
+      "pending": 0
+    }
+  },
+  "preview_candidate_ids": [
+    "cap_5ae59f34f5a4",
+    "cap_ece66f022060",
+    "cap_97b05671abb5"
+  ],
+  "target_present_in_preview": true,
+  "confirm_http_status": 200,
+  "confirm": {
+    "status": "forgotten",
+    "audit_id": "audit_064214c7b37c",
+    "deleted_capsule_ids": [
+      "cap_5ae59f34f5a4"
+    ],
+    "deleted_event_ids": [],
+    "native_vector": {
+      "backend": "kylin_native",
+      "deleted_vector_ids": [
+        1
+      ],
+      "pending_vector_ids": []
+    }
+  },
+  "database_lifecycle": "forgotten",
+  "fts_rows_after": 0,
+  "vector_ref_after": {
+    "vector_id": 1,
+    "status": "deleted"
+  },
+  "post_forget_search_http_status": 200,
+  "post_forget_retrieval": {
+    "backend": "kylin_native",
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "collection": "wanwei_sdk_acceptance",
+    "native_index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0
+    }
+  },
+  "post_forget_result_ids": [
+    "cap_ece66f022060",
+    "cap_97b05671abb5"
+  ],
+  "target_recalled_after_forget": false,
+  "status_after": {
+    "backend": "kylin_native",
+    "available": true,
+    "reason": null,
+    "bridge_path": "/usr/local/bin/wanwei-kylin-sdk-bridge",
+    "capabilities": {
+      "embedding": true,
+      "vector_database": true
+    },
+    "model": "ensemble-embd_gte-base_uint8-text",
+    "dimension": 768,
+    "index": {
+      "eligible": 2,
+      "indexed": 2,
+      "failed": 0,
+      "pending": 0
+    },
+    "reindex_in_progress": false
+  }
+}

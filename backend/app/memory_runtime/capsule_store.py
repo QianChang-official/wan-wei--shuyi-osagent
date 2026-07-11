@@ -3,12 +3,12 @@ import uuid
 from typing import Any
 
 from ..db import get_conn
-from ..audit.service import record
+from ..audit.service import record, record_in_transaction
 from ..utils.datetime_utils import utc_now_iso_compact
 from .policy_gate import evaluate_policy
 
-BLOCKED_POLICY = {"reject", "quarantine"}
-BLOCKED_LIFECYCLE = {"quarantined", "forgotten", "rolled_back", "deprecated"}
+RETRIEVABLE_POLICY = {"allow", "redact"}
+RETRIEVABLE_LIFECYCLE = {"active", "reinforced", "conflicted"}
 
 
 def now() -> str:
@@ -103,6 +103,25 @@ def write_capsule(
     }
     relation_edges = relation_edges or []
     index_refs = {"fts_ref": capsule_id, "vector_ref": None, "graph_node_id": capsule_id}
+    native_index = {"backend": "fts_fallback", "indexed": False, "reason": "policy_not_indexable"}
+
+    if governance["policy_result"] == "reject":
+        audit_id = record(
+            "capsule_write",
+            {
+                "capsule_id": capsule_id,
+                "policy_result": governance["policy_result"],
+                "memory_class": memory_class,
+            },
+        )
+        return {
+            "capsule_id": capsule_id,
+            "memory_class": memory_class,
+            "governance": governance,
+            "state": state,
+            "audit_id": audit_id,
+            "native_index": native_index,
+        }
 
     conn = get_conn()
     conn.execute(
@@ -113,11 +132,10 @@ def write_capsule(
             dumps(relation_edges), dumps(index_refs), created, created,
         ),
     )
-    if governance["policy_result"] not in {"reject"}:
+    if governance["policy_result"] in RETRIEVABLE_POLICY and state["lifecycle"] == "active":
         conn.execute("INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)", (capsule_id, text))
     conn.commit()
     audit_id = record("capsule_write", {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class})
-    native_index = {"backend": "fts_fallback", "indexed": False, "reason": "policy_not_indexable"}
     # The vector copy is optional and is never created for rejected,
     # quarantined, or confirmation-pending memories.
     if state["lifecycle"] == "active":
@@ -217,41 +235,93 @@ def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
     ts = now()
     conn = get_conn()
     conn.executemany(
-        "UPDATE memory_capsules_v2 SET state=?, updated_at=? WHERE capsule_id=?",
-        [(dumps(state), ts, cid) for cid, state in updates],
+        """
+        UPDATE memory_capsules_v2
+        SET state=json_set(
+                state,
+                '$.usage_count', COALESCE(CAST(json_extract(state,'$.usage_count') AS INTEGER), 0) + 1,
+                '$.last_accessed_at', ?
+            ),
+            updated_at=?
+        WHERE capsule_id=?
+          AND json_extract(state,'$.lifecycle') IN ('active','reinforced','conflicted')
+          AND json_extract(governance,'$.policy_result') IN ('allow','redact')
+        """,
+        [(state.get("last_accessed_at") or ts, ts, cid) for cid, state in updates],
     )
     conn.commit()
     record("capsule_usage_batch", {"capsule_ids": [cid for cid, _ in updates], "count": len(updates)})
 
 
-def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
-    init_runtime_schema()
+def forget_capsules_in_transaction(conn, capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
+    """Apply local forget state using the caller's transaction."""
+    from .vector_index import mark_vectors_delete_pending_in_transaction
+
     deleted: list[str] = []
-    conn = get_conn()
-    for capsule_id in capsule_ids:
-        cap = get_capsule(capsule_id)
-        if not cap:
+    unique_ids = list(dict.fromkeys(capsule_ids))
+    if unique_ids:
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = conn.execute(
+            f"SELECT capsule_id,state FROM memory_capsules_v2 WHERE capsule_id IN ({placeholders})",
+            unique_ids,
+        ).fetchall()
+    else:
+        rows = []
+    by_id = {row["capsule_id"]: row for row in rows}
+    timestamp = now()
+    for capsule_id in unique_ids:
+        row = by_id.get(capsule_id)
+        if not row:
             continue
-        state = cap["state"]
+        state = loads(row["state"], {})
         state["lifecycle"] = "forgotten" if mode != "hard_delete" else "deleted"
-        state["forgotten_at"] = now()
-        conn.execute(
-            "UPDATE memory_capsules_v2 SET state=?, updated_at=? WHERE capsule_id=?",
-            (dumps(state), now(), capsule_id),
-        )
+        state["forgotten_at"] = timestamp
+        if mode == "hard_delete":
+            conn.execute("DELETE FROM memory_capsules_v2 WHERE capsule_id=?", (capsule_id,))
+        else:
+            conn.execute(
+                "UPDATE memory_capsules_v2 SET state=?, updated_at=? WHERE capsule_id=?",
+                (dumps(state), timestamp, capsule_id),
+            )
         conn.execute("DELETE FROM memory_capsules_v2_fts WHERE capsule_id=?", (capsule_id,))
         deleted.append(capsule_id)
-    conn.commit()
-    audit_id = record("forget_confirm", {"deleted_capsule_ids": deleted, "mode": mode})
-    try:
-        from .vector_index import remove_vectors
-
-        native_vector = remove_vectors(deleted)
-    except Exception:
-        native_vector = {"backend": "fts_fallback", "deleted_vector_ids": [], "pending_vector_ids": []}
+    native_vector = mark_vectors_delete_pending_in_transaction(conn, deleted)
     return {
         "status": "forgotten",
         "deleted_capsule_ids": deleted,
+        "native_vector": native_vector,
+    }
+
+
+def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
+    init_runtime_schema()
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        result = forget_capsules_in_transaction(conn, capsule_ids, mode=mode)
+        audit_id = record_in_transaction(
+            conn,
+            "forget_confirm",
+            {"deleted_capsule_ids": result["deleted_capsule_ids"], "mode": mode},
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    try:
+        from .vector_index import remove_vectors
+
+        native_vector = remove_vectors(result["deleted_capsule_ids"])
+    except Exception:
+        native_vector = {
+            "backend": "fts_fallback",
+            "deleted_vector_ids": [],
+            "pending_vector_ids": result["native_vector"]["pending_vector_ids"],
+            "reason": "native_delete_status_unknown",
+        }
+    return {
+        "status": "forgotten",
+        "deleted_capsule_ids": result["deleted_capsule_ids"],
         "audit_id": audit_id,
         "native_vector": native_vector,
     }
@@ -260,11 +330,11 @@ def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dic
 def allowed_for_context(cap: dict[str, Any], *, high_risk: bool = False) -> bool:
     gov = cap["governance"]
     state = cap["state"]
-    if gov.get("policy_result") in BLOCKED_POLICY:
+    if gov.get("policy_result") not in RETRIEVABLE_POLICY:
         return False
     if gov.get("sensitivity_level") == "S3":
         return False
-    if state.get("lifecycle") in BLOCKED_LIFECYCLE:
+    if state.get("lifecycle") not in RETRIEVABLE_LIFECYCLE:
         return False
     if high_risk and state.get("lifecycle") == "conflicted":
         return False

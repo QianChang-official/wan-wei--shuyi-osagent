@@ -7,8 +7,10 @@ Boundaries / honest scope:
   (Redis/central store) is deliberately deferred to v1.0.
 - The bucket table is bounded by an LRU cap so the limiter itself cannot become
   a memory-exhaustion (DoS) vector under a flood of distinct source IPs.
-- Only a small set of expensive/state-changing endpoints are limited; everything
-  else passes through untouched.
+- Expensive/state-changing endpoints get explicit limits. Other mutating
+  requests (POST/PUT/PATCH/DELETE) get a conservative default per-IP budget, and
+  protected read paths get a separate default. Public health checks stay
+  unlimited.
 
 Token bucket model:
 - capacity C  -> maximum burst size
@@ -22,6 +24,7 @@ import time
 import ipaddress
 import os
 from collections import OrderedDict
+from collections.abc import Collection
 
 from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -29,18 +32,51 @@ from starlette.responses import JSONResponse
 
 # Per-endpoint limits, requests per minute. Chosen by cost/risk:
 # - model-gateway/test is external + expensive  -> tightest
-# - workflow/runs creates persistent state       -> moderate
-# - memory search/capsules are read/query paths   -> looser
+# - reindex/cleanup/forget confirm mutate broad state -> tight
+# - workflow/memory command paths create persistent state or run heavier loops
+# - memory search/capsules are read/query paths -> looser
 _LIMITS_PER_MIN: dict[str, int] = {
     "/model-gateway/test": 10,
+    "/kylin/sdk/status": 10,
+    "/kylin/sdk/reindex": 10,
+    "/workflow/cleanup": 10,
+    "/workflow/stats": 60,
+    "/memory/forget/confirm": 20,
+    "/memory/forget/preview": 30,
     "/workflow/runs": 30,
+    "/workflow/run-dry-run": 30,
+    "/memory/v2/command": 30,
+    "/memory/v2/reflection": 30,
     "/memory/v2/search": 60,
     "/memory/v2/capsules": 60,
+    "/memory/search": 60,
 }
 
 # Burst capacity per endpoint == its per-minute limit (allows a short burst up to
 # the minute budget, then throttles to the sustained refill rate).
+_DEFAULT_WRITE_LIMIT_PER_MIN = 120
+_PROTECTED_READ_LIMIT_PER_MIN = 120
 _MAX_TRACKED_IPS = 10_000  # LRU cap: bounds limiter memory footprint.
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Mirrors APIKeyMiddleware's protected GET surface without importing it here.
+_PROTECTED_GET_PATHS = frozenset(
+    {
+        "/audit/logs",
+        "/memory/v2/capsules",
+        "/memory/v2/search",
+        "/memory/events",
+        "/memory/search",
+        "/kylin/sdk/status",
+        "/metrics",
+        "/workflow/stats",
+    }
+)
+_PROTECTED_GET_PREFIXES = (
+    "/memory/v2/capsules",
+    "/workflow/runs",
+    "/console-legacy",
+)
 
 
 class _Bucket:
@@ -54,25 +90,66 @@ class _Bucket:
 class RateLimiter:
     """Thread-safe per-(ip, endpoint) token-bucket store with an LRU cap."""
 
-    def __init__(self, limits_per_min: dict[str, int], max_ips: int = _MAX_TRACKED_IPS) -> None:
-        self._limits = limits_per_min
+    def __init__(
+        self,
+        limits_per_min: dict[str, int],
+        max_ips: int = _MAX_TRACKED_IPS,
+        *,
+        default_write_limit_per_min: int | None = None,
+        protected_get_limit_per_min: int | None = None,
+        protected_get_paths: Collection[str] | None = None,
+        protected_get_prefixes: tuple[str, ...] = (),
+        write_methods: Collection[str] = _WRITE_METHODS,
+    ) -> None:
+        self._limits = dict(limits_per_min)
         self._max_ips = max_ips
+        self._default_write_limit_per_min = default_write_limit_per_min
+        self._protected_get_limit_per_min = protected_get_limit_per_min
+        self._protected_get_paths = frozenset(protected_get_paths or ())
+        self._protected_get_prefixes = tuple(protected_get_prefixes)
+        self._write_methods = frozenset(method.upper() for method in write_methods)
         self._lock = threading.Lock()
-        # key: (ip, path) -> _Bucket ; OrderedDict gives us cheap LRU eviction.
+        # key: (ip, policy_key) -> _Bucket ; OrderedDict gives us cheap LRU eviction.
         self._buckets: "OrderedDict[tuple[str, str], _Bucket]" = OrderedDict()
 
-    def limit_for(self, path: str) -> int | None:
-        return self._limits.get(path)
+    def _protected_prefix_for(self, path: str) -> str | None:
+        for prefix in self._protected_get_prefixes:
+            if path == prefix or path.startswith(f"{prefix}/"):
+                return prefix
+        return None
 
-    def allow(self, ip: str, path: str, *, now: float | None = None) -> bool:
+    def _policy_for(self, method: str, path: str) -> tuple[str, int] | None:
+        if path in self._limits:
+            return path, self._limits[path]
+
+        normalized_method = method.upper()
+        if normalized_method == "GET" and self._protected_get_limit_per_min is not None:
+            if path in self._protected_get_paths:
+                return path, self._protected_get_limit_per_min
+            protected_prefix = self._protected_prefix_for(path)
+            if protected_prefix is not None:
+                return f"{protected_prefix}/*", self._protected_get_limit_per_min
+
+        if normalized_method in self._write_methods and self._default_write_limit_per_min is not None:
+            return f"__write_default__:{normalized_method}:*", self._default_write_limit_per_min
+        return None
+
+    def limit_for(self, path: str, *, method: str = "GET") -> int | None:
+        policy = self._policy_for(method, path)
+        if policy is None:
+            return None
+        return policy[1]
+
+    def allow(self, ip: str, path: str, *, method: str = "GET", now: float | None = None) -> bool:
         """Consume one token for (ip, path). Returns False if the bucket is empty."""
-        limit = self._limits.get(path)
-        if limit is None:
+        policy = self._policy_for(method, path)
+        if policy is None:
             return True  # endpoint not rate-limited
+        policy_key, limit = policy
         capacity = float(limit)
         refill_per_sec = capacity / 60.0
         t = time.monotonic() if now is None else now
-        key = (ip, path)
+        key = (ip, policy_key)
         with self._lock:
             bucket = self._buckets.get(key)
             if bucket is None:
@@ -98,7 +175,14 @@ class RateLimiter:
             return allowed
 
 
-_limiter = RateLimiter(_LIMITS_PER_MIN)
+def build_default_rate_limiter() -> RateLimiter:
+    return RateLimiter(
+        _LIMITS_PER_MIN,
+        default_write_limit_per_min=_DEFAULT_WRITE_LIMIT_PER_MIN,
+        protected_get_limit_per_min=_PROTECTED_READ_LIMIT_PER_MIN,
+        protected_get_paths=_PROTECTED_GET_PATHS,
+        protected_get_prefixes=_PROTECTED_GET_PREFIXES,
+    )
 
 
 def resolve_client_ip(peer: str, forwarded_for: str | None, trusted_proxy_ips: str = "") -> str:
@@ -143,13 +227,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, limiter: RateLimiter | None = None) -> None:
         super().__init__(app)
-        self._limiter = limiter or _limiter
+        self._limiter = limiter or build_default_rate_limiter()
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if self._limiter.limit_for(path) is not None:
+        if self._limiter.limit_for(path, method=request.method) is not None:
             ip = _client_ip(request)
-            if not self._limiter.allow(ip, path):
+            if not self._limiter.allow(ip, path, method=request.method):
                 return JSONResponse(
                     {"detail": "Rate limit exceeded. Retry later."},
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,

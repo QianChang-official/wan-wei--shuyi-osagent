@@ -7,3 +7,6 @@
 *.html text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+
+# Preserve captured VM evidence byte-for-byte so SHA256SUMS remains portable.
+reports/kylin-native-sdk-evidence/* -text whitespace=-trailing-space,cr-at-eol
