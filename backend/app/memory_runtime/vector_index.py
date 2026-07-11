@@ -29,6 +29,7 @@ _reindex_active = False
 _delete_sweep_lock = threading.Lock()
 DELETE_VERIFICATION_DELAY_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
 DELETE_CLAIM_LEASE_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
+DELETE_CLAIM_WAIT_SECONDS = 1.0
 DELETE_CLAIM_POLL_SECONDS = 0.02
 
 
@@ -941,7 +942,7 @@ def _claim_vector_delete(vector_id: int, collection_name: str) -> str | None:
 
 def _wait_for_vector_delete_claim(vector_id: int, collection_name: str) -> dict[str, bool]:
     """Return the current owner's result without issuing another native delete."""
-    deadline = time.monotonic() + DELETE_CLAIM_LEASE_SECONDS
+    deadline = time.monotonic() + DELETE_CLAIM_WAIT_SECONDS
     conn = get_conn()
     while True:
         if _native_delete_is_confirmed(vector_id, collection_name):

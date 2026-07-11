@@ -523,7 +523,10 @@ def _replay_completed_forget(
     native_vector = completed.get('native_vector', {})
     from .memory_runtime.vector_index import pending_delete_vector_ids, remove_vectors
 
-    durable_pending_vector_ids = pending_delete_vector_ids(completed.get('deleted_capsule_ids', []))
+    durable_pending_vector_ids = pending_delete_vector_ids(
+        completed.get('deleted_capsule_ids', []),
+        conn=conn,
+    )
     if native_vector.get('pending_vector_ids') or native_vector.get('reason') == 'native_delete_status_unknown' or durable_pending_vector_ids:
 
         try:

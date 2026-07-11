@@ -1714,6 +1714,17 @@ def test_vector_delete_claim_is_single_winner(isolated_db):
     assert second is None
 
 
+def test_vector_delete_claim_wait_is_bounded_separately_from_lease(isolated_db, monkeypatch):
+    adapter = _FakeNativeAdapter()
+    vi._claim_vector_delete(9203, adapter.collection)
+    monkeypatch.setattr(vi, "DELETE_CLAIM_WAIT_SECONDS", 0.1)
+    clock = iter((0.0, 0.0, 0.2))
+    monkeypatch.setattr(vi.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(vi.time, "sleep", lambda _seconds: None)
+
+    assert vi._wait_for_vector_delete_claim(9203, adapter.collection) == {"deleted": False}
+
+
 def test_expired_vector_delete_claim_is_fenced_on_takeover(isolated_db):
     adapter = _FakeNativeAdapter()
     first = vi._claim_vector_delete(9202, adapter.collection)
