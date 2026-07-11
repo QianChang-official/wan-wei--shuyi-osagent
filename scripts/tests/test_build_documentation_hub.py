@@ -53,6 +53,20 @@ class BuildDocumentationHubTests(unittest.TestCase):
             "#### Outside\n```bash\n# literal\n\n\n",
         )
 
+    def test_transform_source_headings_preserves_eof_in_unclosed_backtick_fence(self):
+        source = "# Outside\r\n```bash\r\n# literal"
+
+        transformed = transform_source_headings(source)
+
+        self.assertEqual(transformed, "#### Outside\n```bash\n# literal")
+
+    def test_transform_source_headings_preserves_eof_in_unclosed_tilde_fence(self):
+        source = "# Outside\n~~~text\n## literal"
+
+        transformed = transform_source_headings(source)
+
+        self.assertEqual(transformed, "#### Outside\n~~~text\n## literal")
+
     def test_source_manifest_matches_docs_directory(self):
         actual = validate_source_manifest(ROOT / "docs")
         declared = tuple(

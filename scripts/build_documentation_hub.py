@@ -158,8 +158,9 @@ def validate_source_manifest(docs_dir: Path) -> tuple[Path, ...]:
 
 def transform_source_headings(source: str) -> str:
     normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    has_terminal_newline = normalized_source.endswith("\n")
     lines = normalized_source.split("\n")
-    if normalized_source.endswith("\n"):
+    if has_terminal_newline:
         lines.pop()
 
     transformed_lines: list[str] = []
@@ -201,4 +202,4 @@ def transform_source_headings(source: str) -> str:
             f"{heading.group('indent')}{'#' * target_level}{heading.group('content')}"
         )
 
-    return "\n".join(transformed_lines) + "\n"
+    return "\n".join(transformed_lines) + ("\n" if has_terminal_newline else "")
