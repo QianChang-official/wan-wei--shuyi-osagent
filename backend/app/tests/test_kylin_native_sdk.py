@@ -1431,6 +1431,314 @@ def test_forget_replay_repairs_result_after_vendor_delete_then_ticket_write_fail
     assert stored["native_vector"] == second.json()["native_vector"]
 
 
+def test_stale_forget_replay_cannot_downgrade_completed_native_delete_without_durable_pending_state(isolated_db, monkeypatch):
+    from backend.app import main as main_module
+    from backend.app.db import get_conn
+
+    request_id = "forget_stale_native_result"
+    capsule_id = "cap_stale_native_result"
+    vector_id = 9101
+    successful = {
+        "status": "forgotten",
+        "audit_id": "audit_stale_native_result",
+        "deleted_capsule_ids": [capsule_id],
+        "deleted_event_ids": [],
+        "native_vector": {
+            "backend": "kylin_native",
+            "deleted_vector_ids": [vector_id],
+            "pending_vector_ids": [],
+        },
+        "selected_capsule_ids": [capsule_id],
+        "selected_event_ids": [],
+        "selected_mode": "cascade",
+    }
+    expected_native_vector = dict(successful["native_vector"])
+    stale = {
+        **successful,
+        "native_vector": {
+            "backend": "kylin_native",
+            "deleted_vector_ids": [],
+            "pending_vector_ids": [vector_id],
+        },
+    }
+    conn = get_conn()
+    timestamp = vi.utc_now_iso_compact()
+    conn.execute(
+        "INSERT INTO memory_forget_requests VALUES (?,?,?,?,?,?,?)",
+        (request_id, "current_user", json.dumps([{"capsule_id": capsule_id}]),
+         "completed", json.dumps(successful), timestamp, timestamp),
+    )
+    conn.commit()
+    monkeypatch.setattr(vi, "remove_vectors", lambda _ids: stale["native_vector"])
+
+    replayed = main_module._replay_completed_forget(
+        conn,
+        request_id,
+        stale,
+        [capsule_id],
+        [],
+        "cascade",
+    )
+
+    stored = json.loads(conn.execute(
+        "SELECT result FROM memory_forget_requests WHERE forget_request_id=?",
+        (request_id,),
+    ).fetchone()["result"])
+    assert replayed["native_vector"] == expected_native_vector
+    assert stored["native_vector"] == expected_native_vector
+
+
+def test_forget_replay_downgrades_ticket_after_delayed_verification_failure(isolated_db, monkeypatch):
+    from backend.app import main as main_module
+    from backend.app.db import get_conn
+
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+    written = _write("延迟核验失败后必须回退遗忘票据")
+    vector_id = written["native_index"]["vector_id"]
+    request_id = "forget_delayed_verification_failure"
+    successful = {
+        "status": "forgotten",
+        "audit_id": "audit_delayed_verification_failure",
+        "deleted_capsule_ids": [written["capsule_id"]],
+        "deleted_event_ids": [],
+        "native_vector": {
+            "backend": "kylin_native",
+            "deleted_vector_ids": [vector_id],
+            "pending_vector_ids": [],
+        },
+        "selected_capsule_ids": [written["capsule_id"]],
+        "selected_event_ids": [],
+        "selected_mode": "cascade",
+    }
+    conn = get_conn()
+    timestamp = vi.utc_now_iso_compact()
+    vi._record_vector_tombstone(vector_id, adapter.collection)
+    vi._set_delete_status(vector_id, adapter.collection, "deleted")
+    conn.execute(
+        "INSERT INTO memory_forget_requests VALUES (?,?,?,?,?,?,?)",
+        (
+            request_id,
+            "current_user",
+            json.dumps([{"capsule_id": written["capsule_id"]}]),
+            "completed",
+            json.dumps(successful),
+            timestamp,
+            timestamp,
+        ),
+    )
+    conn.execute(
+        "UPDATE memory_vector_tombstones SET checked_at='2000-01-01T00:00:00Z' WHERE vector_id=?",
+        (vector_id,),
+    )
+    conn.commit()
+    adapter.delete = lambda **_kwargs: {"ok": True, "vector_id": vector_id, "deleted": False}
+
+    swept = vi.sweep_pending_vector_deletes(limit=10, adapter=adapter)
+    replayed = main_module._replay_completed_forget(
+        conn,
+        request_id,
+        successful,
+        [written["capsule_id"]],
+        [],
+        "cascade",
+    )
+
+    stored = json.loads(conn.execute(
+        "SELECT result FROM memory_forget_requests WHERE forget_request_id=?",
+        (request_id,),
+    ).fetchone()["result"])
+    expected_native_vector = {
+        "backend": "kylin_native",
+        "deleted_vector_ids": [],
+        "pending_vector_ids": [vector_id],
+    }
+    assert swept == {
+        "attempted": 1,
+        "deleted_vector_ids": [],
+        "pending_vector_ids": [vector_id],
+    }
+    assert conn.execute(
+        "SELECT status FROM memory_vector_refs WHERE vector_id=?", (vector_id,)
+    ).fetchone()["status"] == "delete_pending"
+    assert replayed["native_vector"] == expected_native_vector
+    assert stored["native_vector"] == expected_native_vector
+
+
+def test_forget_replay_does_not_apply_stale_pending_snapshot_after_success(isolated_db, monkeypatch):
+    from backend.app import main as main_module
+    from backend.app.db import get_conn
+
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+    written = _write("陈旧待删快照不能覆盖延迟成功")
+    vector_id = written["native_index"]["vector_id"]
+    request_id = "forget_stale_pending_snapshot"
+    successful = {
+        "status": "forgotten",
+        "audit_id": "audit_stale_pending_snapshot",
+        "deleted_capsule_ids": [written["capsule_id"]],
+        "deleted_event_ids": [],
+        "native_vector": {
+            "backend": "kylin_native",
+            "deleted_vector_ids": [vector_id],
+            "pending_vector_ids": [],
+        },
+        "selected_capsule_ids": [written["capsule_id"]],
+        "selected_event_ids": [],
+        "selected_mode": "cascade",
+    }
+    expected_native_vector = dict(successful["native_vector"])
+    conn = get_conn()
+    timestamp = vi.utc_now_iso_compact()
+    vi._record_vector_tombstone(vector_id, adapter.collection)
+    conn.execute(
+        "INSERT INTO memory_forget_requests VALUES (?,?,?,?,?,?,?)",
+        (
+            request_id,
+            "current_user",
+            json.dumps([{"capsule_id": written["capsule_id"]}]),
+            "completed",
+            json.dumps(successful),
+            timestamp,
+            timestamp,
+        ),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        vi,
+        "remove_vectors",
+        lambda _ids: {
+            "backend": "kylin_native",
+            "deleted_vector_ids": [],
+            "pending_vector_ids": [vector_id],
+        },
+    )
+    actual_persist = main_module._persist_completed_forget_result
+
+    def complete_after_concurrent_delete(connection, ticket_id, proposed):
+        vi._set_delete_status(vector_id, adapter.collection, "deleted")
+        return actual_persist(connection, ticket_id, proposed)
+
+    monkeypatch.setattr(main_module, "_persist_completed_forget_result", complete_after_concurrent_delete)
+
+    replayed = main_module._replay_completed_forget(
+        conn,
+        request_id,
+        successful,
+        [written["capsule_id"]],
+        [],
+        "cascade",
+    )
+    stored = json.loads(conn.execute(
+        "SELECT result FROM memory_forget_requests WHERE forget_request_id=?",
+        (request_id,),
+    ).fetchone()["result"])
+
+    assert replayed["native_vector"] == expected_native_vector
+    assert stored["native_vector"] == expected_native_vector
+
+
+def test_unavailable_delete_cannot_downgrade_concurrent_success(isolated_db, monkeypatch):
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+    written = _write("适配器不可用的晚到请求不能覆盖删除成功")
+    vector_id = written["native_index"]["vector_id"]
+    vi._record_vector_tombstone(vector_id, adapter.collection)
+    vi._set_status(vector_id, "deleted")
+    adapter.available = False
+    checked_pending = threading.Event()
+    release_pending = threading.Event()
+    original_check = vi._native_delete_is_confirmed
+    worker_id = None
+
+    def pause_after_pending_check(candidate_vector_id, collection_name):
+        confirmed = original_check(candidate_vector_id, collection_name)
+        if threading.get_ident() == worker_id and not confirmed:
+            checked_pending.set()
+            assert release_pending.wait(timeout=5)
+        return confirmed
+
+    monkeypatch.setattr(vi, "_native_delete_is_confirmed", pause_after_pending_check)
+
+    def unavailable_delete():
+        nonlocal worker_id
+        worker_id = threading.get_ident()
+        return vi.remove_vectors([written["capsule_id"]])
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        late = executor.submit(unavailable_delete)
+        assert checked_pending.wait(timeout=5)
+        vi._set_delete_status(vector_id, adapter.collection, "deleted")
+        release_pending.set()
+        result = late.result(timeout=5)
+
+    assert result["deleted_vector_ids"] == [vector_id]
+    assert result["pending_vector_ids"] == []
+    assert vi.get_conn().execute(
+        "SELECT status FROM memory_vector_refs WHERE vector_id=?", (vector_id,)
+    ).fetchone()["status"] == "deleted"
+
+
+def test_delete_claim_rechecks_success_before_vendor_call(isolated_db, monkeypatch):
+    adapter = _FakeNativeAdapter()
+    monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+    written = _write("领取删除后再次确认并发成功状态")
+    vector_id = written["native_index"]["vector_id"]
+    vi._set_status(vector_id, "delete_pending")
+    actual_claim = vi._claim_vector_delete
+
+    def claim_after_concurrent_success(candidate_vector_id, collection_name):
+        vi._set_delete_status(candidate_vector_id, collection_name, "deleted")
+        return actual_claim(candidate_vector_id, collection_name)
+
+    monkeypatch.setattr(vi, "_claim_vector_delete", claim_after_concurrent_success)
+
+    result = vi.remove_vectors([written["capsule_id"]])
+
+    assert result["deleted_vector_ids"] == [vector_id]
+    assert result["pending_vector_ids"] == []
+    assert adapter.deleted == []
+    assert vi.get_conn().execute(
+        "SELECT COUNT(*) FROM memory_vector_delete_claims WHERE vector_id=?", (vector_id,)
+    ).fetchone()[0] == 0
+
+
+def test_vector_delete_claim_is_single_winner(isolated_db):
+    adapter = _FakeNativeAdapter()
+
+    first = vi._claim_vector_delete(9201, adapter.collection)
+    second = vi._claim_vector_delete(9201, adapter.collection)
+
+    assert first is not None
+    assert second is None
+
+
+def test_expired_vector_delete_claim_is_fenced_on_takeover(isolated_db):
+    adapter = _FakeNativeAdapter()
+    first = vi._claim_vector_delete(9202, adapter.collection)
+    conn = vi.get_conn()
+    conn.execute(
+        "UPDATE memory_vector_delete_claims SET claimed_at='2000-01-01T00:00:00Z' WHERE vector_id=9202"
+    ).connection.commit()
+
+    second = vi._claim_vector_delete(9202, adapter.collection)
+    stale_status = vi._set_delete_status(
+        9202,
+        adapter.collection,
+        "deleted",
+        claim_token=first,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert second != first
+    assert stale_status is None
+    assert conn.execute(
+        "SELECT claim_token FROM memory_vector_delete_claims WHERE vector_id=9202"
+    ).fetchone()["claim_token"] == second
+
+
 def test_concurrent_same_forget_confirmation_is_idempotent(isolated_db, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from fastapi.testclient import TestClient
@@ -1443,10 +1751,22 @@ def test_concurrent_same_forget_confirmation_is_idempotent(isolated_db, monkeypa
     written = _write("并发相同确认必须得到相同完成结果")
     vector_id = written["native_index"]["vector_id"]
     adapter.search_hits = [{"vector_id": vector_id, "score": 0.9}]
-    delete_barrier = threading.Barrier(2)
+    first_delete_started = threading.Event()
+    release_first_delete = threading.Event()
+    second_delete_entered = threading.Event()
+    delete_calls = 0
+    delete_calls_lock = threading.Lock()
 
     def concurrent_delete(*, vector_id):
-        delete_barrier.wait(timeout=5)
+        nonlocal delete_calls
+        with delete_calls_lock:
+            delete_calls += 1
+            call_number = delete_calls
+        if call_number == 1:
+            first_delete_started.set()
+            assert release_first_delete.wait(timeout=5)
+        else:
+            second_delete_entered.set()
         return {"ok": True, "vector_id": vector_id, "deleted": True}
 
     adapter.delete = concurrent_delete
@@ -1460,10 +1780,14 @@ def test_concurrent_same_forget_confirmation_is_idempotent(isolated_db, monkeypa
         ).json()
         payload = {"forget_request_id": preview["forget_request_id"], "capsule_ids": [written["capsule_id"]]}
         with ThreadPoolExecutor(max_workers=2) as executor:
-            responses = list(executor.map(
-                lambda _index: client.post("/memory/forget/confirm", json=payload, headers=headers),
-                range(2),
-            ))
+            first = executor.submit(client.post, "/memory/forget/confirm", json=payload, headers=headers)
+            assert first_delete_started.wait(timeout=5)
+            second = executor.submit(client.post, "/memory/forget/confirm", json=payload, headers=headers)
+            try:
+                assert not second_delete_entered.wait(timeout=0.5)
+            finally:
+                release_first_delete.set()
+            responses = [first.result(timeout=5), second.result(timeout=5)]
 
     assert [response.status_code for response in responses] == [200, 200]
     assert responses[0].json() == responses[1].json()
@@ -1472,3 +1796,4 @@ def test_concurrent_same_forget_confirmation_is_idempotent(isolated_db, monkeypa
         "deleted_vector_ids": [vector_id],
         "pending_vector_ids": [],
     }
+    assert delete_calls == 1

@@ -151,6 +151,14 @@ def main():
         updated_at TEXT NOT NULL,
         PRIMARY KEY(provider, collection_name, vector_id)
     );
+    CREATE TABLE IF NOT EXISTS memory_vector_delete_claims(
+        provider TEXT NOT NULL,
+        collection_name TEXT NOT NULL,
+        vector_id INTEGER NOT NULL,
+        claim_token TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        PRIMARY KEY(provider, collection_name, vector_id)
+    );
     CREATE TABLE IF NOT EXISTS memory_schema_migrations(
         name TEXT PRIMARY KEY,
         applied_at TEXT NOT NULL

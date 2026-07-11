@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
+import uuid
 from typing import Any
 
 from ..audit.service import record
@@ -26,6 +28,8 @@ _reindex_state_lock = threading.Lock()
 _reindex_active = False
 _delete_sweep_lock = threading.Lock()
 DELETE_VERIFICATION_DELAY_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
+DELETE_CLAIM_LEASE_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
+DELETE_CLAIM_POLL_SECONDS = 0.02
 
 
 def init_vector_schema() -> None:
@@ -64,6 +68,18 @@ def init_vector_schema() -> None:
             checked_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
+            PRIMARY KEY(provider, collection_name, vector_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_vector_delete_claims(
+            provider TEXT NOT NULL,
+            collection_name TEXT NOT NULL,
+            vector_id INTEGER NOT NULL,
+            claim_token TEXT NOT NULL,
+            claimed_at TEXT NOT NULL,
             PRIMARY KEY(provider, collection_name, vector_id)
         )
         """
@@ -390,15 +406,23 @@ def remove_vectors(capsule_ids: list[str]) -> dict[str, Any]:
     adapter = get_native_sdk()
     availability = adapter.availability()
     if not availability["available"]:
-        deleted = [
-            ref["vector_id"]
-            for ref in refs
-            if ref["status"] == "deleted" and ref["tombstone_status"] != "delete_pending"
-        ]
-        pending = [ref["vector_id"] for ref in refs if ref["vector_id"] not in deleted]
+        deleted: list[int] = []
+        pending: list[int] = []
         for ref in refs:
-            if ref["vector_id"] in pending:
-                _set_status(ref["vector_id"], "delete_pending")
+            vector_id = int(ref["vector_id"])
+            if _native_delete_is_confirmed(vector_id, ref["collection_name"]):
+                deleted.append(vector_id)
+            else:
+                if ref["status"] != "deleted":
+                    _set_status_if_current(
+                        vector_id,
+                        "delete_pending",
+                        expected_status=ref["status"],
+                    )
+                if _native_delete_is_confirmed(vector_id, ref["collection_name"]):
+                    deleted.append(vector_id)
+                else:
+                    pending.append(vector_id)
         record("kylin_sdk_vector_delete", {"count": len(pending), "status": "pending"})
         return {
             "backend": "fts_fallback",
@@ -409,18 +433,27 @@ def remove_vectors(capsule_ids: list[str]) -> dict[str, Any]:
     deleted: list[int] = []
     pending: list[int] = []
     for ref in refs:
-        if ref["status"] == "deleted" and ref["tombstone_status"] != "delete_pending":
-            deleted.append(ref["vector_id"])
+        vector_id = int(ref["vector_id"])
+        if _native_delete_is_confirmed(vector_id, ref["collection_name"]):
+            deleted.append(vector_id)
             continue
         if ref["collection_name"] != adapter.collection:
-            _set_status(ref["vector_id"], "delete_pending")
-            pending.append(ref["vector_id"])
+            if ref["status"] != "deleted":
+                _set_status_if_current(
+                    vector_id,
+                    "delete_pending",
+                    expected_status=ref["status"],
+                )
+            if _native_delete_is_confirmed(vector_id, ref["collection_name"]):
+                deleted.append(vector_id)
+            else:
+                pending.append(vector_id)
             continue
-        result = _delete_vector_with_adapter(adapter, ref["vector_id"])
+        result = _delete_vector_with_adapter(adapter, vector_id)
         if result["deleted"]:
-            deleted.append(ref["vector_id"])
+            deleted.append(vector_id)
         else:
-            pending.append(ref["vector_id"])
+            pending.append(vector_id)
     record("kylin_sdk_vector_delete", {"deleted": deleted, "pending": pending})
     return {"backend": "kylin_native", "deleted_vector_ids": deleted, "pending_vector_ids": pending}
 
@@ -506,7 +539,11 @@ def sweep_pending_vector_deletes(*, limit: int = DEFAULT_REINDEX_BATCH_SIZE, ada
             ):
                 continue
             attempted += 1
-            result = _delete_vector_with_adapter(native_adapter, vector_id)
+            result = _delete_vector_with_adapter(
+                native_adapter,
+                vector_id,
+                verify_deleted=row["status"] == "deleted",
+            )
             if result["deleted"]:
                 deleted.append(vector_id)
                 if row["status"] == "deleted":
@@ -831,54 +868,198 @@ def _record_vector_tombstone_in_transaction(
     )
 
 
-def _delete_vector_with_adapter(adapter: Any, vector_id: int) -> dict[str, bool]:
+def _delete_vector_with_adapter(
+    adapter: Any,
+    vector_id: int,
+    *,
+    verify_deleted: bool = False,
+) -> dict[str, bool]:
+    """Run one native delete while serializing duplicate callers through SQLite."""
+    if not verify_deleted and _native_delete_is_confirmed(vector_id, adapter.collection):
+        return {"deleted": True}
+
+    claim_token = _claim_vector_delete(vector_id, adapter.collection)
+    if claim_token is None:
+        return _wait_for_vector_delete_claim(vector_id, adapter.collection)
+    if not verify_deleted and _native_delete_is_confirmed(vector_id, adapter.collection):
+        _release_vector_delete_claim(vector_id, adapter.collection, claim_token)
+        return {"deleted": True}
+
+    claim_settled = False
     try:
-        response = adapter.delete(vector_id=vector_id)
-        if response.get("deleted") is not True:
-            raise KylinNativeSdkError("native_vector_not_deleted")
-    except Exception:
-        _set_delete_status(vector_id, adapter.collection, "delete_pending")
-        return {"deleted": False}
-    _set_delete_status(vector_id, adapter.collection, "deleted")
-    return {"deleted": True}
+        try:
+            response = adapter.delete(vector_id=vector_id)
+            status = "deleted" if response.get("deleted") is True else "delete_pending"
+        except Exception:
+            status = "delete_pending"
+        _set_delete_status(
+            vector_id,
+            adapter.collection,
+            status,
+            claim_token=claim_token,
+        )
+        claim_settled = True
+        return {"deleted": _native_delete_is_confirmed(vector_id, adapter.collection)}
+    finally:
+        if not claim_settled:
+            _release_vector_delete_claim(vector_id, adapter.collection, claim_token)
 
 
-def _set_delete_status(vector_id: int, collection_name: str, status: str) -> str | None:
+def _claim_vector_delete(vector_id: int, collection_name: str) -> str | None:
+    """Claim a delete across request workers, allowing recovery after a crash."""
     conn = get_conn()
+    claim_token = uuid.uuid4().hex
     timestamp = utc_now_iso_compact()
-    conn.execute(
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        claimed = conn.execute(
+            """
+            INSERT INTO memory_vector_delete_claims(
+                provider,collection_name,vector_id,claim_token,claimed_at
+            ) VALUES (?,?,?,?,?)
+            ON CONFLICT(provider,collection_name,vector_id) DO UPDATE SET
+                claim_token=excluded.claim_token,
+                claimed_at=excluded.claimed_at
+            WHERE julianday(memory_vector_delete_claims.claimed_at)
+                  <= julianday('now', ?)
+            """,
+            (
+                PROVIDER,
+                collection_name,
+                vector_id,
+                claim_token,
+                timestamp,
+                f"-{DELETE_CLAIM_LEASE_SECONDS} seconds",
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return claim_token if claimed.rowcount == 1 else None
+
+
+def _wait_for_vector_delete_claim(vector_id: int, collection_name: str) -> dict[str, bool]:
+    """Return the current owner's result without issuing another native delete."""
+    deadline = time.monotonic() + DELETE_CLAIM_LEASE_SECONDS
+    conn = get_conn()
+    while True:
+        if _native_delete_is_confirmed(vector_id, collection_name):
+            return {"deleted": True}
+        claimed = conn.execute(
+            """
+            SELECT 1 FROM memory_vector_delete_claims
+            WHERE provider=? AND collection_name=? AND vector_id=?
+            """,
+            (PROVIDER, collection_name, vector_id),
+        ).fetchone()
+        if claimed is None or time.monotonic() >= deadline:
+            return {"deleted": False}
+        time.sleep(DELETE_CLAIM_POLL_SECONDS)
+
+
+def _release_vector_delete_claim(vector_id: int, collection_name: str, claim_token: str) -> None:
+    conn = get_conn()
+    try:
+        conn.execute(
+            """
+            DELETE FROM memory_vector_delete_claims
+            WHERE provider=? AND collection_name=? AND vector_id=? AND claim_token=?
+            """,
+            (PROVIDER, collection_name, vector_id, claim_token),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
+def _delete_statuses(vector_id: int, collection_name: str) -> tuple[str | None, str | None]:
+    row = get_conn().execute(
         """
-        UPDATE memory_vector_refs SET status=?, updated_at=?
-        WHERE provider=? AND collection_name=? AND vector_id=?
-        """,
-        (status, timestamp, PROVIDER, collection_name, vector_id),
-    )
-    conn.execute(
-        """
-        UPDATE memory_vector_tombstones
-        SET status=?,checked_at=?,updated_at=?
-        WHERE provider=? AND collection_name=? AND vector_id=?
-        """,
-        (status, timestamp, timestamp, PROVIDER, collection_name, vector_id),
-    )
-    conn.commit()
-    row = conn.execute(
-        """
-        SELECT status FROM memory_vector_refs
-        WHERE provider=? AND collection_name=? AND vector_id=?
+        SELECT ref.status AS ref_status,tombstone.status AS tombstone_status
+        FROM memory_vector_refs AS ref
+        LEFT JOIN memory_vector_tombstones AS tombstone
+          ON tombstone.provider=ref.provider
+         AND tombstone.collection_name=ref.collection_name
+         AND tombstone.vector_id=ref.vector_id
+        WHERE ref.provider=? AND ref.collection_name=? AND ref.vector_id=?
         """,
         (PROVIDER, collection_name, vector_id),
     ).fetchone()
     if row:
-        return row["status"]
-    tombstone = conn.execute(
+        return row["ref_status"], row["tombstone_status"]
+    tombstone = get_conn().execute(
         """
         SELECT status FROM memory_vector_tombstones
         WHERE provider=? AND collection_name=? AND vector_id=?
         """,
         (PROVIDER, collection_name, vector_id),
     ).fetchone()
-    return tombstone["status"] if tombstone else None
+    return None, tombstone["status"] if tombstone else None
+
+
+def _native_delete_is_confirmed(vector_id: int, collection_name: str) -> bool:
+    ref_status, tombstone_status = _delete_statuses(vector_id, collection_name)
+    if ref_status == "deleted":
+        return tombstone_status != "delete_pending"
+    return ref_status is None and tombstone_status in {"deleted", "verified_deleted"}
+
+
+def _set_delete_status(
+    vector_id: int,
+    collection_name: str,
+    status: str,
+    *,
+    claim_token: str | None = None,
+) -> str | None:
+    conn = get_conn()
+    timestamp = utc_now_iso_compact()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if claim_token is not None:
+            claim = conn.execute(
+                """
+                SELECT 1 FROM memory_vector_delete_claims
+                WHERE provider=? AND collection_name=? AND vector_id=? AND claim_token=?
+                """,
+                (PROVIDER, collection_name, vector_id, claim_token),
+            ).fetchone()
+            if claim is None:
+                conn.rollback()
+                return _current_delete_status(vector_id, collection_name)
+        conn.execute(
+            """
+            UPDATE memory_vector_refs SET status=?, updated_at=?
+            WHERE provider=? AND collection_name=? AND vector_id=?
+            """,
+            (status, timestamp, PROVIDER, collection_name, vector_id),
+        )
+        conn.execute(
+            """
+            UPDATE memory_vector_tombstones
+            SET status=?,checked_at=?,updated_at=?
+            WHERE provider=? AND collection_name=? AND vector_id=?
+            """,
+            (status, timestamp, timestamp, PROVIDER, collection_name, vector_id),
+        )
+        if claim_token is not None:
+            conn.execute(
+                """
+                DELETE FROM memory_vector_delete_claims
+                WHERE provider=? AND collection_name=? AND vector_id=? AND claim_token=?
+                """,
+                (PROVIDER, collection_name, vector_id, claim_token),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return _current_delete_status(vector_id, collection_name)
+
+
+def _current_delete_status(vector_id: int, collection_name: str) -> str | None:
+    ref_status, tombstone_status = _delete_statuses(vector_id, collection_name)
+    return ref_status or tombstone_status
 
 
 def _set_tombstone_status(vector_id: int, collection_name: str, status: str) -> None:
@@ -957,3 +1138,35 @@ def _vector_refs_for_capsules(capsule_ids: list[str], *, include_deleted: bool =
         (PROVIDER, *capsule_ids),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def pending_delete_vector_ids(
+    capsule_ids: list[str],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> set[int]:
+    """Return vectors whose durable ref or tombstone state still needs deletion."""
+    if not capsule_ids:
+        return set()
+    connection = conn if conn is not None else get_conn()
+    if conn is None:
+        init_vector_schema()
+        connection = get_conn()
+    placeholders = ",".join("?" for _ in capsule_ids)
+    rows = connection.execute(
+        f"""
+        SELECT ref.vector_id,ref.status AS ref_status,tombstone.status AS tombstone_status
+        FROM memory_vector_refs AS ref
+        LEFT JOIN memory_vector_tombstones AS tombstone
+          ON tombstone.provider=ref.provider
+         AND tombstone.collection_name=ref.collection_name
+         AND tombstone.vector_id=ref.vector_id
+        WHERE ref.provider=? AND ref.capsule_id IN ({placeholders})
+        """,
+        (PROVIDER, *capsule_ids),
+    ).fetchall()
+    return {
+        int(row["vector_id"])
+        for row in rows
+        if row["ref_status"] == "delete_pending" or row["tombstone_status"] == "delete_pending"
+    }

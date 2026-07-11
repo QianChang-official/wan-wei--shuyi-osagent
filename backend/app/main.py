@@ -442,7 +442,7 @@ def add_event(event:MemoryEventIn):
         audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.model_dump()})
         return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
     conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
-    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.execute('CREATE TABLE IF NOT EXISTS memory_event_capsules(event_id TEXT PRIMARY KEY, capsule_id TEXT NOT NULL UNIQUE)'); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
+    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
@@ -482,12 +482,6 @@ def forget_preview(req:ForgetPreviewIn):
         if item.get('capsule_id') or item.get('event_id')
     ]
     conn = get_conn()
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS memory_forget_requests('
-        'forget_request_id TEXT PRIMARY KEY, scope TEXT NOT NULL, candidates TEXT NOT NULL, '
-        'status TEXT NOT NULL, result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)'
-    )
-    conn.commit()
     timestamp = utc_now_iso()
     try:
         conn.execute('BEGIN IMMEDIATE')
@@ -527,8 +521,10 @@ def _replay_completed_forget(
     ):
         raise HTTPException(status_code=409, detail='forget_request_already_completed')
     native_vector = completed.get('native_vector', {})
-    if native_vector.get('pending_vector_ids') or native_vector.get('reason') == 'native_delete_status_unknown':
-        from .memory_runtime.vector_index import remove_vectors
+    from .memory_runtime.vector_index import pending_delete_vector_ids, remove_vectors
+
+    durable_pending_vector_ids = pending_delete_vector_ids(completed.get('deleted_capsule_ids', []))
+    if native_vector.get('pending_vector_ids') or native_vector.get('reason') == 'native_delete_status_unknown' or durable_pending_vector_ids:
 
         try:
             completed['native_vector'] = remove_vectors(completed['deleted_capsule_ids'])
@@ -539,26 +535,110 @@ def _replay_completed_forget(
                 'pending_vector_ids': native_vector.get('pending_vector_ids', []),
                 'reason': 'native_delete_status_unknown',
             }
-        try:
-            conn.execute(
-                'UPDATE memory_forget_requests SET result=?, updated_at=? WHERE forget_request_id=?',
-                (json.dumps(completed), utc_now_iso(), forget_request_id),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        completed = _persist_completed_forget_result(
+            conn,
+            forget_request_id,
+            completed,
+        )
     return {key: value for key, value in completed.items() if not key.startswith('selected_')}
+
+
+def _persist_completed_forget_result(
+    conn,
+    forget_request_id: str,
+    proposed: dict,
+) -> dict:
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        from .memory_runtime.vector_index import pending_delete_vector_ids
+
+        authoritative_pending_vector_ids = pending_delete_vector_ids(
+            proposed.get('deleted_capsule_ids', []),
+            conn=conn,
+        )
+        row = conn.execute(
+            'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
+            (forget_request_id,),
+        ).fetchone()
+        persisted = proposed
+        if row and row['status'] == 'completed' and row['result']:
+            current = json.loads(row['result'])
+            if isinstance(current, dict):
+                persisted = {
+                    **proposed,
+                    'native_vector': _merge_native_delete_results(
+                        current.get('native_vector'),
+                        proposed.get('native_vector'),
+                        authoritative_pending_vector_ids=authoritative_pending_vector_ids or set(),
+                    ),
+                }
+        conn.execute(
+            'UPDATE memory_forget_requests SET result=?, updated_at=? WHERE forget_request_id=?',
+            (json.dumps(persisted), utc_now_iso(), forget_request_id),
+        )
+        conn.commit()
+        return persisted
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _merge_native_delete_results(
+    current,
+    proposed,
+    *,
+    authoritative_pending_vector_ids: set[int] | None = None,
+) -> dict:
+    current = current if isinstance(current, dict) else {}
+    proposed = proposed if isinstance(proposed, dict) else {}
+    authoritative_pending_vector_ids = authoritative_pending_vector_ids or set()
+    current_states = _native_delete_states(current)
+    proposed_states = _native_delete_states(proposed)
+    vector_ids = current_states.keys() | proposed_states.keys()
+    if authoritative_pending_vector_ids:
+        vector_ids = vector_ids | authoritative_pending_vector_ids
+    if (
+        not authoritative_pending_vector_ids
+        and all(proposed_states.get(vector_id, 0) >= current_states.get(vector_id, 0) for vector_id in vector_ids)
+    ):
+        return proposed
+    if (
+        not authoritative_pending_vector_ids
+        and all(current_states.get(vector_id, 0) >= proposed_states.get(vector_id, 0) for vector_id in vector_ids)
+    ):
+        return current
+
+    merged = {**current, **proposed}
+    states = {}
+    for vector_id in vector_ids:
+        if vector_id in authoritative_pending_vector_ids:
+            states[vector_id] = 1
+        else:
+            states[vector_id] = max(current_states.get(vector_id, 0), proposed_states.get(vector_id, 0))
+    merged['deleted_vector_ids'] = sorted(vector_id for vector_id, state in states.items() if state == 2)
+    merged['pending_vector_ids'] = sorted(vector_id for vector_id, state in states.items() if state == 1)
+    if not merged['pending_vector_ids']:
+        merged.pop('reason', None)
+    return merged
+
+
+def _native_delete_states(result: dict) -> dict[int, int]:
+    states = {
+        vector_id: 1
+        for vector_id in result.get('pending_vector_ids', [])
+        if isinstance(vector_id, int)
+    }
+    states.update({
+        vector_id: 2
+        for vector_id in result.get('deleted_vector_ids', [])
+        if isinstance(vector_id, int)
+    })
+    return states
+
 
 @app.post('/memory/forget/confirm')
 def forget_confirm(req:ForgetConfirmIn):
     conn=get_conn()
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS memory_forget_requests('
-        'forget_request_id TEXT PRIMARY KEY, scope TEXT NOT NULL, candidates TEXT NOT NULL, '
-        'status TEXT NOT NULL, result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)'
-    )
-    conn.commit()
     ticket = conn.execute(
         'SELECT * FROM memory_forget_requests WHERE forget_request_id=?',
         (req.forget_request_id,),
@@ -720,15 +800,8 @@ def forget_confirm(req:ForgetConfirmIn):
             'reason': 'native_delete_status_unknown',
         }
     stored_result['native_vector'] = response['native_vector']
-    try:
-        conn.execute(
-            'UPDATE memory_forget_requests SET result=?, updated_at=? WHERE forget_request_id=?',
-            (json.dumps(stored_result), utc_now_iso(), req.forget_request_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    stored_result = _persist_completed_forget_result(conn, req.forget_request_id, stored_result)
+    response['native_vector'] = stored_result['native_vector']
     return response
 
 # v0.6 MemoryOps Runtime endpoints

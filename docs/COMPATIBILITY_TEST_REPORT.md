@@ -20,7 +20,7 @@
 - 存储边界：仅格式化 `C:\VMs\Kylin-V11\kylin-v11.qcow2`；未修改安装 ISO
 - 网络配置：QEMU user-mode NAT，`e1000e` 虚拟网卡；通过麒麟软件源安装官方包
 - 客体状态：使用系统维护模式安装包并保存变更，重启后在 `Normal Mode` 复验
-- Git 基线：`9f5c9e4f73befe77cd7c078ed689d6445cea7c28`；审阅后最终源码仍需由证据包中的 source manifest 精确关联
+- Git 基线：`9f5c9e4f73befe77cd7c078ed689d6445cea7c28`；证据包记录的是审阅前 VM 源码快照，不能替代对最终合并提交的 VM 复验。
 
 ## 已验证结果
 
@@ -44,7 +44,7 @@
 | 崩溃恢复与并发 fencing | `host_verified` | generation-aware CAS、每代独立 vector ID、持久 tombstone 和有界 sweeper 的写入/遗忘崩溃、stale lease 接管及回放测试已纳入全量回归；真实 SDK 正常链路复验通过。 |
 | 历史重建 | `vm_verified` | 关闭原生链路创建的两条历史数据从 0/2、pending=2 重建到 2/2、failed=0。 |
 | 热态检索延迟 | `vm_verified` | VM loopback 30 次原生 HTTP 检索：p50 195.320 ms、p95 246.473 ms、最大 278.624 ms；不含 1 次 warmup。 |
-| 后端回归 | `snapshot_verified` | 审阅前快照在主机为 207 passed、1 skipped，Kylin VM 为 208 passed、1 个已知依赖弃用 warning；审阅后最终源码结果将在发布前重新生成。 |
+| 后端回归 | `snapshot_verified` | 审阅前快照在主机为 207 passed、1 skipped，Kylin VM 为 208 passed、1 个已知依赖弃用 warning；最终合并提交仍需在目标 VM 复验。 |
 
 ## 尚未验证
 
@@ -66,9 +66,10 @@
 - 审阅前源码快照回归：`pytest-backend-final-audit-closed-host.txt`、`pytest-backend-final-audit-closed-vm.txt`
 - 完整性清单：`SHA256SUMS`
 
-本轮证明的是 x86_64 QEMU/WHPX VM 上的官方 SDK 兼容性，不证明物理硬件、
+本轮 VM 快照证明的是 x86_64 QEMU/WHPX VM 上的官方 SDK 兼容性，不证明物理硬件、
 LoongArch/ARM 架构、大规模数据、长时间稳定性或生产 SLA。向量删除证据来自
 实际存在的 collection；代码同时把厂商返回 `deleted=false` 的情况保留为
 `delete_pending`，并以 generation fencing 与永久 tombstone 恢复 late upsert，
 不会把未确认删除写成成功。VM 运行时为 1.3.0；Bridge 针对
 旧 runtime 协议的兼容分支未在旧版运行时上实测，仍需对应版本的 vendor smoke。
+最终合并提交的 VM 验收仍须以其精确源码哈希重新构建、重跑 probe 和验收记录。

@@ -21,8 +21,9 @@ keys, private SSH keys, VM disk images, or model binaries.
   per-attempt vector IDs, durable tombstones and the bounded sweeper cover late
   upsert, stale lease takeover, failed compensation and ticket replay windows.
 - Pre-review backend snapshot: 207 passed, 1 skipped on the Windows host and
-  208 passed with one dependency deprecation warning in the Kylin VM. Final
-  post-review source results are regenerated before publication.
+  208 passed with one dependency deprecation warning in the Kylin VM. These
+  artifacts remain a source snapshot; a later merge commit requires its own
+  source-hash-linked VM rerun before it can inherit this VM result.
 
 ## Files
 
@@ -37,14 +38,15 @@ keys, private SSH keys, VM disk images, or model binaries.
 - `normal-mode-verification.txt`, `normal-mode-api.txt`, `backend-normal.log`:
   package, Bridge, direct probe and API persistence checks after leaving
   maintenance mode and rebooting into normal mode.
-- `current-source-normal-mode-build-and-probe.txt`: final normal-mode rebuild
-  and direct probe from the exact Bridge source in this worktree.
+- `current-source-normal-mode-build-and-probe.txt`: normal-mode rebuild and
+  direct probe from the captured Bridge source snapshot.
 - `final-current-source-acceptance.json`: pre-review source snapshot write, semantic
   preview, governed forget, native delete, idempotent replay, audit minimization
   and zero-delete-backlog acceptance result.
 - `pytest-backend-final-audit-closed-host.txt` and
   `pytest-backend-final-audit-closed-vm.txt`: pre-review source snapshot backend
-  suites. The post-review source manifest and rerun logs supersede them before publication.
+  suites. A post-review merge commit needs an exact-source manifest and rerun
+  logs before it may claim target-VM coverage.
 - `kylin-native-sdk-acceptance.png`: terminal summary captured inside Kylin.
 - `kylin-maintenance-mode.png`: maintenance-mode desktop watermark.
 - `pytest-backend.txt`: complete backend regression output.

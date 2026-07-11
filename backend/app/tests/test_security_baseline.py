@@ -62,6 +62,45 @@ def test_rejected_legacy_event_audit_does_not_store_nested_secret(tmp_path):
     assert secret not in rejected["payload"]
 
 
+def test_request_handlers_rely_on_initialized_schema(isolated_db, monkeypatch):
+    monkeypatch.delenv("WANWEI_KYLIN_SDK_BRIDGE", raising=False)
+
+    from backend.app import main as main_module
+    from backend.app.db import get_conn
+    from backend.app.schemas import ForgetConfirmIn, ForgetPreviewIn, MemoryEventIn
+
+    statements: list[str] = []
+    conn = get_conn()
+    conn.set_trace_callback(statements.append)
+    try:
+        main_module.add_event(
+            MemoryEventIn(
+                source_type="user_input",
+                scene="general",
+                content={"note": "request schema regression"},
+            )
+        )
+        preview = main_module.forget_preview(
+            ForgetPreviewIn(instruction="request schema regression")
+        )
+        main_module.forget_confirm(
+            ForgetConfirmIn(
+                forget_request_id=preview["forget_request_id"],
+                confirm=False,
+            )
+        )
+    finally:
+        conn.set_trace_callback(None)
+
+    redundant_schema_ddl = [
+        statement
+        for statement in statements
+        if "CREATE TABLE IF NOT EXISTS MEMORY_EVENT_CAPSULES" in statement.upper()
+        or "CREATE TABLE IF NOT EXISTS MEMORY_FORGET_REQUESTS" in statement.upper()
+    ]
+    assert redundant_schema_ddl == []
+
+
 def test_forget_confirm_hides_capsule_from_search(tmp_path):
     client = _client(tmp_path)
     body = {"memory_class": "knowledge", "content": {"text": "请生成周报，使用正式语气和三段式结构。"}}
