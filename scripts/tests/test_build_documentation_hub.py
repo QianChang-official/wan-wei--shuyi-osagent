@@ -1,3 +1,5 @@
+import hashlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.build_documentation_hub import (  # noqa: E402
     CATEGORY_SOURCES,
+    build_hub,
     transform_source_headings,
     validate_source_manifest,
 )
@@ -83,6 +86,47 @@ class BuildDocumentationHubTests(unittest.TestCase):
             6,
         )
         self.assertEqual({path.name for path in actual}, set(declared))
+
+    def test_build_hub_renders_every_declared_source_with_stable_metadata(self):
+        rendered = build_hub(
+            ROOT,
+            generated_on="2026-07-12",
+            source_commit="e0d18b4",
+        )
+        declared = tuple(
+            filename
+            for category in CATEGORY_SOURCES
+            for filename in category.files
+        )
+
+        self.assertEqual(rendered.count("<!-- source-start: docs/"), 48)
+        self.assertEqual(rendered.count("<!-- source-end: docs/"), 48)
+        self.assertEqual(rendered.count("<details>"), 48)
+        self.assertEqual(rendered.count('<a id="category-'), 10)
+        self.assertEqual(
+            sum(
+                rendered.count(f"## {category.name}")
+                for category in CATEGORY_SOURCES
+            ),
+            10,
+        )
+        self.assertIn("## 快速跳转目录", rendered)
+        self.assertIn("## 历史备份", rendered)
+
+        for filename in declared:
+            self.assertEqual(
+                rendered.count(f"<!-- source-start: docs/{filename} -->"),
+                1,
+            )
+
+        anchors = re.findall(r'<a id="([^"]+)"></a>', rendered)
+        self.assertEqual(len(anchors), len(set(anchors)))
+
+        for source_path in validate_source_manifest(ROOT / "docs"):
+            self.assertIn(
+                hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                rendered,
+            )
 
 
 if __name__ == "__main__":
