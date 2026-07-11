@@ -43,6 +43,16 @@ class BuildDocumentationHubTests(unittest.TestCase):
 """,
         )
 
+    def test_transform_source_headings_preserves_trailing_lines_in_unclosed_fence(self):
+        source = "# Outside\r\n```bash\r\n# literal\r\n\r\n\r\n"
+
+        transformed = transform_source_headings(source)
+
+        self.assertEqual(
+            transformed,
+            "#### Outside\n```bash\n# literal\n\n\n",
+        )
+
     def test_source_manifest_matches_docs_directory(self):
         actual = validate_source_manifest(ROOT / "docs")
         declared = tuple(

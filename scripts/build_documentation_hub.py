@@ -157,8 +157,9 @@ def validate_source_manifest(docs_dir: Path) -> tuple[Path, ...]:
 
 
 def transform_source_headings(source: str) -> str:
-    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    while lines and lines[-1] == "":
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized_source.split("\n")
+    if normalized_source.endswith("\n"):
         lines.pop()
 
     transformed_lines: list[str] = []
