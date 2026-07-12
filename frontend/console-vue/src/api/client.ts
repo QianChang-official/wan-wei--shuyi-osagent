@@ -25,6 +25,24 @@ export interface ModelProvider {
   notes: string
 }
 
+export interface ModelGatewayConfig {
+  provider: string
+  api_base: string
+  api_key: '***'
+  model: string
+  enabled: boolean
+  notes: string
+}
+
+export interface ModelGatewayConfigInput {
+  provider: string
+  api_base: string
+  api_key: string
+  model: string
+  enabled: boolean
+  notes: string
+}
+
 export interface RegistryTool {
   id: string
   name_cn: string
@@ -129,6 +147,11 @@ export const api = {
     req<{ items: any[] }>(`/audit/logs?limit=${limit}${traceId ? `&trace_id=${encodeURIComponent(traceId)}` : ''}`),
   platformModules: () => req<{ items: PlatformModule[]; summary: any }>('/platform/modules'),
   modelProviders: () => req<{ items: ModelProvider[] }>('/model-gateway/providers'),
+  modelGatewayConfigs: () => req<{ items: ModelGatewayConfig[] }>('/model-gateway/configs'),
+  saveModelGatewayConfig: (body: ModelGatewayConfigInput) =>
+    req<ModelGatewayConfig>('/model-gateway/configs', { method: 'POST', body: JSON.stringify(body) }),
+  deleteModelGatewayConfig: (provider: string) =>
+    req<{ deleted: boolean }>(`/model-gateway/configs/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
   testModelProvider: (body: Record<string, unknown>) =>
     req<any>('/model-gateway/test', { method: 'POST', body: JSON.stringify(body) }),
   registryTools: () => req<{ items: RegistryTool[] }>('/tool-registry/tools'),

@@ -29,8 +29,8 @@ from .kylin_sdk.native import get_native_sdk
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
-from .model_gateway.schemas import ModelGatewayTestIn
-from .model_gateway.service import list_providers, run_provider_test
+from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
+from .model_gateway.service import delete_config, list_configs, list_providers, run_provider_test, upsert_config
 from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
@@ -240,6 +240,25 @@ def platform_modules(status: str | None = None):
 @app.get('/model-gateway/providers')
 def model_gateway_providers():
     return list_providers()
+
+@app.get('/model-gateway/configs')
+def model_gateway_configs():
+    return list_configs()
+
+@app.post('/model-gateway/configs')
+def model_gateway_configs_upsert(req: ModelGatewayConfigIn):
+    return upsert_config(
+        req.provider,
+        req.api_base,
+        req.api_key,
+        req.model,
+        req.enabled,
+        req.notes,
+    )
+
+@app.delete('/model-gateway/configs/{provider}')
+def model_gateway_configs_delete(provider: str):
+    return {"deleted": delete_config(provider)}
 
 @app.post('/model-gateway/test')
 def model_gateway_test(req: ModelGatewayTestIn):

@@ -11,6 +11,7 @@ backend/app/model_gateway/service.py:
 from __future__ import annotations
 
 import importlib
+import sqlite3
 
 from backend.app.model_gateway import service as gateway_service
 from backend.app.model_gateway.schemas import ModelGatewayTestIn
@@ -79,3 +80,139 @@ def test_real_smoke_still_ssrf_guarded(monkeypatch):
         monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_BASE", raising=False)
         monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_MODEL", raising=False)
         _reload_service()
+
+
+def test_db_config_is_masked_and_overrides_environment(tmp_path, monkeypatch):
+    db_path = tmp_path / "gateway-config.db"
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(db_path))
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_BASE", "https://env.example/v1")
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "env-model")
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service.upsert_config(
+            provider="openai_compatible",
+            api_base="https://db.example/v1",
+            api_key="db-secret-key",
+            model="db-model",
+            enabled=True,
+            notes="database configuration",
+        )
+
+        configs = gateway_service.list_configs()["items"]
+        assert configs == [
+            {
+                "provider": "openai_compatible",
+                "api_base": "https://db.example/v1",
+                "api_key": "***",
+                "model": "db-model",
+                "enabled": True,
+                "notes": "database configuration",
+            }
+        ]
+
+        stored_key = sqlite3.connect(db_path).execute(
+            "SELECT api_key_encrypted FROM model_gateway_configs WHERE provider=?",
+            ("openai_compatible",),
+        ).fetchone()[0]
+        assert stored_key != "db-secret-key"
+        assert stored_key
+
+        out = gateway_service.run_provider_test(
+            ModelGatewayTestIn(provider="openai_compatible", dry_run=True)
+        )
+        assert out.model == "db-model"
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
+        monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_BASE", raising=False)
+        monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_MODEL", raising=False)
+        _reload_service()
+
+
+def test_real_smoke_uses_database_api_base_and_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service.upsert_config(
+            provider="custom",
+            api_base="https://db.example/v1",
+            api_key="db-secret-key",
+            model="db-model",
+            enabled=True,
+            notes="",
+        )
+        captured: dict[str, str] = {}
+
+        def fake_smoke(api_base, api_key, model, prompt, max_tokens):
+            captured.update(api_base=api_base, api_key=api_key, model=model)
+            return "ok", 12, "configured"
+
+        monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", fake_smoke)
+        monkeypatch.setattr(gateway_service, "validate_external_url", lambda value, **_: value)
+
+        out = gateway_service.run_provider_test(
+            ModelGatewayTestIn(provider="custom", dry_run=False)
+        )
+
+        assert out.status == "ok"
+        assert captured == {
+            "api_base": "https://db.example/v1",
+            "api_key": "db-secret-key",
+            "model": "db-model",
+        }
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
+
+
+def test_upsert_blank_api_key_preserves_existing_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service.upsert_config(
+            provider="custom",
+            api_base="https://one.example/v1",
+            api_key="first-key",
+            model="first-model",
+            enabled=True,
+            notes="first",
+        )
+        gateway_service.upsert_config(
+            provider="custom",
+            api_base="https://two.example/v1",
+            api_key="",
+            model="second-model",
+            enabled=False,
+            notes="second",
+        )
+
+        assert gateway_service._get_config("custom")["api_key"] == "first-key"
+        assert gateway_service.list_configs()["items"][0]["api_key"] == "***"
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
+
+
+def test_delete_config_removes_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service.upsert_config(
+            provider="custom",
+            api_base="https://example.com/v1",
+            api_key="secret",
+            model="custom-model",
+            enabled=True,
+            notes="",
+        )
+
+        assert gateway_service.delete_config("custom") is True
+        assert gateway_service.list_configs() == {"items": []}
+        assert gateway_service.delete_config("custom") is False
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
