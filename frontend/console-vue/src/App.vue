@@ -5,10 +5,7 @@ import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()
 const apiKey = ref('')
-
-function updateApiKey() {
-  setApiKey(apiKey.value)
-}
+function updateApiKey() { setApiKey(apiKey.value) }
 
 const navGroups = [
   {
@@ -48,43 +45,73 @@ const navGroups = [
 <template>
   <div class="shell">
     <aside class="rail">
+      <!-- 品牌印章区 -->
       <div class="brand">
-        <div class="brand-seal">枢<br/>忆</div>
+        <div class="brand-seal seal">
+          <span>枢</span>
+          <span>忆</span>
+        </div>
         <div class="brand-txt">
           <div class="bt-cn">宛委·枢忆</div>
-          <div class="bt-en">OSAgent Console</div>
+          <div class="bt-en">MemoryOps Console</div>
         </div>
       </div>
+
+      <div class="ink-divider rail-divider"></div>
+
+      <!-- 导航 -->
       <nav class="nav">
         <section v-for="group in navGroups" :key="group.title" class="nav-group">
-          <div class="nav-title">{{ group.title }}</div>
-          <RouterLink v-for="n in group.items" :key="n.to" :to="n.to" class="nav-item">
+          <div class="nav-title">
+            <span class="nav-title-line"></span>
+            <span>{{ group.title }}</span>
+            <span class="nav-title-line"></span>
+          </div>
+          <RouterLink
+            v-for="n in group.items"
+            :key="n.to"
+            :to="n.to"
+            class="nav-item"
+          >
             <span class="ni-seal">{{ n.seal }}</span>
-            <span class="ni-txt"><b>{{ n.name }}</b><i>{{ n.en }}</i></span>
+            <span class="ni-txt">
+              <b>{{ n.name }}</b>
+              <i>{{ n.en }}</i>
+            </span>
+            <span class="ni-arrow">›</span>
           </RouterLink>
         </section>
       </nav>
+
+      <div class="ink-divider rail-divider"></div>
+
+      <!-- API 密钥 -->
       <div class="api-auth">
-        <label for="api-key">API Key</label>
+        <label for="api-key">
+          <span class="auth-icon">🔑</span> API Key
+        </label>
         <input
           id="api-key"
           v-model="apiKey"
           type="password"
           autocomplete="off"
-          placeholder="生产模式密钥"
+          placeholder="生产模式密钥…"
           @input="updateApiKey"
         />
-        <small>仅保存在当前页面内存</small>
+        <small>仅保存在当前页面内存，不上传</small>
       </div>
+
+      <!-- 状态栏 -->
       <div class="rail-foot">
-        <span class="dot" :class="{ on: online }"></span>
-        <span>{{ online ? '后端在线' : '后端离线' }}</span>
-        <em v-if="online">{{ version }}</em>
+        <span class="status-dot" :class="{ on: online }"></span>
+        <span class="status-txt">{{ online ? '后端在线' : '后端离线' }}</span>
+        <em v-if="online" class="status-ver">{{ version }}</em>
       </div>
     </aside>
+
     <main class="stage">
       <RouterView v-slot="{ Component }">
-        <Transition name="fade" mode="out-in">
+        <Transition name="page" mode="out-in">
           <component :is="Component" />
         </Transition>
       </RouterView>
@@ -93,54 +120,290 @@ const navGroups = [
 </template>
 
 <style scoped>
-.shell { display: grid; grid-template-columns: 264px 1fr; min-height: 100vh; }
+/* ── 整体布局 ── */
+.shell {
+  display: grid;
+  grid-template-columns: 272px 1fr;
+  min-height: 100vh;
+}
+
+/* ── 侧边栏 ── */
 .rail {
-  background: linear-gradient(180deg, #211E1A, #17150F);
-  color: #E9DFC8; padding: 18px 14px; display: flex; flex-direction: column;
-  border-right: 3px solid var(--cinnabar); position: sticky; top: 0; height: 100vh;
+  background:
+    linear-gradient(180deg, #1E1B16 0%, #161310 60%, #0F0D0A 100%);
+  color: #EAE0C8;
+  padding: 20px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
   overflow: hidden;
+  border-right: 1px solid rgba(200,153,31,.2);
+  /* 竖向暗纹 */
+  background-image:
+    linear-gradient(180deg, #1E1B16 0%, #161310 60%, #0F0D0A 100%),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 31px,
+      rgba(200,153,31,.025) 31px,
+      rgba(200,153,31,.025) 32px
+    );
 }
-.brand { display: flex; gap: 12px; align-items: center; padding-bottom: 20px; border-bottom: 1px solid rgba(233,223,200,.15); }
+
+/* ── 品牌区 ── */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 18px;
+}
 .brand-seal {
-  font-family: var(--font-kai); font-weight: 700; font-size: 20px; line-height: 1.05;
-  color: #F3E9CE; background: var(--cinnabar); padding: 8px 11px; border-radius: 4px;
-  text-align: center; box-shadow: 0 0 18px rgba(178,58,46,.5);
+  font-family: var(--kai);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.1;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--cinnabar);
+  color: #F8EDD8;
+  border-radius: 3px;
+  box-shadow: var(--shadow-seal);
+  flex-shrink: 0;
+  position: relative;
 }
-.bt-cn { font-family: var(--font-kai); font-size: 18px; letter-spacing: 2px; }
-.bt-en { font-size: 11px; opacity: .6; letter-spacing: 1px; }
-.nav { margin-top: 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; overflow: auto; padding-right: 4px; }
-.nav-group { display: flex; flex-direction: column; gap: 3px; }
-.nav-title { font-size: 10px; letter-spacing: 2px; color: rgba(233,223,200,.42); padding: 3px 4px 5px; }
+.brand-seal::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(248,237,216,.25);
+  border-radius: 1px;
+}
+.bt-cn {
+  font-family: var(--kai);
+  font-size: 17px;
+  letter-spacing: 3px;
+  color: #F0E4C8;
+}
+.bt-en {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: rgba(234,224,200,.45);
+  margin-top: 3px;
+}
+
+/* ── 分隔线 ── */
+.rail-divider {
+  background: linear-gradient(90deg, transparent, rgba(200,153,31,.3) 30%, rgba(200,153,31,.3) 70%, transparent);
+  height: 1px;
+  margin: 0 -16px;
+}
+
+/* ── 导航 ── */
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(178,58,46,.3) transparent;
+}
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+
+.nav-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  color: rgba(234,224,200,.35);
+  padding: 2px 4px 8px;
+}
+.nav-title-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(200,153,31,.18);
+}
+
 .nav-item {
-  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px;
-  color: #C9BC9E; text-decoration: none; transition: all .18s; border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 2px;
+  color: #C4B898;
+  text-decoration: none;
+  transition: background .15s, color .15s, border-color .15s;
+  border: 1px solid transparent;
+  position: relative;
 }
-.nav-item:hover { background: rgba(233,223,200,.06); color: #F3E9CE; }
+.nav-item:hover {
+  background: rgba(234,224,200,.07);
+  color: #EAE0C8;
+  border-color: rgba(200,153,31,.15);
+}
 .nav-item.router-link-exact-active {
-  background: rgba(178,58,46,.16); color: #F3E9CE; border-color: rgba(178,58,46,.5);
+  background: rgba(178,58,46,.18);
+  color: #F3E9CE;
+  border-color: rgba(178,58,46,.45);
 }
+.nav-item.router-link-exact-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--cinnabar);
+  border-radius: 0 1px 1px 0;
+}
+
 .ni-seal {
-  font-family: var(--font-kai); font-size: 15px; width: 30px; height: 30px;
-  display: grid; place-items: center; border: 1px solid currentColor; border-radius: 4px; opacity: .8;
+  font-family: var(--kai);
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(196,184,152,.3);
+  border-radius: 2px;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s;
 }
-.ni-txt { display: flex; flex-direction: column; line-height: 1.25; }
-.ni-txt b { font-size: 14px; font-weight: 600; }
-.ni-txt i { font-size: 10.5px; opacity: .55; font-style: normal; }
-.api-auth { padding: 12px 0; border-top: 1px solid rgba(233,223,200,.15); }
-.api-auth label { display: block; margin-bottom: 6px; font-size: 10px; letter-spacing: 1px; opacity: .65; }
+.nav-item.router-link-exact-active .ni-seal {
+  background: rgba(178,58,46,.3);
+  border-color: rgba(178,58,46,.6);
+}
+.ni-txt {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  flex: 1;
+}
+.ni-txt b { font-size: 13.5px; font-weight: 600; }
+.ni-txt i { font-size: 10px; opacity: .5; font-style: normal; margin-top: 1px; }
+.ni-arrow {
+  font-size: 14px;
+  opacity: 0;
+  color: var(--cinnabar);
+  transition: opacity .15s;
+}
+.nav-item:hover .ni-arrow,
+.nav-item.router-link-exact-active .ni-arrow { opacity: .7; }
+
+/* ── API 密钥 ── */
+.api-auth {
+  padding: 14px 0 10px;
+}
+.api-auth label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: rgba(234,224,200,.45);
+  margin-bottom: 7px;
+}
+.auth-icon { font-size: 11px; }
 .api-auth input {
-  width: 100%; box-sizing: border-box; border: 1px solid rgba(233,223,200,.2);
-  border-radius: 4px; background: rgba(255,255,255,.05); color: #F3E9CE; padding: 7px 9px;
+  width: 100%;
+  border: 1px solid rgba(234,224,200,.15);
+  border-radius: 2px;
+  background: rgba(255,255,255,.04);
+  color: #EAE0C8;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  transition: border-color .15s;
 }
-.api-auth input:focus { outline: 1px solid var(--cinnabar); border-color: var(--cinnabar); }
-.api-auth small { display: block; margin-top: 5px; font-size: 9px; opacity: .45; }
-.rail-foot { display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .8; padding-top: 14px; border-top: 1px solid rgba(233,223,200,.15); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-soft); }
-.dot.on { background: var(--jade); box-shadow: 0 0 8px var(--jade); }
-.rail-foot em { margin-left: auto; font-style: normal; font-size: 10.5px; opacity: .6; }
-.stage { padding: 34px 40px; background: var(--paper); min-height: 100vh; }
-.fade-enter-active, .fade-leave-active { transition: opacity .22s, transform .22s; }
-.fade-enter-from { opacity: 0; transform: translateY(8px); }
-.fade-leave-to { opacity: 0; transform: translateY(-8px); }
-@media (max-width: 820px) { .shell { grid-template-columns: 1fr; } .rail { position: relative; height: auto; } }
+.api-auth input:focus {
+  outline: none;
+  border-color: rgba(178,58,46,.6);
+  background: rgba(255,255,255,.06);
+}
+.api-auth input::placeholder { color: rgba(234,224,200,.25); }
+.api-auth small {
+  display: block;
+  margin-top: 5px;
+  font-size: 9px;
+  color: rgba(234,224,200,.3);
+  letter-spacing: .5px;
+}
+
+/* ── 状态栏 ── */
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: rgba(234,224,200,.55);
+  padding-top: 12px;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(234,224,200,.2);
+  flex-shrink: 0;
+}
+.status-dot.on {
+  background: var(--jade-light);
+  box-shadow: 0 0 8px var(--jade), 0 0 3px var(--jade-light);
+}
+.status-txt { flex: 1; }
+.status-ver {
+  font-style: normal;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: rgba(234,224,200,.35);
+  background: rgba(255,255,255,.05);
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid rgba(234,224,200,.1);
+}
+
+/* ── 主内容区 ── */
+.stage {
+  padding: 36px 44px;
+  background: var(--xuan);
+  min-height: 100vh;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 27px,
+      rgba(26,23,20,.022) 27px,
+      rgba(26,23,20,.022) 28px
+    );
+}
+
+/* ── 页面切换动效 ── */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity .2s ease, transform .2s ease;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateX(12px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateX(-8px);
+}
+
+/* ── 响应式 ── */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { position: relative; height: auto; }
+  .stage { padding: 24px 20px; }
+}
 </style>
