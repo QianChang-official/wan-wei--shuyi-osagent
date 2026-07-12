@@ -33,9 +33,9 @@ function sealOf(name: string) {
         <p>祖宗模块不可删，只能加；v0.7 扩展为 20 舱 MemoryOps Studio。</p>
       </div>
       <div class="status-panel">
-        <span>done {{ statusCounts.done }}</span>
-        <span>partial {{ statusCounts.partial }}</span>
-        <span>planned {{ statusCounts.planned }}</span>
+        <span>done（已完成）{{ statusCounts.done }}</span>
+        <span>partial（部分）{{ statusCounts.partial }}</span>
+        <span>planned（计划中）{{ statusCounts.planned }}</span>
       </div>
     </div>
 

@@ -81,14 +81,14 @@ onMounted(load)
   <div>
     <div class="page-head">
       <h1>深做追问</h1>
-      <p>v0.9.1 Deep Expansion & Visual Verification</p>
+      <p>v0.9.1 深度扩展与可视验证</p>
     </div>
 
     <section class="hero-board">
-      <div><b>Session</b><span>Session Core</span></div>
-      <div><b>Depth</b><span>{{ modeSummary }}</span></div>
-      <div><b>Truth</b><span>{{ contractLayers }}</span></div>
-      <div><b>Visual</b><span>Visual Verification</span></div>
+      <div><b>会话</b><span>会话核心</span></div>
+      <div><b>深度</b><span>{{ modeSummary }}</span></div>
+      <div><b>真值</b><span>{{ contractLayers }}</span></div>
+      <div><b>可视</b><span>可视验证</span></div>
     </section>
 
     <div class="boundary">本页只调用项目内 v0.9.1 dry-run / read-only API；不联网，不修改真实记忆，不声明完整复现外部系统。</div>
@@ -98,27 +98,27 @@ onMounted(load)
     <template v-else>
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">Session Core</div>
+          <div class="section-title">会话核心</div>
           <div class="chips"><span v-for="field in sessionCore.fields" :key="field.name">{{ field.name }} · {{ field.source_layer }}</span></div>
           <div class="trace"><span v-for="step in demoTrace.flow" :key="step.stage">{{ step.stage }} -> {{ step.item }}</span></div>
         </article>
         <article class="panel">
-          <div class="section-title">Reasoning Depth</div>
+          <div class="section-title">推理深度</div>
           <div class="mode-grid"><div v-for="mode in reasoning.modes" :key="mode.mode"><b>{{ mode.mode }}</b><span>{{ mode.evidence_requirement }}</span><em>{{ mode.estimated_token_multiplier }}x</em></div></div>
-          <div class="run-row"><select v-model="selectedMode"><option>shallow</option><option>normal</option><option>deep</option><option>audit</option></select><button @click="runReasoning">Simulate</button></div>
+          <div class="run-row"><select v-model="selectedMode"><option>shallow</option><option>normal</option><option>deep</option><option>audit</option></select><button @click="runReasoning">模拟运行</button></div>
           <pre>{{ reasoningResult || '等待 reasoning-depth simulate dry-run' }}</pre>
         </article>
       </section>
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">Red Queen Evaluator</div>
+          <div class="section-title">红皇后评估器</div>
           <div class="chips"><span v-for="item in redqueen.criteria" :key="item.id">{{ item.id }} · {{ item.weight }}</span></div>
-          <textarea v-model="redqueenDraft"></textarea><button @click="runRedQueen">Evaluate dry-run</button>
+          <textarea v-model="redqueenDraft"></textarea><button @click="runRedQueen">评估 dry-run</button>
           <pre>{{ redqueenResult || '等待 red queen evaluator dry-run' }}</pre>
         </article>
         <article class="panel">
-          <div class="section-title">Contract Truth</div>
+          <div class="section-title">合约真值</div>
           <div class="contract-list"><span v-for="item in contracts.contracts" :key="item.layer">{{ item.layer }} · {{ item.status }}</span></div>
           <div class="contract-list"><span v-for="item in drift.checks" :key="item.id">{{ item.id }} · {{ item.status }}</span></div>
         </article>
@@ -126,12 +126,12 @@ onMounted(load)
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">AGI-to-ASI Pathways</div>
+          <div class="section-title">AGI 到 ASI 路径</div>
           <div class="path-list"><div v-for="item in pathways.items" :key="item.path"><b>{{ item.path }}</b><span>{{ item.osagent_mapping }}</span><em>{{ item.current_state }} -> {{ item.next_gate }}</em></div></div>
         </article>
         <article class="panel">
-          <div class="section-title">Interrogation</div>
-          <div class="run-row"><select v-model="selectedQuestion"><option v-for="item in questions.items" :key="item.id" :value="item.id">{{ item.title }}</option></select><button @click="runAnswer">Answer dry-run</button></div>
+          <div class="section-title">连环追问</div>
+          <div class="run-row"><select v-model="selectedQuestion"><option v-for="item in questions.items" :key="item.id" :value="item.id">{{ item.title }}</option></select><button @click="runAnswer">回答 dry-run</button></div>
           <div class="question-list"><span v-for="item in questions.items" :key="item.id">{{ item.id }} · {{ item.focus }}</span></div>
           <pre>{{ answerResult || '等待连环追问 dry-run' }}</pre>
         </article>
@@ -139,10 +139,10 @@ onMounted(load)
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">Visual Verification</div>
+          <div class="section-title">可视验证</div>
           <div class="chips"><span v-for="item in visualProtocol.required_panels" :key="item">{{ item }}</span></div>
           <div class="contract-list"><span v-for="item in visualProtocol.fallback_path" :key="item">{{ item }}</span></div>
-          <button @click="runVisual">Checklist dry-run</button>
+          <button @click="runVisual">清单 dry-run</button>
           <pre>{{ visualResult || '等待 visual checklist dry-run' }}</pre>
         </article>
         <article class="panel">

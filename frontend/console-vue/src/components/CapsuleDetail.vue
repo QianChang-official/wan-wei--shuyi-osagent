@@ -10,21 +10,21 @@ defineProps<{ capsule: any | null }>()
         <span class="d-id">{{ capsule.capsule_id }}</span>
       </div>
       <section>
-        <h4>content</h4>
+        <h4>内容</h4>
         <pre>{{ JSON.stringify(capsule.content, null, 2) }}</pre>
       </section>
       <div class="d-grid">
         <section>
-          <h4>governance</h4>
+          <h4>治理</h4>
           <pre>{{ JSON.stringify(capsule.governance, null, 2) }}</pre>
         </section>
         <section>
-          <h4>state</h4>
+          <h4>状态</h4>
           <pre>{{ JSON.stringify(capsule.state, null, 2) }}</pre>
         </section>
       </div>
       <section>
-        <h4>provenance</h4>
+        <h4>来源</h4>
         <pre>{{ JSON.stringify(capsule.provenance, null, 2) }}</pre>
       </section>
     </template>

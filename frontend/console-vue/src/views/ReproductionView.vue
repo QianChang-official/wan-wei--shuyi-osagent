@@ -81,12 +81,12 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head"><h1>论文复现</h1><p>v0.9 Lightweight Research System Reproduction Layer</p></div>
+    <div class="page-head"><h1>论文复现</h1><p>v0.9 轻量级研究系统复现层</p></div>
     <section class="hero-board">
       <div><b>{{ systems.summary?.systems || 9 }}</b><span>论文系统</span></div>
       <div><b>{{ systems.summary?.api_count || 14 }}</b><span>API</span></div>
-      <div><b>{{ partialCount }}</b><span>partial</span></div>
-      <div><b>{{ plannedCount }}</b><span>planned</span></div>
+      <div><b>{{ partialCount }}</b><span>部分实现</span></div>
+      <div><b>{{ plannedCount }}</b><span>计划中</span></div>
     </section>
     <div class="boundary">不是完整官方复现；这是项目内 lightweight reproduction layer，POST 接口均为 dry-run 或只读/隔离逻辑。</div>
     <div v-if="loading" class="muted">加载论文复现层...</div>
@@ -100,50 +100,50 @@ onMounted(load)
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">MemoryArena Workbench</div>
-          <div class="metrics"><span>cases {{ workbench.cases.length }}</span><span>assertions {{ workbench.metrics.total_assertions }}</span><span>{{ workbench.failure_diagnosis.status }}</span></div>
+          <div class="section-title">MemoryArena 工作台</div>
+          <div class="metrics"><span>用例 {{ workbench.cases.length }}</span><span>断言 {{ workbench.metrics.total_assertions }}</span><span>{{ workbench.failure_diagnosis.status }}</span></div>
           <div v-for="caseItem in workbench.cases" :key="caseItem.case_id" class="case-card">
             <b>{{ caseItem.title || caseItem.case_id }}</b><code>{{ caseItem.case_id }} · sessions {{ caseItem.session_count }}</code>
             <div class="timeline"><span v-for="step in caseItem.timeline" :key="step.session_id">{{ step.phase }}:{{ step.session_id }}</span></div>
           </div>
         </article>
         <article class="panel">
-          <div class="section-title">Hippo-Lite Graph Recall</div>
-          <div class="metrics"><span>nodes {{ graph.node_count }}</span><span>edges {{ graph.edge_count }}</span><span>{{ graph.status }}</span></div>
-          <div class="run-row"><input v-model="hippoQuery" /><button @click="runHippo">Recall dry-run</button></div>
-          <pre>{{ hippoResult || '等待 recall dry-run' }}</pre>
+          <div class="section-title">Hippo-Lite 图召回</div>
+          <div class="metrics"><span>节点 {{ graph.node_count }}</span><span>边 {{ graph.edge_count }}</span><span>{{ graph.status }}</span></div>
+          <div class="run-row"><input v-model="hippoQuery" /><button @click="runHippo">召回 dry-run</button></div>
+          <pre>{{ hippoResult || '等待召回 dry-run' }}</pre>
         </article>
       </section>
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">MemoryBank Retention</div>
-          <div class="run-row"><select v-model="retentionAction"><option>recall</option><option>reinforce</option><option>decay</option></select><button @click="runRetention">Simulate</button></div>
+          <div class="section-title">MemoryBank 记忆保留</div>
+          <div class="run-row"><select v-model="retentionAction"><option>recall</option><option>reinforce</option><option>decay</option></select><button @click="runRetention">模拟</button></div>
           <div class="retention-list"><span v-for="item in retention.items" :key="item.capsule_id">{{ item.capsule_id }} · score {{ item.retention_score }}</span></div>
-          <pre>{{ retentionResult || '等待 retention dry-run' }}</pre>
+          <pre>{{ retentionResult || '等待保留 dry-run' }}</pre>
         </article>
         <article class="panel">
-          <div class="section-title">Reflexion Evaluator</div>
+          <div class="section-title">Reflexion 评估器</div>
           <div class="chips"><span v-for="item in evaluator.failure_taxonomy" :key="item">{{ item }}</span></div>
-          <textarea v-model="reflexionNotes"></textarea><button @click="runReflexion">Evaluate dry-run</button>
-          <pre>{{ reflexionResult || '等待 evaluator dry-run' }}</pre>
+          <textarea v-model="reflexionNotes"></textarea><button @click="runReflexion">评估 dry-run</button>
+          <pre>{{ reflexionResult || '等待评估 dry-run' }}</pre>
         </article>
       </section>
 
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">Memory Tools API</div>
+          <div class="section-title">记忆工具 API</div>
           <div class="tool-grid"><span v-for="tool in tools.items" :key="tool.tool_name">{{ tool.tool_name }} · {{ tool.mode }}</span></div>
-          <div class="run-row"><select v-model="toolName"><option v-for="tool in tools.items" :key="tool.tool_name">{{ tool.tool_name }}</option></select><button @click="runTool">Tool dry-run</button></div>
-          <pre>{{ toolResult || '等待 tool dry-run' }}</pre>
+          <div class="run-row"><select v-model="toolName"><option v-for="tool in tools.items" :key="tool.tool_name">{{ tool.tool_name }}</option></select><button @click="runTool">工具 dry-run</button></div>
+          <pre>{{ toolResult || '等待工具 dry-run' }}</pre>
         </article>
         <article class="panel">
-          <div class="section-title">Secondary Systems</div>
+          <div class="section-title">辅助系统</div>
           <div class="secondary-grid">
             <div><b>MemCube 2.1</b><span>{{ memcube.status }}</span></div>
-            <div><b>Memory Tiers</b><span>{{ tiers.status }}</span></div>
-            <div><b>LoCoMo</b><span>{{ locomo.sessions?.length }} sessions</span></div>
-            <div><b>Generative Stream</b><span>{{ stream.status }}</span></div>
+            <div><b>Memory Tiers（记忆层级）</b><span>{{ tiers.status }}</span></div>
+            <div><b>LoCoMo</b><span>{{ locomo.sessions?.length }} 个会话</span></div>
+            <div><b>生成流</b><span>{{ stream.status }}</span></div>
           </div>
         </article>
       </section>

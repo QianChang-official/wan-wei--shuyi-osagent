@@ -37,7 +37,7 @@ onMounted(load)
   <div>
     <div class="page-head">
       <h1>枢忆核 · 记忆容器</h1>
-      <p>MemoryCapsule 2.0 浏览器 — 点击查看 governance / state / provenance</p>
+      <p>MemoryCapsule 2.0 浏览器 — 点击查看治理 / 状态 / 溯源</p>
       <button class="btn-ghost" @click="load">刷新</button>
     </div>
     <div v-if="err" class="err">{{ err }}</div>

@@ -232,8 +232,8 @@ onMounted(load)
               <th scope="col">provider</th>
               <th scope="col">api_base</th>
               <th scope="col">model</th>
-              <th scope="col">key</th>
-              <th scope="col">enabled</th>
+              <th scope="col">密钥</th>
+              <th scope="col">启用</th>
               <th scope="col">操作</th>
             </tr>
           </thead>
@@ -295,7 +295,7 @@ onMounted(load)
 
     <section class="test-zone">
       <div class="section-title">测试台</div>
-      <textarea v-model="smokePrompt" class="smoke-prompt" aria-label="真实 smoke 提示词"></textarea>
+      <textarea v-model="smokePrompt" class="smoke-prompt" aria-label="真实 smoke（冒烟测试）提示词"></textarea>
       <div v-if="testProviders.length" class="test-grid">
         <article v-for="provider in testProviders" :key="provider.provider" class="test-card" :class="{ enabled: provider.enabled }">
           <div>
@@ -303,9 +303,9 @@ onMounted(load)
             <p>{{ provider.model }}</p>
           </div>
           <div class="button-row">
-            <button :disabled="saving || !!deletingProvider || !!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run' }}</button>
+            <button :disabled="saving || !!deletingProvider || !!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run（模拟运行）' }}</button>
             <button v-if="provider.allowRealSmoke" class="primary-action" :disabled="saving || !!deletingProvider || !!testingProvider || !provider.enabled" @click="realSmoke(provider)">
-              {{ testingProvider === provider.provider ? '调用中…' : '真实 smoke' }}
+              {{ testingProvider === provider.provider ? '调用中…' : '真实 smoke（冒烟测试）' }}
             </button>
           </div>
         </article>

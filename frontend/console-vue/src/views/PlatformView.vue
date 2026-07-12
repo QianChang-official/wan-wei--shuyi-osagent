@@ -20,12 +20,12 @@ function statusName(status: string) {
     <div class="page-head">
       <div>
         <h1>平台舱室总图</h1>
-        <p>v0.7 MemoryOps Autopilot Platform · 20 舱生产控制面</p>
+        <p>v0.7 记忆运维自动驾驶平台 · 20 舱生产控制面</p>
       </div>
       <div class="control-strip">
-        <span>DONE {{ statusCounts.done }}</span>
-        <span>PARTIAL {{ statusCounts.partial }}</span>
-        <span>PLANNED {{ statusCounts.planned }}</span>
+        <span>已完成 {{ statusCounts.done }}</span>
+        <span>部分实现 {{ statusCounts.partial }}</span>
+        <span>规划中 {{ statusCounts.planned }}</span>
       </div>
     </div>
 
@@ -49,11 +49,11 @@ function statusName(status: string) {
         <p class="desc">{{ item.description }}</p>
         <div class="refs">
           <div>
-            <b>Backend</b>
+            <b>后端实现</b>
             <span v-for="ref in item.backend_refs" :key="ref">{{ ref }}</span>
           </div>
           <div>
-            <b>Competition</b>
+            <b>竞品参考</b>
             <span v-for="ref in item.competition_refs" :key="ref">{{ ref }}</span>
           </div>
         </div>
