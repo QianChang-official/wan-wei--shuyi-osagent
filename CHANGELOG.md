@@ -2,6 +2,33 @@
 
 ## Unreleased - 2026-07-12
 
+### 2026-07-10 至 PR #21 的上游基线
+
+#### PR #17：仓库审阅门槛
+
+- 新增根目录 `REVIEW.md`，让 Kilo 和其他自动审阅器按本仓库的安全、SQLite/FTS 完整性、交付和发布门槛判断变更。
+- 要求性能声明有可复核证据、观测基数有界、前端构建确定、Windows/Linux 行为一致，并保持 alpha、dry-run、partial/planned 的诚实边界。
+- 此 PR 只改变审阅策略，不改变运行时行为；合并提交为 `9a8a6b0`。
+
+#### PR #18：人工依赖治理
+
+- 删除按生态定时创建版本升级 PR 的 `.github/dependabot.yml`，避免 13 个大版本升级 PR 同时消耗 CI 和审阅容量。
+- 禁用 GitHub 自动安全修复 PR；依赖升级改为人工负责、按生态和兼容边界分组、验证后合并。
+- 保留漏洞告警、Dependency Audit/Review、CodeQL、Trivy、Secret Scanning 与 Push Protection；新增依赖升级和漏洞响应策略，合并提交为 `5513355`。
+
+#### PR #19：麒麟 VM 兼容性工具
+
+- 新增 QEMU/WHPX Kylin V11 VM 启动脚本和仅监听 `127.0.0.1:5959` 的 QMP 键盘辅助脚本。
+- 新增 VM 测试计划，记录安装、磁盘启动、图形登录和证据范围；未运行的 SDK/业务兼容性检查继续标记为待验证。
+- 验证 PowerShell 语法、localhost-only QMP 和已安装桌面启动，合并提交为 `98c694f`。
+
+#### PR #20：原生 SDK 优先检索
+
+- 新增基于官方 Kylin text-embedding/vector-engine SDK 的 C++17 stdin/stdout JSON Bridge，以及 CMake 构建配置和显式 bridge 路径约束。
+- 新增原生优先、FTS5 显式后备的检索路径，持久化 vector ID 映射、治理写入/删除、受保护 SDK status 和有界历史 reindex。
+- 增加协议、回退、迁移和安全回归测试；当时 Windows 主机不具备厂商 ABI/工具链，因此目标 VM 编译、真实 SDK 行为和性能证据明确留给后续 PR #21。
+- 最终修复原生回退、历史 backfill 与 bridge discovery 后，以 `9f5c9e4` 合并。
+
 ### PR #21 已合并基线：麒麟 VM 证据与运行时硬化
 
 > 对应上游 squash 提交：`3e38918`（`[codex] harden Kylin VM evidence and vector deletion`）。本节补记从上一次文档分支基线 `9f5c9e4` 到当前 `origin/main` 的全部改动类别，避免 PR #22 因历史分叉重复展示这些已合并内容。
@@ -66,8 +93,11 @@
 
 #### PR #22 验证口径
 
-- 文档生成器单元测试、确定性 `--check`、外部锚点存在性、仓库 `docs/*.md` 引用扫描、后端全量测试、前端生产构建、MemoryArena 与 `git diff --check` 均作为推送前门禁。
-- 此处记录的是待审查 PR #22 的实现和验证范围，不把尚未运行或尚未返回的远程 CI 写成已通过。
+- 文档生成器 `7/7` 单元测试通过；确定性 `--check`、外部锚点存在性和仓库旧路径扫描通过。
+- 后端全量测试通过：`238 passed, 1 skipped`。
+- 前端 `vue-tsc -b && vite build` 生产构建通过；本机重新生成的 `dist` 仅作为验证副作用清理，不纳入 PR #22。
+- MemoryArena-Lite 真实运行 `5/5` cases、`16/16` assertions 通过，`unsafe_autonomy_rate=0.0`；仅时间戳变化的评测报告不纳入 PR #22。
+- `git diff --check` 和秘密扫描作为最终推送门禁；远程 CI 尚未启动，不提前写成通过。
 
 ---
 
@@ -76,7 +106,7 @@
 ### v0.10.0 交付硬化
 
 - 增加非 root 多阶段 Docker 镜像、安全默认 Compose、Linux setup/smoke/verify/backup 与 secret 初始化脚本。
-- 增加 GitHub Windows/Linux CI、HTTP/容器 smoke、CodeQL、Dependency Review、Trivy、Dependabot、Release、SBOM、校验和与 provenance attestation。
+- 增加 GitHub Windows/Linux CI、HTTP/容器 smoke、CodeQL、Dependency Review、Trivy、Release、SBOM、校验和与 provenance attestation；后续 PR #18 已将 Dependabot 自动升级/安全修复 PR 改为人工依赖治理，同时保留扫描与漏洞告警。
 - 增加 `/health/live`、`/health/ready`、受保护 `/metrics`、`X-Request-ID` 与低基数 HTTP 指标。
 - 增加 SQLite 在线备份、quick_check、SHA-256 manifest、防篡改验证、停机恢复和恢复前安全副本。
 - 生产 API Key 增加 32 字符最低强度与 secret 文件加载；限流仅信任显式配置的代理 IP/CIDR，并从右向左剥离代理链以避免伪造转发头影响分桶。
@@ -93,8 +123,8 @@
 
 - 收敛 README 项目定位，从完整生产平台表述调整为可运行 alpha 原型与参赛研发底座。
 - 增加 XA-202612 赛题就绪度说明，区分已跑通、部分满足和待补齐能力。
-- 明确提交前 P0 缺口：银河麒麟 embedding SDK、麒麟适配实测、三项硬指标评测、PPT/演示视频与最终材料包。
-- 补充性能基线边界：本机 SQLite 检索满足 500ms 演示口径，但不等同于麒麟 SDK 和大规模数据集验收。
+- 最初明确的 P0 缺口包括银河麒麟 embedding SDK、麒麟适配实测、三项硬指标评测、PPT/演示视频与最终材料包；后续 PR #20/#21 已补充 VM SDK/延迟快照证据，但最终合并提交目标 VM 复验、物理硬件/其他架构与正式硬指标仍未完成。
+- 补充性能基线边界：本机 SQLite 检索与 Kylin V11 2603 x86_64 VM 延迟快照均不等同于最终 merge commit、物理目标硬件、大规模数据集或 SLA 验收。
 - 在诚实边界中标注偏好提取准确率、知识检索召回率、冲突处理正确率仍需正式实测报告。
 
 ### 跨平台搭建

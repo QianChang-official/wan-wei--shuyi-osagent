@@ -10,3 +10,6 @@
 
 # Preserve captured VM evidence byte-for-byte so SHA256SUMS remains portable.
 reports/kylin-native-sdk-evidence/* -text whitespace=-trailing-space,cr-at-eol
+
+# The generated hub preserves intentional Markdown hard-break spaces from its sources.
+文档中心_DOCUMENTATION_HUB.md whitespace=-trailing-space,cr-at-eol
