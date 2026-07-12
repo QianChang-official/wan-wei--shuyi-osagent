@@ -40,7 +40,7 @@ SKILLS = [
         "name_cn": "记忆治理策略",
         "scope": "policy",
         "status": "done",
-        "entrypoint": "docs/MEMORY_GOVERNANCE_POLICY.md",
+        "entrypoint": "文档中心_DOCUMENTATION_HUB.md#doc-memory-governance-policy-b93fa11b",
         "description": "定义长期记忆生产、确认、隔离、遗忘和审计规则。",
     },
     {
@@ -48,7 +48,7 @@ SKILLS = [
         "name_cn": "参赛材料导出",
         "scope": "deliverable",
         "status": "partial",
-        "entrypoint": "docs/COMPETITION_REQUIREMENT_COVERAGE.md",
+        "entrypoint": "文档中心_DOCUMENTATION_HUB.md#doc-competition-requirement-coverage-beaccf0d",
         "description": "把 README、技术方案、测试报告、用户手册、适配报告映射为交付包。",
     },
 ]

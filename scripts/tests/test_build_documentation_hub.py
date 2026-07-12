@@ -128,6 +128,38 @@ class BuildDocumentationHubTests(unittest.TestCase):
                 rendered,
             )
 
+    def test_project_documentation_hub_references_target_existing_anchors(self):
+        rendered = (ROOT / "文档中心_DOCUMENTATION_HUB.md").read_text(encoding="utf-8")
+        anchors = set(re.findall(r'<a id="([^"]+)"></a>', rendered))
+        reference_files = (
+            ROOT / "README.md",
+            ROOT / "backend/app/deepening/contract_truth.py",
+            ROOT / "backend/app/export_center/service.py",
+            ROOT / "backend/app/research_adoption/service.py",
+            ROOT / "backend/app/tool_registry/service.py",
+            ROOT / "backend/app/workflow/service.py",
+        )
+        references: list[tuple[Path, str]] = []
+        for reference_file in reference_files:
+            content = reference_file.read_text(encoding="utf-8")
+            references.extend(
+                (reference_file, anchor)
+                for anchor in re.findall(
+                    r"文档中心_DOCUMENTATION_HUB\.md#([a-z0-9_-]+)",
+                    content,
+                )
+            )
+
+        self.assertGreater(len(references), 0)
+        self.assertEqual(
+            [],
+            [
+                f"{reference_file.relative_to(ROOT)}#{anchor}"
+                for reference_file, anchor in references
+                if anchor not in anchors
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -284,7 +284,7 @@ def create_run(req: WorkflowRunIn) -> dict[str, Any]:
         },
         "trace": trace,
         "artifacts": {
-            "docs": ["docs/OSAGENT_COMPETITION_WORKFLOW.md", "README.md", "docs/VERSION_LINEAGE.md"],
+            "docs": ["文档中心_DOCUMENTATION_HUB.md#doc-osagent-competition-workflow-c67ae006", "README.md", "文档中心_DOCUMENTATION_HUB.md#doc-version-lineage-71608e42"],
             "console_routes": ["/console/#/workflow", "/console/#/audit", "/console/#/tuning", "/console/#/model-gateway"],
             "api_routes": workflow_design()["run_api"],
             "boundaries": [
