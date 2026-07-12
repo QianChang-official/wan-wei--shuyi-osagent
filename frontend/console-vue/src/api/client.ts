@@ -89,7 +89,7 @@ export interface VersionMapping {
   evidence_files: string[]
 }
 
-let apiKey = ''
+let apiKey = import.meta.env.DEV ? import.meta.env.VITE_WANWEI_DEV_API_KEY : ''
 
 export function setApiKey(value: string): void {
   apiKey = value.trim()

@@ -66,10 +66,10 @@ async def _call_limited_app(headers, chunks, max_body_bytes=10):
     return status, body
 
 
-def test_streaming_body_without_content_length_is_rejected_when_too_large():
+def test_chunked_body_without_content_length_is_rejected_when_too_large():
     status, body = anyio.run(
         _call_limited_app,
-        [],
+        [(b"transfer-encoding", b"chunked")],
         [b"12345", b"678901"],
     )
 
