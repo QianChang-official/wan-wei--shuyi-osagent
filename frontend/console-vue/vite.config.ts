@@ -19,9 +19,14 @@ const apiPrefixes = [
   '/deepening',
 ]
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [vue()],
   base: '/console/',
+  define: {
+    'import.meta.env.VITE_WANWEI_DEV_API_KEY': JSON.stringify(
+      command === 'serve' ? 'wanwei-dev-key' : '',
+    ),
+  },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
@@ -30,4 +35,4 @@ export default defineConfig({
     proxy: Object.fromEntries(apiPrefixes.map((prefix) => [prefix, backend])),
   },
   build: { outDir: 'dist', emptyOutDir: true },
-})
+}))
