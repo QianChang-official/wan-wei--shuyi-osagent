@@ -438,11 +438,18 @@ def deepening_visual_verification_checklist_dry_run_view(req: VisualChecklistIn)
 @app.post('/memory/events')
 def add_event(event:MemoryEventIn):
     event_id='evt_'+uuid.uuid4().hex[:12]; text=json.dumps(event.content,ensure_ascii=False); guard=evaluate_policy(text=text); quality=0.9 if len(text)>8 else 0.5
-    if guard['policy_result'] == 'reject':
+    policy = guard['policy_result']
+    if policy in ('reject', 'quarantine'):
         audit_id=record('memory_rejected',{'event_id':event_id,'guard':guard,'event':event.model_dump()})
         return {'event_id':event_id,'status':'rejected','guard':guard,'audit_id':audit_id}
-    conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,text))
-    capsule_id='cap_'+uuid.uuid4().hex[:12]; lifecycle='quarantined' if guard['sensitivity_level']=='S3' else 'active'; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',text,lifecycle,guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
+    if policy == 'require_confirmation':
+        audit_id=record('memory_pending_confirmation',{'event_id':event_id,'guard':guard})
+        return {'event_id':event_id,'status':'pending_confirmation','guard':guard,'audit_id':audit_id}
+    # allow / redact: redact content before storing
+    from .security.redaction import redact_sensitive_text
+    stored_text = redact_sensitive_text(text) if policy == 'redact' else text
+    conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,stored_text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,stored_text))
+    capsule_id='cap_'+uuid.uuid4().hex[:12]; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',stored_text,'active',guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
