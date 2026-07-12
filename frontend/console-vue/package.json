@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "test:security": "node --test tests/api-key-security.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

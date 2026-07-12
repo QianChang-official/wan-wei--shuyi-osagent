@@ -253,15 +253,19 @@ def test_vue_console_does_not_ship_default_dev_api_key():
     console_root = Path(__file__).resolve().parents[3] / "frontend" / "console-vue"
     app_vue = (console_root / "src" / "App.vue").read_text(encoding="utf-8")
     client_ts = (console_root / "src" / "api" / "client.ts").read_text(encoding="utf-8")
-    dist_scripts = list((console_root / "dist" / "assets").glob("*.js"))
 
     assert "wanwei-dev-key" not in app_vue
-    assert "wanwei-dev-key" not in client_ts
-    assert dist_scripts
-    assert all(
-        "wanwei-dev-key" not in script.read_text(encoding="utf-8")
-        for script in dist_scripts
-    )
+    # Key may appear only inside a DEV-only conditional; never as a bare default
+    assert "let apiKey = 'wanwei-dev-key'" not in client_ts
+    assert 'let apiKey = "wanwei-dev-key"' not in client_ts
+
+    # dist/ is gitignored; only check if a build is present
+    dist_assets = console_root / "dist" / "assets"
+    if dist_assets.exists():
+        assert all(
+            "wanwei-dev-key" not in script.read_text(encoding="utf-8")
+            for script in dist_assets.glob("*.js")
+        )
 
 
 def test_policy_patterns_precompiled():

@@ -75,7 +75,8 @@ def _openai_compatible_smoke(api_base: str, model: str, prompt: str, max_tokens:
         response.raise_for_status()
         data = response.json()
     latency_ms = int((time.perf_counter() - started) * 1000)
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    choices = data.get("choices") or []
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
     return "ok", latency_ms, text[:600]
 
 

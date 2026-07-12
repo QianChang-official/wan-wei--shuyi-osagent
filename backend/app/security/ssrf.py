@@ -45,6 +45,10 @@ def _hostname_is_blocked(host: str) -> bool:
     # raw IP
     try:
         addr = ipaddress.ip_address(lower.strip("[]"))
+        # Normalise IPv4-mapped IPv6 (::ffff:169.254.x.x) to its IPv4 form so
+        # it is compared against the IPv4 blocked networks correctly.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped
         return any(addr in net for net in _BLOCKED_NETWORKS)
     except ValueError:
         pass
@@ -56,8 +60,8 @@ def _resolve_blocked(host: str) -> bool:
     try:
         info = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        # cannot resolve -> allow URL validation to continue; network call will fail naturally
-        return False
+        # Cannot resolve — treat as blocked (fail-closed) to prevent DNS-rebinding.
+        return True
     for _, _, _, _, sockaddr in info:
         ip = sockaddr[0]
         try:

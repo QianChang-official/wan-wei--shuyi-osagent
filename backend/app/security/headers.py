@@ -37,4 +37,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
 
+        # HSTS: instruct browsers to use HTTPS for 1 year (only meaningful behind TLS)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
         return response

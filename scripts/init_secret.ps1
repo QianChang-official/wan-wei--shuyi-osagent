@@ -20,4 +20,15 @@ $bytes = [byte[]]::new(48)
 $key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $encoding = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($Path, $key + [Environment]::NewLine, $encoding)
+
+# Restrict file to owner-only (mirrors chmod 600 on Linux)
+$acl = Get-Acl -LiteralPath $Path
+$acl.SetAccessRuleProtection($true, $false)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    'FullControl', 'Allow'
+)
+$acl.SetAccessRule($rule)
+Set-Acl -LiteralPath $Path -AclObject $acl
+
 Write-Host "Secret created at $Path. The value was not printed." -ForegroundColor Green
