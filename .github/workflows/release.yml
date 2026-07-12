@@ -67,6 +67,26 @@ jobs:
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }}
             type=raw,value=latest
+      - name: Build image for scanning (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: wanwei-shuyi:release-scan
+          build-args: APP_VERSION=${{ env.RELEASE_TAG }}
+      - name: Trivy vulnerability scan (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: wanwei-shuyi:release-scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
       - uses: docker/build-push-action@v6
         id: build
         with:
