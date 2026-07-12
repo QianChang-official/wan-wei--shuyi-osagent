@@ -17,8 +17,14 @@ MAX_GOAL_LENGTH = 2000
 MAX_PROMPT_LENGTH = 4000
 
 
-class _BodyTooLarge(Exception):
+class _BodyTooLarge(HTTPException):
     """Raised when a streamed request body exceeds the configured limit."""
+
+    def __init__(self, max_body_bytes: int) -> None:
+        super().__init__(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Request body too large. Maximum {max_body_bytes} bytes allowed.",
+        )
 
 
 class BodySizeLimitMiddleware:
@@ -52,7 +58,7 @@ class BodySizeLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_body_bytes:
-                    raise _BodyTooLarge
+                    raise _BodyTooLarge(self.max_body_bytes)
             return message
 
         async def tracking_send(message: Message) -> None:

@@ -14,12 +14,12 @@ const configFile = path.join(root, 'vite.config.ts')
 const developmentApiKey = 'wanwei-dev-key'
 const execFileAsync = promisify(execFile)
 
-async function readJavaScriptFiles(directory) {
+async function readBundleArtifacts(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const files = await Promise.all(entries.map(async (entry) => {
     const entryPath = path.join(directory, entry.name)
-    if (entry.isDirectory()) return readJavaScriptFiles(entryPath)
-    return entry.name.endsWith('.js') ? [entryPath] : []
+    if (entry.isDirectory()) return readBundleArtifacts(entryPath)
+    return entry.name.endsWith('.js') || entry.name.endsWith('.map') ? [entryPath] : []
   }))
   return files.flat()
 }
@@ -69,7 +69,7 @@ test('production bundle excludes the local API key', async (context) => {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'production' },
   })
-  const chunks = await readJavaScriptFiles(outDir)
+  const chunks = await readBundleArtifacts(outDir)
 
   assert.ok(chunks.length > 0)
   for (const chunk of chunks) {
