@@ -44,10 +44,11 @@ const navGroups = [
 
 <template>
   <div class="shell">
+    <!-- 屏风式侧边栏 -->
     <aside class="rail">
-      <!-- 品牌印章区 -->
+      <!-- 品牌印章 -->
       <div class="brand">
-        <div class="brand-seal seal">
+        <div class="brand-seal">
           <span>枢</span>
           <span>忆</span>
         </div>
@@ -57,15 +58,13 @@ const navGroups = [
         </div>
       </div>
 
-      <div class="ink-divider rail-divider"></div>
-
-      <!-- 导航 -->
+      <!-- 屏风导航 -->
       <nav class="nav">
-        <section v-for="group in navGroups" :key="group.title" class="nav-group">
-          <div class="nav-title">
-            <span class="nav-title-line"></span>
+        <div v-for="(group, gi) in navGroups" :key="group.title" class="screen-panel" :class="`panel-${gi}`">
+          <!-- 屏风折叠线 -->
+          <div class="panel-hinge" v-if="gi > 0"></div>
+          <div class="panel-title">
             <span>{{ group.title }}</span>
-            <span class="nav-title-line"></span>
           </div>
           <RouterLink
             v-for="n in group.items"
@@ -78,40 +77,29 @@ const navGroups = [
               <b>{{ n.name }}</b>
               <i>{{ n.en }}</i>
             </span>
-            <span class="ni-arrow">›</span>
           </RouterLink>
-        </section>
+        </div>
       </nav>
-
-      <div class="ink-divider rail-divider"></div>
 
       <!-- API 密钥 -->
       <div class="api-auth">
-        <label for="api-key">
-          <span class="auth-icon">🔑</span> API Key
-        </label>
-        <input
-          id="api-key"
-          v-model="apiKey"
-          type="password"
-          autocomplete="off"
-          placeholder="生产模式密钥…"
-          @input="updateApiKey"
-        />
-        <small>仅保存在当前页面内存，不上传</small>
+        <label for="api-key">密钥</label>
+        <input id="api-key" v-model="apiKey" type="password" autocomplete="off"
+          placeholder="生产模式密钥…" @input="updateApiKey"/>
       </div>
 
-      <!-- 状态栏 -->
+      <!-- 状态 -->
       <div class="rail-foot">
         <span class="status-dot" :class="{ on: online }"></span>
-        <span class="status-txt">{{ online ? '后端在线' : '后端离线' }}</span>
-        <em v-if="online" class="status-ver">{{ version }}</em>
+        <span>{{ online ? '后端在线' : '后端离线' }}</span>
+        <em v-if="online">{{ version }}</em>
       </div>
     </aside>
 
+    <!-- 主内容区 -->
     <main class="stage">
       <RouterView v-slot="{ Component }">
-        <Transition name="page" mode="out-in">
+        <Transition name="scroll" mode="out-in">
           <component :is="Component" />
         </Transition>
       </RouterView>
@@ -120,290 +108,275 @@ const navGroups = [
 </template>
 
 <style scoped>
-/* ── 整体布局 ── */
 .shell {
   display: grid;
-  grid-template-columns: 272px 1fr;
+  grid-template-columns: 268px 1fr;
   min-height: 100vh;
 }
 
-/* ── 侧边栏 ── */
+/* ══ 屏风侧边栏 ══ */
 .rail {
-  background:
-    linear-gradient(180deg, #1E1B16 0%, #161310 60%, #0F0D0A 100%);
+  background: linear-gradient(180deg, #1C1914 0%, #141210 100%);
   color: #EAE0C8;
-  padding: 20px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 0;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow: hidden;
-  border-right: 1px solid rgba(200,153,31,.2);
-  /* 竖向暗纹 */
+  /* 屏风竖纹 */
   background-image:
-    linear-gradient(180deg, #1E1B16 0%, #161310 60%, #0F0D0A 100%),
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 31px,
-      rgba(200,153,31,.025) 31px,
-      rgba(200,153,31,.025) 32px
+    linear-gradient(180deg, #1C1914 0%, #141210 100%),
+    repeating-linear-gradient(90deg,
+      transparent 0px, transparent 30px,
+      rgba(200,153,31,.04) 30px, rgba(200,153,31,.04) 31px
     );
+  border-right: 2px solid rgba(200,153,31,.25);
+  /* 右侧金线阴影模拟屏风边框 */
+  box-shadow: 2px 0 12px rgba(0,0,0,.35), inset -1px 0 0 rgba(200,153,31,.1);
 }
 
 /* ── 品牌区 ── */
 .brand {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding-bottom: 18px;
+  gap: 12px;
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid rgba(200,153,31,.2);
+  background: rgba(0,0,0,.15);
 }
 .brand-seal {
   font-family: var(--kai);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   line-height: 1.1;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   background: var(--cinnabar);
   color: #F8EDD8;
-  border-radius: 3px;
-  box-shadow: var(--shadow-seal);
+  border-radius: 2px;
   flex-shrink: 0;
+  box-shadow: 0 0 20px rgba(178,58,46,.5), 0 0 6px rgba(178,58,46,.3);
   position: relative;
 }
 .brand-seal::before {
   content: '';
   position: absolute;
   inset: 3px;
-  border: 1px solid rgba(248,237,216,.25);
+  border: 1px solid rgba(248,237,216,.3);
   border-radius: 1px;
 }
-.bt-cn {
-  font-family: var(--kai);
-  font-size: 17px;
-  letter-spacing: 3px;
-  color: #F0E4C8;
-}
-.bt-en {
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  color: rgba(234,224,200,.45);
-  margin-top: 3px;
-}
+.bt-cn { font-family: var(--kai); font-size: 16px; letter-spacing: 3px; color: #F0E4C8; }
+.bt-en { font-size: 9.5px; letter-spacing: 1.5px; color: rgba(234,224,200,.4); margin-top: 3px; }
 
-/* ── 分隔线 ── */
-.rail-divider {
-  background: linear-gradient(90deg, transparent, rgba(200,153,31,.3) 30%, rgba(200,153,31,.3) 70%, transparent);
-  height: 1px;
-  margin: 0 -16px;
-}
-
-/* ── 导航 ── */
+/* ── 屏风导航面板 ── */
 .nav {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 14px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(178,58,46,.3) transparent;
+  scrollbar-color: rgba(178,58,46,.25) transparent;
 }
-.nav-group { display: flex; flex-direction: column; gap: 2px; }
 
-.nav-title {
+.screen-panel {
+  position: relative;
+  padding: 0 0 6px;
+  /* 每块面板有轻微的透视感 */
+  background: linear-gradient(180deg,
+    rgba(255,255,255,.025) 0%,
+    rgba(255,255,255,.01) 100%
+  );
+}
+
+/* 屏风折叠线（面板间的铰链） */
+.panel-hinge {
+  height: 8px;
+  background:
+    linear-gradient(180deg,
+      rgba(0,0,0,.4) 0%,
+      rgba(200,153,31,.15) 40%,
+      rgba(200,153,31,.15) 60%,
+      rgba(0,0,0,.3) 100%
+    );
+  margin: 0;
+  position: relative;
+}
+.panel-hinge::before,
+.panel-hinge::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(200,153,31,.5);
+  box-shadow: 0 0 4px rgba(200,153,31,.4);
+}
+.panel-hinge::before { left: 20px; }
+.panel-hinge::after { right: 20px; }
+
+.panel-title {
+  font-size: 9.5px;
+  letter-spacing: 3px;
+  color: rgba(234,224,200,.35);
+  padding: 10px 16px 6px;
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
-  letter-spacing: 2.5px;
-  color: rgba(234,224,200,.35);
-  padding: 2px 4px 8px;
 }
-.nav-title-line {
+.panel-title::after {
+  content: '';
   flex: 1;
   height: 1px;
-  background: rgba(200,153,31,.18);
+  background: linear-gradient(90deg, rgba(200,153,31,.2), transparent);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 10px;
-  border-radius: 2px;
+  padding: 7px 14px;
   color: #C4B898;
   text-decoration: none;
-  transition: background .15s, color .15s, border-color .15s;
-  border: 1px solid transparent;
+  transition: background .15s, color .15s;
   position: relative;
+  border-left: 2px solid transparent;
 }
 .nav-item:hover {
-  background: rgba(234,224,200,.07);
+  background: rgba(234,224,200,.06);
   color: #EAE0C8;
-  border-color: rgba(200,153,31,.15);
+  border-left-color: rgba(200,153,31,.3);
 }
 .nav-item.router-link-exact-active {
-  background: rgba(178,58,46,.18);
+  background: rgba(178,58,46,.15);
   color: #F3E9CE;
-  border-color: rgba(178,58,46,.45);
+  border-left-color: var(--cinnabar);
 }
-.nav-item.router-link-exact-active::before {
+/* 激活态右侧印章光晕 */
+.nav-item.router-link-exact-active::after {
   content: '';
   position: absolute;
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  background: var(--cinnabar);
-  border-radius: 0 1px 1px 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, transparent, rgba(178,58,46,.4), transparent);
 }
 
 .ni-seal {
   font-family: var(--kai);
-  font-size: 14px;
-  width: 28px;
-  height: 28px;
+  font-size: 13px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(196,184,152,.3);
+  border: 1px solid rgba(196,184,152,.25);
   border-radius: 2px;
   flex-shrink: 0;
-  transition: background .15s, border-color .15s;
+  transition: all .15s;
 }
 .nav-item.router-link-exact-active .ni-seal {
-  background: rgba(178,58,46,.3);
-  border-color: rgba(178,58,46,.6);
+  background: rgba(178,58,46,.25);
+  border-color: rgba(178,58,46,.55);
+  box-shadow: 0 0 8px rgba(178,58,46,.25);
 }
-.ni-txt {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.2;
-  flex: 1;
-}
-.ni-txt b { font-size: 13.5px; font-weight: 600; }
-.ni-txt i { font-size: 10px; opacity: .5; font-style: normal; margin-top: 1px; }
-.ni-arrow {
-  font-size: 14px;
-  opacity: 0;
-  color: var(--cinnabar);
-  transition: opacity .15s;
-}
-.nav-item:hover .ni-arrow,
-.nav-item.router-link-exact-active .ni-arrow { opacity: .7; }
+.ni-txt { display: flex; flex-direction: column; line-height: 1.2; }
+.ni-txt b { font-size: 13px; font-weight: 600; }
+.ni-txt i { font-size: 9.5px; opacity: .45; font-style: normal; }
 
 /* ── API 密钥 ── */
 .api-auth {
-  padding: 14px 0 10px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(200,153,31,.15);
+  background: rgba(0,0,0,.1);
 }
 .api-auth label {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  color: rgba(234,224,200,.45);
-  margin-bottom: 7px;
+  display: block;
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: rgba(234,224,200,.4);
+  margin-bottom: 6px;
+  font-family: var(--kai);
 }
-.auth-icon { font-size: 11px; }
 .api-auth input {
   width: 100%;
-  border: 1px solid rgba(234,224,200,.15);
-  border-radius: 2px;
+  border: 1px solid rgba(234,224,200,.12);
+  border-radius: 1px;
   background: rgba(255,255,255,.04);
   color: #EAE0C8;
-  padding: 7px 10px;
-  font-size: 12px;
+  padding: 6px 9px;
+  font-size: 11px;
   font-family: var(--mono);
-  transition: border-color .15s;
 }
 .api-auth input:focus {
   outline: none;
-  border-color: rgba(178,58,46,.6);
-  background: rgba(255,255,255,.06);
+  border-color: rgba(178,58,46,.5);
 }
-.api-auth input::placeholder { color: rgba(234,224,200,.25); }
-.api-auth small {
-  display: block;
-  margin-top: 5px;
-  font-size: 9px;
-  color: rgba(234,224,200,.3);
-  letter-spacing: .5px;
-}
+.api-auth input::placeholder { color: rgba(234,224,200,.2); }
 
 /* ── 状态栏 ── */
 .rail-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: rgba(234,224,200,.55);
-  padding-top: 12px;
+  gap: 7px;
+  font-size: 11px;
+  color: rgba(234,224,200,.45);
+  padding: 10px 14px;
+  border-top: 1px solid rgba(200,153,31,.12);
+  background: rgba(0,0,0,.15);
 }
 .status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(234,224,200,.2);
-  flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(234,224,200,.2); flex-shrink: 0;
 }
 .status-dot.on {
-  background: var(--jade-light);
-  box-shadow: 0 0 8px var(--jade), 0 0 3px var(--jade-light);
+  background: #6A9E7F;
+  box-shadow: 0 0 7px #4E7A62, 0 0 3px #6A9E7F;
 }
-.status-txt { flex: 1; }
-.status-ver {
-  font-style: normal;
-  font-size: 10px;
-  font-family: var(--mono);
-  color: rgba(234,224,200,.35);
-  background: rgba(255,255,255,.05);
-  padding: 2px 6px;
-  border-radius: 2px;
-  border: 1px solid rgba(234,224,200,.1);
+.rail-foot em {
+  margin-left: auto; font-style: normal;
+  font-size: 9.5px; font-family: var(--mono);
+  color: rgba(234,224,200,.3);
 }
 
-/* ── 主内容区 ── */
+/* ══ 主内容区 ══ */
 .stage {
   padding: 36px 44px;
-  background: var(--xuan);
+  background-color: var(--xuan);
+  background-image: url('@/assets/shanshui.svg');
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   min-height: 100vh;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 27px,
-      rgba(26,23,20,.022) 27px,
-      rgba(26,23,20,.022) 28px
-    );
 }
 
-/* ── 页面切换动效 ── */
-.page-enter-active,
-.page-leave-active {
-  transition: opacity .2s ease, transform .2s ease;
+/* ══ 卷轴展开动效 ══ */
+.scroll-enter-active {
+  animation: unroll .35s cubic-bezier(.22,.68,0,1.2);
+  transform-origin: top center;
 }
-.page-enter-from {
-  opacity: 0;
-  transform: translateX(12px);
+.scroll-leave-active {
+  animation: rollup .22s ease-in;
+  transform-origin: top center;
 }
-.page-leave-to {
-  opacity: 0;
-  transform: translateX(-8px);
+@keyframes unroll {
+  from { transform: scaleY(0.04); opacity: 0; }
+  to   { transform: scaleY(1);    opacity: 1; }
+}
+@keyframes rollup {
+  from { transform: scaleY(1);    opacity: 1; }
+  to   { transform: scaleY(0.04); opacity: 0; }
 }
 
-/* ── 响应式 ── */
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
   .rail { position: relative; height: auto; }
-  .stage { padding: 24px 20px; }
+  .stage { padding: 24px 20px; background-attachment: scroll; }
 }
 </style>

@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b8c8d8" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#d8cfc0" stop-opacity="0.15"/>
+    </linearGradient>
+    <linearGradient id="mtFar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7a8898" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#9aacb8" stop-opacity="0.15"/>
+    </linearGradient>
+    <linearGradient id="mtMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3a4050" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#5a6878" stop-opacity="0.25"/>
+    </linearGradient>
+    <linearGradient id="mtNear" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1e28" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#2a3040" stop-opacity="0.35"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0e8d4" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#f0e8d4" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#f0e8d4" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7090a8" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#506878" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="fadeBottom" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f2e8d5" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#f2e8d5" stop-opacity="0.85"/>
+    </linearGradient>
+    <filter id="blur-heavy"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="blur-mid"><feGaussianBlur stdDeviation="5"/></filter>
+    <filter id="blur-light"><feGaussianBlur stdDeviation="2"/></filter>
+  </defs>
+
+  <!-- 天空 -->
+  <rect width="1400" height="900" fill="url(#sky)"/>
+
+  <!-- 远山第一层 -->
+  <g filter="url(#blur-heavy)">
+    <path d="M-50,500 Q100,320 220,390 Q340,280 460,360 Q580,260 700,340 Q820,240 940,320 Q1060,220 1180,300 Q1300,240 1450,310 L1450,620 L-50,620 Z"
+          fill="url(#mtFar)"/>
+  </g>
+
+  <!-- 远山第二层 -->
+  <g filter="url(#blur-heavy)">
+    <path d="M-50,540 Q80,380 200,450 Q320,360 440,430 Q560,340 680,410 Q800,320 920,390 Q1040,300 1160,370 Q1280,300 1450,370 L1450,650 L-50,650 Z"
+          fill="url(#mtFar)" opacity="0.7"/>
+  </g>
+
+  <!-- 云雾带一 -->
+  <rect x="-100" y="420" width="1600" height="100" fill="url(#mist)" filter="url(#blur-heavy)"/>
+
+  <!-- 中景山脉 -->
+  <g filter="url(#blur-mid)">
+    <path d="M-50,620 Q80,440 180,510 Q280,400 400,470 Q500,380 620,450 Q720,360 840,430 Q940,340 1060,410 Q1160,340 1280,410 Q1370,360 1450,420 L1450,720 L-50,720 Z"
+          fill="url(#mtMid)"/>
+  </g>
+
+  <!-- 云雾带二 -->
+  <rect x="-100" y="550" width="1600" height="90" fill="url(#mist)" filter="url(#blur-mid)" opacity="0.9"/>
+
+  <!-- 近景山脉左 -->
+  <g filter="url(#blur-light)">
+    <path d="M-50,900 L-50,660 Q40,560 120,620 Q180,520 280,590 Q340,500 420,570 Q460,490 520,560 L520,900 Z"
+          fill="url(#mtNear)"/>
+  </g>
+
+  <!-- 近景山脉右 -->
+  <g filter="url(#blur-light)">
+    <path d="M880,900 L880,560 Q940,480 1020,550 Q1080,460 1160,530 Q1220,450 1320,520 Q1380,460 1450,520 L1450,900 Z"
+          fill="url(#mtNear)"/>
+  </g>
+
+  <!-- 云雾带三（近） -->
+  <rect x="-100" y="660" width="1600" height="100" fill="url(#mist)" filter="url(#blur-mid)" opacity="0.85"/>
+
+  <!-- 水面 -->
+  <path d="M520,900 L520,760 Q600,740 700,755 Q800,770 880,755 L880,900 Z"
+        fill="url(#water)" opacity="0.7"/>
+
+  <!-- 水面波纹 -->
+  <g opacity="0.3" stroke="#3a5060" stroke-width="1" fill="none" filter="url(#blur-light)">
+    <path d="M530,790 Q620,782 710,790 Q800,798 870,790"/>
+    <path d="M525,810 Q615,802 705,810 Q795,818 865,810"/>
+    <path d="M530,830 Q620,822 710,830 Q800,838 870,830"/>
+  </g>
+
+  <!-- 松树群（左） -->
+  <g opacity="0.75">
+    <!-- 树干 -->
+    <rect x="90" y="700" width="5" height="90" fill="#1a1c22"/>
+    <rect x="155" y="715" width="4" height="75" fill="#1a1c22"/>
+    <rect x="210" y="705" width="5" height="85" fill="#1a1c22"/>
+    <!-- 松冠层1 -->
+    <path d="M68,700 Q92,630 116,700 Z" fill="#1a1c22"/>
+    <path d="M70,675 Q92,615 114,675 Z" fill="#1a1c22"/>
+    <path d="M73,650 Q92,600 111,650 Z" fill="#1a1c22"/>
+    <!-- 松冠层2 -->
+    <path d="M133,715 Q157,650 181,715 Z" fill="#1a1c22"/>
+    <path d="M135,692 Q157,638 179,692 Z" fill="#1a1c22"/>
+    <!-- 松冠层3 -->
+    <path d="M188,705 Q212,638 236,705 Z" fill="#1a1c22"/>
+    <path d="M190,680 Q212,625 234,680 Z" fill="#1a1c22"/>
+  </g>
+
+  <!-- 松树群（右） -->
+  <g opacity="0.75">
+    <rect x="1185" y="700" width="5" height="90" fill="#1a1c22"/>
+    <rect x="1250" y="715" width="4" height="75" fill="#1a1c22"/>
+    <rect x="1305" y="705" width="5" height="85" fill="#1a1c22"/>
+    <path d="M1163,700 Q1187,630 1211,700 Z" fill="#1a1c22"/>
+    <path d="M1165,675 Q1187,615 1209,675 Z" fill="#1a1c22"/>
+    <path d="M1168,650 Q1187,600 1206,650 Z" fill="#1a1c22"/>
+    <path d="M1228,715 Q1252,650 1276,715 Z" fill="#1a1c22"/>
+    <path d="M1230,692 Q1252,638 1274,692 Z" fill="#1a1c22"/>
+    <path d="M1283,705 Q1307,638 1331,705 Z" fill="#1a1c22"/>
+    <path d="M1285,680 Q1307,625 1329,680 Z" fill="#1a1c22"/>
+  </g>
+
+  <!-- 远处小亭 -->
+  <g opacity="0.45" filter="url(#blur-light)">
+    <rect x="690" y="500" width="20" height="14" fill="#2a3040"/>
+    <path d="M684,500 L700,486 L716,500 Z" fill="#2a3040"/>
+    <rect x="693" y="514" width="4" height="14" fill="#2a3040"/>
+    <rect x="709" y="514" width="4" height="14" fill="#2a3040"/>
+    <path d="M688,514 L712,514" stroke="#2a3040" stroke-width="1" fill="none"/>
+  </g>
+
+  <!-- 底部渐出（融入宣纸色） -->
+  <rect x="0" y="700" width="1400" height="200" fill="url(#fadeBottom)"/>
+</svg>
