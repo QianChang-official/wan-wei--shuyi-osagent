@@ -5,10 +5,7 @@ import { useHealth } from '@/composables/useHealth'
 
 const { online, version } = useHealth()
 const apiKey = ref('')
-
-function updateApiKey() {
-  setApiKey(apiKey.value)
-}
+function updateApiKey() { setApiKey(apiKey.value) }
 
 const navGroups = [
   {
@@ -47,44 +44,62 @@ const navGroups = [
 
 <template>
   <div class="shell">
+    <!-- 屏风式侧边栏 -->
     <aside class="rail">
+      <!-- 品牌印章 -->
       <div class="brand">
-        <div class="brand-seal">枢<br/>忆</div>
+        <div class="brand-seal">
+          <span>枢</span>
+          <span>忆</span>
+        </div>
         <div class="brand-txt">
           <div class="bt-cn">宛委·枢忆</div>
-          <div class="bt-en">OSAgent Console</div>
+          <div class="bt-en">MemoryOps Console</div>
         </div>
       </div>
+
+      <!-- 屏风导航 -->
       <nav class="nav">
-        <section v-for="group in navGroups" :key="group.title" class="nav-group">
-          <div class="nav-title">{{ group.title }}</div>
-          <RouterLink v-for="n in group.items" :key="n.to" :to="n.to" class="nav-item">
+        <div v-for="(group, gi) in navGroups" :key="group.title" class="screen-panel" :class="`panel-${gi}`">
+          <!-- 屏风折叠线 -->
+          <div class="panel-hinge" v-if="gi > 0"></div>
+          <div class="panel-title">
+            <span>{{ group.title }}</span>
+          </div>
+          <RouterLink
+            v-for="n in group.items"
+            :key="n.to"
+            :to="n.to"
+            class="nav-item"
+          >
             <span class="ni-seal">{{ n.seal }}</span>
-            <span class="ni-txt"><b>{{ n.name }}</b><i>{{ n.en }}</i></span>
+            <span class="ni-txt">
+              <b>{{ n.name }}</b>
+              <i>{{ n.en }}</i>
+            </span>
           </RouterLink>
-        </section>
+        </div>
       </nav>
+
+      <!-- API 密钥 -->
       <div class="api-auth">
-        <label for="api-key">API Key</label>
-        <input
-          id="api-key"
-          v-model="apiKey"
-          type="password"
-          autocomplete="off"
-          placeholder="生产模式密钥"
-          @input="updateApiKey"
-        />
-        <small>仅保存在当前页面内存</small>
+        <label for="api-key">密钥</label>
+        <input id="api-key" v-model="apiKey" type="password" autocomplete="off"
+          placeholder="生产模式密钥…" @input="updateApiKey"/>
       </div>
+
+      <!-- 状态 -->
       <div class="rail-foot">
-        <span class="dot" :class="{ on: online }"></span>
+        <span class="status-dot" :class="{ on: online }"></span>
         <span>{{ online ? '后端在线' : '后端离线' }}</span>
         <em v-if="online">{{ version }}</em>
       </div>
     </aside>
+
+    <!-- 主内容区 -->
     <main class="stage">
       <RouterView v-slot="{ Component }">
-        <Transition name="fade" mode="out-in">
+        <Transition name="scroll" mode="out-in">
           <component :is="Component" />
         </Transition>
       </RouterView>
@@ -93,54 +108,275 @@ const navGroups = [
 </template>
 
 <style scoped>
-.shell { display: grid; grid-template-columns: 264px 1fr; min-height: 100vh; }
+.shell {
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  min-height: 100vh;
+}
+
+/* ══ 屏风侧边栏 ══ */
 .rail {
-  background: linear-gradient(180deg, #211E1A, #17150F);
-  color: #E9DFC8; padding: 18px 14px; display: flex; flex-direction: column;
-  border-right: 3px solid var(--cinnabar); position: sticky; top: 0; height: 100vh;
+  background: linear-gradient(180deg, #1C1914 0%, #141210 100%);
+  color: #EAE0C8;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
   overflow: hidden;
+  /* 屏风竖纹 */
+  background-image:
+    linear-gradient(180deg, #1C1914 0%, #141210 100%),
+    repeating-linear-gradient(90deg,
+      transparent 0px, transparent 30px,
+      rgba(200,153,31,.04) 30px, rgba(200,153,31,.04) 31px
+    );
+  border-right: 2px solid rgba(200,153,31,.25);
+  /* 右侧金线阴影模拟屏风边框 */
+  box-shadow: 2px 0 12px rgba(0,0,0,.35), inset -1px 0 0 rgba(200,153,31,.1);
 }
-.brand { display: flex; gap: 12px; align-items: center; padding-bottom: 20px; border-bottom: 1px solid rgba(233,223,200,.15); }
+
+/* ── 品牌区 ── */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid rgba(200,153,31,.2);
+  background: rgba(0,0,0,.15);
+}
 .brand-seal {
-  font-family: var(--font-kai); font-weight: 700; font-size: 20px; line-height: 1.05;
-  color: #F3E9CE; background: var(--cinnabar); padding: 8px 11px; border-radius: 4px;
-  text-align: center; box-shadow: 0 0 18px rgba(178,58,46,.5);
+  font-family: var(--kai);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.1;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--cinnabar);
+  color: #F8EDD8;
+  border-radius: 2px;
+  flex-shrink: 0;
+  box-shadow: 0 0 20px rgba(178,58,46,.5), 0 0 6px rgba(178,58,46,.3);
+  position: relative;
 }
-.bt-cn { font-family: var(--font-kai); font-size: 18px; letter-spacing: 2px; }
-.bt-en { font-size: 11px; opacity: .6; letter-spacing: 1px; }
-.nav { margin-top: 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; overflow: auto; padding-right: 4px; }
-.nav-group { display: flex; flex-direction: column; gap: 3px; }
-.nav-title { font-size: 10px; letter-spacing: 2px; color: rgba(233,223,200,.42); padding: 3px 4px 5px; }
+.brand-seal::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(248,237,216,.3);
+  border-radius: 1px;
+}
+.bt-cn { font-family: var(--kai); font-size: 16px; letter-spacing: 3px; color: #F0E4C8; }
+.bt-en { font-size: 9.5px; letter-spacing: 1.5px; color: rgba(234,224,200,.4); margin-top: 3px; }
+
+/* ── 屏风导航面板 ── */
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(178,58,46,.25) transparent;
+}
+
+.screen-panel {
+  position: relative;
+  padding: 0 0 6px;
+  /* 每块面板有轻微的透视感 */
+  background: linear-gradient(180deg,
+    rgba(255,255,255,.025) 0%,
+    rgba(255,255,255,.01) 100%
+  );
+}
+
+/* 屏风折叠线（面板间的铰链） */
+.panel-hinge {
+  height: 8px;
+  background:
+    linear-gradient(180deg,
+      rgba(0,0,0,.4) 0%,
+      rgba(200,153,31,.15) 40%,
+      rgba(200,153,31,.15) 60%,
+      rgba(0,0,0,.3) 100%
+    );
+  margin: 0;
+  position: relative;
+}
+.panel-hinge::before,
+.panel-hinge::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(200,153,31,.5);
+  box-shadow: 0 0 4px rgba(200,153,31,.4);
+}
+.panel-hinge::before { left: 20px; }
+.panel-hinge::after { right: 20px; }
+
+.panel-title {
+  font-size: 9.5px;
+  letter-spacing: 3px;
+  color: rgba(234,224,200,.35);
+  padding: 10px 16px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(200,153,31,.2), transparent);
+}
+
 .nav-item {
-  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px;
-  color: #C9BC9E; text-decoration: none; transition: all .18s; border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  color: #C4B898;
+  text-decoration: none;
+  transition: background .15s, color .15s;
+  position: relative;
+  border-left: 2px solid transparent;
 }
-.nav-item:hover { background: rgba(233,223,200,.06); color: #F3E9CE; }
+.nav-item:hover {
+  background: rgba(234,224,200,.06);
+  color: #EAE0C8;
+  border-left-color: rgba(200,153,31,.3);
+}
 .nav-item.router-link-exact-active {
-  background: rgba(178,58,46,.16); color: #F3E9CE; border-color: rgba(178,58,46,.5);
+  background: rgba(178,58,46,.15);
+  color: #F3E9CE;
+  border-left-color: var(--cinnabar);
 }
+/* 激活态右侧印章光晕 */
+.nav-item.router-link-exact-active::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, transparent, rgba(178,58,46,.4), transparent);
+}
+
 .ni-seal {
-  font-family: var(--font-kai); font-size: 15px; width: 30px; height: 30px;
-  display: grid; place-items: center; border: 1px solid currentColor; border-radius: 4px; opacity: .8;
+  font-family: var(--kai);
+  font-size: 13px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(196,184,152,.25);
+  border-radius: 2px;
+  flex-shrink: 0;
+  transition: all .15s;
 }
-.ni-txt { display: flex; flex-direction: column; line-height: 1.25; }
-.ni-txt b { font-size: 14px; font-weight: 600; }
-.ni-txt i { font-size: 10.5px; opacity: .55; font-style: normal; }
-.api-auth { padding: 12px 0; border-top: 1px solid rgba(233,223,200,.15); }
-.api-auth label { display: block; margin-bottom: 6px; font-size: 10px; letter-spacing: 1px; opacity: .65; }
+.nav-item.router-link-exact-active .ni-seal {
+  background: rgba(178,58,46,.25);
+  border-color: rgba(178,58,46,.55);
+  box-shadow: 0 0 8px rgba(178,58,46,.25);
+}
+.ni-txt { display: flex; flex-direction: column; line-height: 1.2; }
+.ni-txt b { font-size: 13px; font-weight: 600; }
+.ni-txt i { font-size: 9.5px; opacity: .45; font-style: normal; }
+
+/* ── API 密钥 ── */
+.api-auth {
+  padding: 10px 14px;
+  border-top: 1px solid rgba(200,153,31,.15);
+  background: rgba(0,0,0,.1);
+}
+.api-auth label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: rgba(234,224,200,.4);
+  margin-bottom: 6px;
+  font-family: var(--kai);
+}
 .api-auth input {
-  width: 100%; box-sizing: border-box; border: 1px solid rgba(233,223,200,.2);
-  border-radius: 4px; background: rgba(255,255,255,.05); color: #F3E9CE; padding: 7px 9px;
+  width: 100%;
+  border: 1px solid rgba(234,224,200,.12);
+  border-radius: 1px;
+  background: rgba(255,255,255,.04);
+  color: #EAE0C8;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-family: var(--mono);
 }
-.api-auth input:focus { outline: 1px solid var(--cinnabar); border-color: var(--cinnabar); }
-.api-auth small { display: block; margin-top: 5px; font-size: 9px; opacity: .45; }
-.rail-foot { display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .8; padding-top: 14px; border-top: 1px solid rgba(233,223,200,.15); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-soft); }
-.dot.on { background: var(--jade); box-shadow: 0 0 8px var(--jade); }
-.rail-foot em { margin-left: auto; font-style: normal; font-size: 10.5px; opacity: .6; }
-.stage { padding: 34px 40px; background: var(--paper); min-height: 100vh; }
-.fade-enter-active, .fade-leave-active { transition: opacity .22s, transform .22s; }
-.fade-enter-from { opacity: 0; transform: translateY(8px); }
-.fade-leave-to { opacity: 0; transform: translateY(-8px); }
-@media (max-width: 820px) { .shell { grid-template-columns: 1fr; } .rail { position: relative; height: auto; } }
+.api-auth input:focus {
+  outline: none;
+  border-color: rgba(178,58,46,.5);
+}
+.api-auth input::placeholder { color: rgba(234,224,200,.2); }
+
+/* ── 状态栏 ── */
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: rgba(234,224,200,.45);
+  padding: 10px 14px;
+  border-top: 1px solid rgba(200,153,31,.12);
+  background: rgba(0,0,0,.15);
+}
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(234,224,200,.2); flex-shrink: 0;
+}
+.status-dot.on {
+  background: #6A9E7F;
+  box-shadow: 0 0 7px #4E7A62, 0 0 3px #6A9E7F;
+}
+.rail-foot em {
+  margin-left: auto; font-style: normal;
+  font-size: 9.5px; font-family: var(--mono);
+  color: rgba(234,224,200,.3);
+}
+
+/* ══ 主内容区 ══ */
+.stage {
+  padding: 36px 44px;
+  background-color: var(--xuan);
+  background-image: url('@/assets/shanshui.svg');
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* ══ 卷轴展开动效 ══ */
+.scroll-enter-active {
+  animation: unroll .35s cubic-bezier(.22,.68,0,1.2);
+  transform-origin: top center;
+}
+.scroll-leave-active {
+  animation: rollup .22s ease-in;
+  transform-origin: top center;
+}
+@keyframes unroll {
+  from { transform: scaleY(0.04); opacity: 0; }
+  to   { transform: scaleY(1);    opacity: 1; }
+}
+@keyframes rollup {
+  from { transform: scaleY(1);    opacity: 1; }
+  to   { transform: scaleY(0.04); opacity: 0; }
+}
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { position: relative; height: auto; }
+  .stage { padding: 24px 20px; background-attachment: scroll; }
+}
 </style>

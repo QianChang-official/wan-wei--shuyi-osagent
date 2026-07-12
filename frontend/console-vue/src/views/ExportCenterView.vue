@@ -35,7 +35,7 @@ function statusName(status: string) {
         <code>{{ pack.id }}</code>
         <div class="evidence">
           <b>证据文件</b>
-          <p v-if="pack.evidence_files.length === 0">pending：尚无可声明文件</p>
+          <p v-if="pack.evidence_files.length === 0">待补齐：尚无可声明文件</p>
           <p v-for="file in pack.evidence_files" :key="file">{{ file }}</p>
         </div>
         <div class="demo-path">{{ pack.demo_path }}</div>

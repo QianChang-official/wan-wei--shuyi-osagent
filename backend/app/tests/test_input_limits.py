@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import anyio
+from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
 from backend.app.security.input_limits import BodySizeLimitMiddleware
@@ -24,8 +25,7 @@ async def _body_reader_app(scope, receive, send):
     await response(scope, receive, send)
 
 
-async def _call_limited_app(headers, chunks, max_body_bytes=10):
-    app = BodySizeLimitMiddleware(_body_reader_app, max_body_bytes=max_body_bytes)
+async def _call_asgi_app(app, headers, chunks):
     messages = [
         {
             "type": "http.request",
@@ -66,12 +66,41 @@ async def _call_limited_app(headers, chunks, max_body_bytes=10):
     return status, body
 
 
+async def _call_limited_app(headers, chunks, max_body_bytes=10):
+    app = BodySizeLimitMiddleware(_body_reader_app, max_body_bytes=max_body_bytes)
+    return await _call_asgi_app(app, headers, chunks)
+
+
 def test_chunked_body_without_content_length_is_rejected_when_too_large():
     status, body = anyio.run(
         _call_limited_app,
         [(b"transfer-encoding", b"chunked")],
         [b"12345", b"678901"],
     )
+
+    assert status == 413
+    assert b"Request body too large" in body
+
+
+def test_chunked_body_keeps_413_when_fastapi_parses_the_body():
+    async def call_app():
+        app = FastAPI()
+        app.add_middleware(BodySizeLimitMiddleware, max_body_bytes=10)
+
+        @app.post("/")
+        async def parse_body(payload: dict):
+            return payload
+
+        return await _call_asgi_app(
+            app,
+            [
+                (b"content-type", b"application/json"),
+                (b"transfer-encoding", b"chunked"),
+            ],
+            [b'{"x":', b'"123"}'],
+        )
+
+    status, body = anyio.run(call_app)
 
     assert status == 413
     assert b"Request body too large" in body

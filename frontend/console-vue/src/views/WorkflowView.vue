@@ -74,14 +74,14 @@ onMounted(load)
 <template>
   <div>
     <div class="page-head">
-      <h1>赛题工作流 · Workflow Run</h1>
-      <p>v0.9.3 Workflow Run 主线：把平台舱室收束为一条安全 dry-run OSAgent 闭环。</p>
+      <h1>赛题工作流 · 工作流运行</h1>
+      <p>v0.9.3 工作流运行主线：把平台舱室收束为一条安全 dry-run OSAgent 闭环。</p>
     </div>
 
     <section class="hero-board">
-      <div><b>{{ design.stages?.length || 10 }}</b><span>workflow stages</span></div>
-      <div><b>{{ doneCount }}</b><span>done</span></div>
-      <div><b>{{ partialCount }}</b><span>partial</span></div>
+      <div><b>{{ design.stages?.length || 10 }}</b><span>工作流阶段</span></div>
+      <div><b>{{ doneCount }}</b><span>已完成</span></div>
+      <div><b>{{ partialCount }}</b><span>部分完成</span></div>
       <div><b>{{ requirementCount }}</b><span>赛题要求映射</span></div>
       <div><b>{{ runSummary.latency_ms || '待运行' }}</b><span>OSAgent 控制链路 ms</span></div>
     </section>
@@ -94,12 +94,12 @@ onMounted(load)
     <template v-else>
       <section class="section-block two-col">
         <article class="panel">
-          <div class="section-title">启动一次 workflow run</div>
+          <div class="section-title">启动一次工作流运行</div>
           <div class="run-row">
             <select v-model="selectedScenario">
               <option v-for="item in design.scenarios" :key="item.id" :value="item.id">{{ item.name_cn }}</option>
             </select>
-            <button :disabled="running" @click="startWorkflowRun">{{ running ? '运行中…' : '启动 Workflow Run' }}</button>
+            <button :disabled="running" @click="startWorkflowRun">{{ running ? '运行中…' : '启动工作流运行' }}</button>
           </div>
           <textarea v-model="userGoal"></textarea>
           <dl v-if="run" class="run-meta">
@@ -155,11 +155,11 @@ onMounted(load)
 
       <section v-if="trace.length" class="section-block two-col">
         <article class="panel">
-          <div class="section-title">Trace 回放</div>
+          <div class="section-title">追踪回放</div>
           <pre>{{ trace }}</pre>
         </article>
         <article class="panel">
-          <div class="section-title">Artifacts / 边界</div>
+          <div class="section-title">运行产物 / 边界</div>
           <pre>{{ artifacts }}</pre>
         </article>
       </section>

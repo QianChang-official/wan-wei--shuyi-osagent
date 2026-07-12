@@ -114,6 +114,51 @@ def test_protected_get_endpoints_require_auth(tmp_path):
     assert client.get("/workflow/stats", headers=headers).status_code == 200
 
 
+def test_model_gateway_config_routes_require_auth_and_mask_keys(tmp_path):
+    client = _client(tmp_path, api_key="test-key")
+    body = {
+        "provider": "custom",
+        "api_base": "https://api.example.com/v1",
+        "api_key": "gateway-secret",
+        "model": "custom-model",
+        "enabled": True,
+        "notes": "test config",
+    }
+
+    assert client.get("/model-gateway/configs").status_code == 401
+    assert client.post("/model-gateway/configs", json=body).status_code == 401
+    assert client.delete("/model-gateway/configs/custom").status_code == 401
+
+    headers = {"X-API-Key": "test-key"}
+    response = client.post("/model-gateway/configs", json=body, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["api_key"] == "***"
+
+    listed = client.get("/model-gateway/configs", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["api_key"] == "***"
+
+    assert client.delete("/model-gateway/configs/custom", headers=headers).status_code == 200
+
+
+def test_model_gateway_config_provider_must_be_a_single_url_segment(tmp_path):
+    client = _client(tmp_path, api_key="test-key")
+    response = client.post(
+        "/model-gateway/configs",
+        json={
+            "provider": "a/b",
+            "api_base": "https://api.example.com/v1",
+            "api_key": "gateway-secret",
+            "model": "custom-model",
+            "enabled": True,
+            "notes": "",
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_count_and_cleanup_parameters_are_bounded(tmp_path):
     client = _client(tmp_path, api_key="test-key")
     headers = {"X-API-Key": "test-key"}

@@ -61,13 +61,13 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1>权威吸收舱</h1>
-        <p>v0.8 Authoritative Technology Adoption · 研究雷达 / 技术吸收仪表盘</p>
+        <p>v0.8 权威技术吸收 · 研究雷达 / 技术吸收仪表盘</p>
       </div>
       <div class="radar-summary">
         <span>A {{ sourceCounts.A }}</span>
         <span>B {{ sourceCounts.B }}</span>
-        <span>partial {{ statusCounts.partial }}</span>
-        <span>planned {{ statusCounts.planned }}</span>
+        <span>部分吸收 {{ statusCounts.partial }}</span>
+        <span>规划中 {{ statusCounts.planned }}</span>
       </div>
     </div>
 
@@ -128,9 +128,9 @@ onMounted(async () => {
             <code>{{ route.route_id }} · {{ route.status }}</code>
             <p>{{ route.expected_impact }}</p>
             <div class="plan-columns">
-              <div><b>Backend</b><span v-for="p in route.backend_plan" :key="p">{{ p }}</span></div>
-              <div><b>Frontend</b><span v-for="p in route.frontend_plan" :key="p">{{ p }}</span></div>
-              <div><b>Arena</b><span v-for="p in route.arena_plan" :key="p">{{ p }}</span></div>
+              <div><b>后端</b><span v-for="p in route.backend_plan" :key="p">{{ p }}</span></div>
+              <div><b>前端</b><span v-for="p in route.frontend_plan" :key="p">{{ p }}</span></div>
+              <div><b>竞技场</b><span v-for="p in route.arena_plan" :key="p">{{ p }}</span></div>
             </div>
           </article>
         </div>

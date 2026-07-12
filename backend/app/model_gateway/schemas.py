@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ModelProvider(BaseModel):
@@ -8,6 +8,27 @@ class ModelProvider(BaseModel):
     model: str
     enabled: bool = False
     status: str = "stub"
+    notes: str = ""
+
+
+class ModelGatewayConfigIn(BaseModel):
+    provider: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$",
+    )
+    api_base: str = Field(min_length=1)
+    api_key: str = ""
+    model: str = Field(min_length=1)
+    enabled: bool = False
+    notes: str = ""
+
+
+class ModelGatewayConfigOut(BaseModel):
+    provider: str
+    api_base: str
+    api_key: str = "***"
+    model: str
+    enabled: bool = False
     notes: str = ""
 
 
@@ -26,6 +47,6 @@ class ModelGatewayTestOut(BaseModel):
     status: str
     request_id: str
     message: str
-    key_policy: str = "真实 key 不入库、不回显、不打印"
+    key_policy: str = "真实 key 仅以 Fernet 加密存储，不回显、不打印"
     latency_ms: int | None = None
     response_preview: str | None = None

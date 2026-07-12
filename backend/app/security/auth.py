@@ -76,6 +76,7 @@ _PROTECTED_GET_PATHS = {
     "/kylin/sdk/status",
     "/metrics",
     "/workflow/stats",
+    "/model-gateway/configs",
 }
 _PROTECTED_GET_PREFIXES = (
     "/memory/v2/capsules/",

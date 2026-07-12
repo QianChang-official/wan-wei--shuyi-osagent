@@ -21,7 +21,7 @@ onMounted(async () => {
   <div>
     <div class="page-head">
       <h1>百工技能舱</h1>
-      <p>MCP servers · Skills registry · 工具权限 · 结构化结果入库</p>
+      <p>MCP 服务器 · 技能注册表 · 工具权限 · 结构化结果入库</p>
     </div>
     <div v-if="error" class="muted">{{ error }}</div>
 

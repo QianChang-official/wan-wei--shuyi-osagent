@@ -32,7 +32,7 @@ function openCapsule(id: string) {
   <div>
     <div class="page-head">
       <h1>琅嬛知识 · 可信检索</h1>
-      <p>Trust-aware Retrieval — 带治理过滤与证据卡的召回</p>
+      <p>可信检索 — 带治理过滤与证据卡的召回</p>
     </div>
     <div class="form">
       <div class="row">
@@ -40,9 +40,9 @@ function openCapsule(id: string) {
           <label>查询词 q</label>
           <input v-model="q" @keyup.enter="doSearch" placeholder="输入检索词…" />
         </div>
-        <div style="width:80px"><label>top_k</label><input v-model.number="topK" type="number" min="1" max="20" /></div>
+        <div style="width:80px"><label>top_k（返回数量）</label><input v-model.number="topK" type="number" min="1" max="20" /></div>
         <div style="width:90px">
-          <label>high_risk</label>
+          <label>high_risk（高风险过滤）</label>
           <select v-model="highRisk"><option :value="false">否</option><option :value="true">是</option></select>
         </div>
       </div>

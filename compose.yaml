@@ -20,6 +20,7 @@ services:
       WANWEI_PRODUCTION: "1"
       WANWEI_MEMORY_DB: /data/memory.db
       WANWEI_API_KEY_FILE: /run/secrets/wanwei_api_key
+      WANWEI_ENCRYPTION_KEY: "${WANWEI_ENCRYPTION_KEY:-}"
       WANWEI_TRUSTED_PROXY_IPS: ""
     secrets:
       - wanwei_api_key

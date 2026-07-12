@@ -30,10 +30,10 @@ async function run() {
       <label>任务目标 goal</label>
       <textarea v-model="goal" rows="3"></textarea>
       <div class="row">
-        <div><label>scene</label>
-          <select v-model="scene"><option>general</option><option>coding</option><option>ops</option><option>research</option><option>security</option></select>
+        <div><label>scene（场景）</label>
+          <select v-model="scene"><option value="general">通用</option><option value="coding">编程</option><option value="ops">运维</option><option value="research">研究</option><option value="security">安全</option></select>
         </div>
-        <div><label>top_k</label><input v-model.number="topK" type="number" min="1" max="20" /></div>
+        <div><label>top_k（返回数量）</label><input v-model.number="topK" type="number" min="1" max="20" /></div>
       </div>
       <button @click="run" :disabled="loading">{{ loading ? '运行中…' : '▶ 运行 Command Loop' }}</button>
     </div>

@@ -164,6 +164,17 @@ def main():
         applied_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS memory_reflections(reflection_id TEXT PRIMARY KEY, task_id TEXT, payload TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS model_gateway_configs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL UNIQUE,
+        api_base TEXT NOT NULL,
+        api_key_encrypted TEXT,
+        model TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
     """)
     migrate_legacy_vector_refs(conn)
     conn.commit(); print('initialized')

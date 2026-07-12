@@ -32,17 +32,17 @@ const ACTION_LABEL: Record<string,string> = { reinforce:'强化', deprecate:'废
   <div>
     <div class="page-head">
       <h1>句芒演化 · 复盘反思</h1>
-      <p>Reflection — 任务结束后复盘，触发记忆演化动作（强化 / 废弃 / 提升为风险记忆）</p>
+      <p>复盘反思 — 任务结束后复盘，触发记忆演化动作（强化 / 废弃 / 提升为风险记忆）</p>
     </div>
     <div class="form">
       <label>task_id</label>
       <input v-model="taskId" />
       <label><input type="checkbox" v-model="goalAchieved" /> 目标达成 goal_achieved</label>
-      <label>有帮助的记忆 ID（逗号分隔）→ reinforce</label>
+      <label>有帮助的记忆 ID（逗号分隔）→ reinforce（强化）</label>
       <input v-model="helpful" placeholder="cap_xxx, cap_yyy" />
-      <label>误导的记忆 ID（逗号分隔）→ deprecate</label>
+      <label>误导的记忆 ID（逗号分隔）→ deprecate（废弃）</label>
       <input v-model="misleading" placeholder="cap_zzz" />
-      <label>新风险 → 写入 risk memory (promote)</label>
+      <label>新风险 → 写入风险记忆 risk memory（promote 提升）</label>
       <textarea v-model="newRisk" rows="2"></textarea>
       <button @click="run" :disabled="loading">{{ loading ? '复盘中…' : '▶ 提交复盘' }}</button>
     </div>
