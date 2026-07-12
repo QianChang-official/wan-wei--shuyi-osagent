@@ -455,7 +455,7 @@ def add_event(event:MemoryEventIn):
 @app.get('/memory/search')
 def search(q:str,scene:str='general',top_k:int=5):
     q, top_k = validate_search_params(q, top_k)
-    results=do_search(q,scene,top_k); evidence=[{'source_event_id':r['event_id'],'source_type':r['source_type'],'trust_score':r['trust_score'],'actions':['view_source','correct','forget']} for r in results]
+    results=do_search(q,top_k); evidence=[{'source_event_id':r['event_id'],'source_type':r['source_type'],'trust_score':r['trust_score'],'actions':['view_source','correct','forget']} for r in results]
     return {'query':q,'results':results,'evidence_cards':evidence}
 
 @app.post('/memory/forget/preview')
@@ -473,7 +473,7 @@ def forget_preview(req:ForgetPreviewIn):
         }
         for item in capsules
     ]
-    legacy_candidates = do_search(instruction, 'general', 10)
+    legacy_candidates = do_search(instruction, 10)
     candidates.extend(legacy_candidates)
     forget_request_id='forget_'+uuid.uuid4().hex
     payload = {

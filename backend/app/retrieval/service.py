@@ -6,7 +6,7 @@ def _match_query(q: str) -> str:
     return ' OR '.join(f'"{part}"' for part in parts) if parts else '""'
 
 
-def search(q: str, scene: str = 'general', top_k: int = 5):
+def search(q: str, top_k: int = 5):
     if not q or not q.strip():
         return []
     conn = get_conn()
