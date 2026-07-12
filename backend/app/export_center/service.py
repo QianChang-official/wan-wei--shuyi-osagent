@@ -6,7 +6,7 @@ EXPORT_PACKAGES = [
         "id": "technical_solution",
         "name_cn": "技术方案",
         "status": "partial",
-        "evidence_files": ["README.md", "docs/V07_MEMORYOPS_AUTOPILOT_PLATFORM.md", "docs/ARCHITECTURE.md"],
+        "evidence_files": ["README.md", "文档中心_DOCUMENTATION_HUB.md#doc-v07-memoryops-autopilot-platform-5b136d61", "文档中心_DOCUMENTATION_HUB.md#doc-architecture-8f6366fd"],
         "demo_path": "/console/#/platform",
     },
     {
@@ -20,14 +20,14 @@ EXPORT_PACKAGES = [
         "id": "compatibility_report",
         "name_cn": "适配测试报告",
         "status": "partial",
-        "evidence_files": ["docs/COMPATIBILITY_TEST_REPORT.md", "docs/KYLIN_DOCS_MAPPING.md"],
+        "evidence_files": ["文档中心_DOCUMENTATION_HUB.md#doc-compatibility-test-report-b002acd2", "文档中心_DOCUMENTATION_HUB.md#doc-kylin-docs-mapping-86762731"],
         "demo_path": "/console/#/exports",
     },
     {
         "id": "user_manual",
         "name_cn": "用户手册",
         "status": "partial",
-        "evidence_files": ["docs/USER_MANUAL.md"],
+        "evidence_files": ["文档中心_DOCUMENTATION_HUB.md#doc-user-manual-47b5dd4f"],
         "demo_path": "/console/#/exports",
     },
     {

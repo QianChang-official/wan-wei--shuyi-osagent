@@ -42,7 +42,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Verify migration and sync semantics before claiming multi-device production readiness.",
             "Add access-policy tests for high-risk memory reuse.",
         ],
-        evidence_files=["docs/MEMORY_CAPSULE_V2_SCHEMA.md", "backend/app/platform/service.py"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-memory-capsule-v2-schema-957540be", "backend/app/platform/service.py"],
         source_urls=["https://arxiv.org/abs/2507.03724"],
     ),
     ResearchTechnology(
@@ -82,7 +82,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Prevent emotional salience from overriding governance decisions.",
             "Add deletion verification and retention-decay tests before claiming precise forgetting completion.",
         ],
-        evidence_files=["docs/PREFERENCE_KNOWLEDGE_MEMORY_ARCHITECTURE.md", "backend/app/tuning/service.py"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-preference-knowledge-memory-architecture-11007e69", "backend/app/tuning/service.py"],
         source_urls=["https://arxiv.org/abs/2305.10250"],
     ),
     ResearchTechnology(
@@ -102,7 +102,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Measure graph recall against FTS baseline before claiming accuracy gains.",
             "Control hallucinated evidence paths with provenance checks.",
         ],
-        evidence_files=["docs/MEMORY_CAPSULE_V2_SCHEMA.md", "backend/app/platform/service.py"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-memory-capsule-v2-schema-957540be", "backend/app/platform/service.py"],
         source_urls=["https://arxiv.org/abs/2405.14831", "https://github.com/OSU-NLP-Group/HippoRAG"],
     ),
     ResearchTechnology(
@@ -121,7 +121,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Separate long-session consistency from short case pass rate.",
             "Add adversarial timeline contradiction checks.",
         ],
-        evidence_files=["backend/app/memory_arena/cases", "docs/V08_AUTHORITATIVE_TECH_ADOPTION_MATRIX.md"],
+        evidence_files=["backend/app/memory_arena/cases", "文档中心_DOCUMENTATION_HUB.md#doc-v08-authoritative-tech-adoption-matrix-b8f18d67"],
         source_urls=["https://github.com/snap-research/locomo"],
     ),
     ResearchTechnology(
@@ -140,7 +140,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Benchmark context budget behavior before claiming latency or quality improvement.",
             "Guard paging decisions with trust and source-layer constraints.",
         ],
-        evidence_files=["docs/ADVANCED_MEMORY_TECH.md", "backend/app/research_adoption/service.py"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-advanced-memory-tech-415d47c6", "backend/app/research_adoption/service.py"],
         source_urls=["https://arxiv.org/abs/2310.08560", "https://github.com/letta-ai/letta"],
     ),
     ResearchTechnology(
@@ -159,7 +159,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Avoid over-humanized claims; keep planning traces auditable and bounded.",
             "Add provenance and confirmation gates to reflection-triggered memory writes.",
         ],
-        evidence_files=["docs/AFFECTIVE_MEMORY_BRANCH.md", "docs/V08_AUTHORITATIVE_TECH_ADOPTION_MATRIX.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-affective-memory-branch-d07dfdee", "文档中心_DOCUMENTATION_HUB.md#doc-v08-authoritative-tech-adoption-matrix-b8f18d67"],
         source_urls=["https://arxiv.org/abs/2304.03442", "https://github.com/joonspk-research/generative_agents"],
     ),
     ResearchTechnology(
@@ -179,7 +179,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Add tool permission checks and write-confirmation tests before enabling mutating memory tools.",
             "Log tool calls into evidence cards and audit flow.",
         ],
-        evidence_files=["backend/app/tool_registry/service.py", "docs/V08_AUTHORITATIVE_TECH_ADOPTION_MATRIX.md"],
+        evidence_files=["backend/app/tool_registry/service.py", "文档中心_DOCUMENTATION_HUB.md#doc-v08-authoritative-tech-adoption-matrix-b8f18d67"],
         source_urls=["https://github.com/y1y5/AgeMem"],
     ),
 ]
@@ -245,7 +245,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["Basic event memory", "Initial retrieval concept"],
         unfinished=["Governance", "Evidence", "Evaluation"],
         inherited_by=["v0.2 MemoryCapsule", "v0.6 Runtime"],
-        evidence_files=["docs/PLAN.md", "docs/ARCHITECTURE.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-plan-1d972b4a", "文档中心_DOCUMENTATION_HUB.md#doc-architecture-8f6366fd"],
     ),
     VersionMapping(
         version="v0.2",
@@ -254,7 +254,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["Capsule abstraction", "Preference/knowledge split"],
         unfinished=["Lifecycle governance", "Arena metrics"],
         inherited_by=["v0.5 preference-knowledge layer", "v0.8 MemOS mapping"],
-        evidence_files=["docs/MEMORY_CAPSULE_V2_SCHEMA.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-memory-capsule-v2-schema-957540be"],
     ),
     VersionMapping(
         version="v0.3",
@@ -263,7 +263,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["Emotional salience concept", "Reflection route idea"],
         unfinished=["Affective boundary enforcement"],
         inherited_by=["v0.3.1 boundary correction", "v0.7 platform cockpit"],
-        evidence_files=["docs/AFFECTIVE_MEMORY_BRANCH.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-affective-memory-branch-d07dfdee"],
     ),
     VersionMapping(
         version="v0.4",
@@ -272,7 +272,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["ASI risk mapping", "Memory governance policy", "Security eval docs"],
         unfinished=["Executable gate integration"],
         inherited_by=["v0.6 Policy Gate", "v0.8 risk-control mapping"],
-        evidence_files=["docs/MEMORY_GOVERNANCE_POLICY.md", "docs/ASI_RISK_MAPPING.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-memory-governance-policy-b93fa11b", "文档中心_DOCUMENTATION_HUB.md#doc-asi-risk-mapping-4bed329a"],
     ),
     VersionMapping(
         version="v0.5",
@@ -281,7 +281,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["Preference/knowledge evolution policy", "Oversight loop", "Production eval plan"],
         unfinished=["Runtime metrics"],
         inherited_by=["v0.6 MemoryArena-Lite", "v0.8 retention route"],
-        evidence_files=["docs/PREFERENCE_KNOWLEDGE_EVOLUTION_POLICY.md", "docs/PRODUCTION_MEMORY_EVAL.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-preference-knowledge-evolution-policy-40434488", "文档中心_DOCUMENTATION_HUB.md#doc-production-memory-eval-fae4873e"],
     ),
     VersionMapping(
         version="v0.6",
@@ -290,7 +290,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["FastAPI runtime", "SQLite + FTS5", "5 cases / 16 assertions", "Reflection/Evolution"],
         unfinished=["Long-session evaluation", "Production-task success metric"],
         inherited_by=["v0.7 platform", "v0.8 MemoryArena Workbench"],
-        evidence_files=["docs/V06_MEMORYOPS_RUNTIME.md", "reports/production_memory_eval_report.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-v06-memoryops-runtime-eee322b3", "reports/production_memory_eval_report.md"],
     ),
     VersionMapping(
         version="v0.7",
@@ -299,7 +299,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["20 platform modules", "Model Gateway stub", "Tool Registry stub", "Tuning and Export stubs", "Vue Studio expansion"],
         unfinished=["Deep implementation for sync, observability, scoring, orchestration"],
         inherited_by=["v0.8 technology adoption cockpit"],
-        evidence_files=["docs/V07_MEMORYOPS_AUTOPILOT_PLATFORM.md", "docs/COMPETITION_REQUIREMENT_COVERAGE.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-v07-memoryops-autopilot-platform-5b136d61", "文档中心_DOCUMENTATION_HUB.md#doc-competition-requirement-coverage-beaccf0d"],
     ),
     VersionMapping(
         version="v0.8",
@@ -308,7 +308,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["Research adoption catalog/API", "Five engineering routes", "Research cockpit", "Adoption matrix docs"],
         unfinished=["Full reproduction of external systems", "Real new metrics beyond existing Arena baseline"],
         inherited_by=["v0.9 risk convergence and engineering hardening"],
-        evidence_files=["docs/V08_AUTHORITATIVE_TECH_ADOPTION_MATRIX.md", "backend/app/research_adoption/service.py"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-v08-authoritative-tech-adoption-matrix-b8f18d67", "backend/app/research_adoption/service.py"],
     ),
 ]
 

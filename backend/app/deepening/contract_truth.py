@@ -5,7 +5,7 @@ _CONTRACTS = [
     {"layer": "schema", "artifact": "backend/app/deepening/schemas.py", "contract": "POST payloads are dry-run inputs", "status": "implemented"},
     {"layer": "frontend", "artifact": "frontend/console-vue/src/views/DeepeningView.vue", "contract": "page calls real same-origin APIs", "status": "implemented"},
     {"layer": "smoke", "artifact": "curl /deepening/*", "contract": "runtime response evidence", "status": "verification_required"},
-    {"layer": "docs", "artifact": "docs/V091_DEEP_EXPANSION_VISUAL_VERIFICATION.md", "contract": "done/partial/planned/pending boundary", "status": "implemented"},
+    {"layer": "docs", "artifact": "文档中心_DOCUMENTATION_HUB.md#doc-v091-deep-expansion-visual-verification-9bd18cef", "contract": "done/partial/planned/pending boundary", "status": "implemented"},
 ]
 
 
