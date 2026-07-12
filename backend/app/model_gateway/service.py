@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 import sqlite3
 import time
@@ -15,6 +14,7 @@ from .schemas import (
     ModelProvider,
 )
 from ..db import get_conn
+from ..security import encryption
 from ..security.ssrf import SSRFError, validate_external_url
 from ..utils.datetime_utils import utc_now_iso
 
@@ -87,16 +87,13 @@ def list_providers() -> dict:
 
 
 def _encode_api_key(api_key: str) -> str:
-    return base64.b64encode(api_key.encode("utf-8")).decode("ascii")
+    return encryption.encrypt(api_key)
 
 
 def _decode_api_key(api_key_encrypted: str | None) -> str:
     if not api_key_encrypted:
         return ""
-    try:
-        return base64.b64decode(api_key_encrypted.encode("ascii"), validate=True).decode("utf-8")
-    except (UnicodeDecodeError, ValueError):
-        return ""
+    return encryption.decrypt(api_key_encrypted)
 
 
 def _get_config(provider: str) -> dict | None:
@@ -119,6 +116,7 @@ def _get_config(provider: str) -> dict | None:
         "provider": row["provider"],
         "api_base": row["api_base"],
         "api_key": _decode_api_key(row["api_key_encrypted"]),
+        "api_key_encrypted": row["api_key_encrypted"],
         "model": row["model"],
         "enabled": bool(row["enabled"]),
         "notes": row["notes"] or "",
@@ -171,7 +169,7 @@ def upsert_config(
     now = utc_now_iso()
     existing = _get_config(provider)
     encoded_key = _encode_api_key(api_key) if api_key else (
-        _encode_api_key(existing["api_key"]) if existing else None
+        existing["api_key_encrypted"] if existing else None
     )
     conn = get_conn()
     conn.execute(
@@ -288,6 +286,15 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
             status="not_configured",
             request_id=request_id,
             message="Provider is not configured. Update its configuration and enable it before a real smoke test.",
+        )
+    if provider.get("api_key_encrypted") and not provider["api_key"]:
+        return ModelGatewayTestOut(
+            provider=provider["provider"],
+            model=model,
+            dry_run=False,
+            status="not_configured",
+            request_id=request_id,
+            message="Stored API key cannot be decrypted. Restore WANWEI_ENCRYPTION_KEY or submit a new API key.",
         )
     if db_config is None and provider["provider"] != "openai_compatible":
         return ModelGatewayTestOut(

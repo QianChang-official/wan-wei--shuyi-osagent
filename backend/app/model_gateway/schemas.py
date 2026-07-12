@@ -47,6 +47,6 @@ class ModelGatewayTestOut(BaseModel):
     status: str
     request_id: str
     message: str
-    key_policy: str = "真实 key 仅以 base64 编码存储，不回显、不打印"
+    key_policy: str = "真实 key 仅以 Fernet 加密存储，不回显、不打印"
     latency_ms: int | None = None
     response_preview: str | None = None
