@@ -46,3 +46,30 @@ class ReflectionIn(BaseModel):
     new_preferences: list[dict[str, Any]] = Field(default_factory=list)
     new_knowledge: list[dict[str, Any]] = Field(default_factory=list)
     new_risks: list[dict[str, Any]] = Field(default_factory=list)
+
+# v0.11 Soul Awakening schemas
+class SoulConnectIn(BaseModel):
+    soul_id: str | None = None
+
+class SoulChatIn(BaseModel):
+    soul_id: str
+    messages: list[dict[str, Any]]
+    model: str = "default"
+
+class SoulPersonaUpdateIn(BaseModel):
+    name: str | None = None
+    core_traits: list[str] | None = None
+    voice: str | None = None
+    soul_values: list[str] | None = None
+    self_narrative: str | None = None
+
+class SoulDreamIn(BaseModel):
+    soul_id: str
+    task_id: str
+    goal_achieved: bool = True
+    memory_used: list[str] = Field(default_factory=list)
+    helpful_memories: list[str] = Field(default_factory=list)
+    misleading_memories: list[str] = Field(default_factory=list)
+    new_preferences: list[dict[str, Any]] = Field(default_factory=list)
+    new_knowledge: list[dict[str, Any]] = Field(default_factory=list)
+    new_risks: list[dict[str, Any]] = Field(default_factory=list)
