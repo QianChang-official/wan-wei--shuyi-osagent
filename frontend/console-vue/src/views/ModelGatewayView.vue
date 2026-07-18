@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { api, type ModelGatewayConfig, type ModelGatewayConfigInput, type ModelProvider } from '@/api/client'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfCard from '@/components/gf/GfCard.vue'
+import GfTag from '@/components/gf/GfTag.vue'
+import GfButton from '@/components/gf/GfButton.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 type ConfigForm = ModelGatewayConfigInput
 interface TestProvider {
@@ -209,75 +214,80 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>通玄模型舱</h1>
-        <p>配置即时写入本机 SQLite；列表只展示密钥掩码，真实密钥仅在提交时发送。</p>
-      </div>
-      <button class="primary-action" :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating" @click="startNew">新增 provider</button>
+    <PageHero
+      seal="玄"
+      title="通玄模型舱"
+      en="MODEL GATEWAY"
+      sub="配置即时写入本机 SQLite；列表只展示密钥掩码，真实密钥仅在提交时发送。"
+    />
+
+    <div class="action-bar">
+      <GfButton :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating" @click="startNew">新增 provider</GfButton>
     </div>
 
     <div v-if="error" class="notice error" role="alert" aria-live="polite">
-      {{ error }}
-      <button type="button" :disabled="loading || saving" @click="load">重试</button>
+      <span class="notice-text">{{ error }}</span>
+      <GfButton variant="ghost" small :disabled="loading || saving" @click="load">重试</GfButton>
     </div>
 
-    <section class="config-zone">
-      <div class="section-title">配置台</div>
-      <div v-if="loading" class="muted">读取配置中...</div>
-      <div v-else class="table-wrap">
-        <table v-if="hasConfigs" class="config-table">
-          <thead>
-            <tr>
-              <th scope="col">provider</th>
-              <th scope="col">api_base</th>
-              <th scope="col">model</th>
-              <th scope="col">密钥</th>
-              <th scope="col">启用</th>
-              <th scope="col">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="config in configRows" :key="config.provider">
+    <GfCard title="配置台" seal="配">
+      <div v-if="loading" class="muted">研墨中…</div>
+      <template v-else>
+        <div v-if="hasConfigs" class="table-wrap">
+          <table class="config-table">
+            <thead>
               <tr>
-                <td><code>{{ config.provider }}</code></td>
-                <td class="long-value">{{ config.api_base }}</td>
-                <td>{{ config.model }}</td>
-                <td><code>{{ keyDisplay(config) }}</code></td>
-                <td><span class="state" :class="{ enabled: config.enabled }">{{ config.enabled ? '已启用' : '停用' }}</span></td>
-                <td class="row-actions">
-                  <button title="编辑配置" :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating" @click="startEdit(config)">编辑</button>
-                  <button
-                    v-if="config.hasStoredConfig"
-                    :title="config.isCatalogProvider ? '删除数据库覆盖并恢复目录默认值' : '删除配置'"
-                    class="danger"
-                    :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating"
-                    @click="deleteConfig(config.provider)"
-                  >
-                    {{ deletingProvider === config.provider ? '删除中…' : config.isCatalogProvider ? '恢复默认' : '删除' }}
-                  </button>
-                </td>
+                <th scope="col">provider</th>
+                <th scope="col">api_base</th>
+                <th scope="col">model</th>
+                <th scope="col">密钥</th>
+                <th scope="col">启用</th>
+                <th scope="col">操作</th>
               </tr>
-              <tr v-if="editingProvider === config.provider" class="edit-row">
-                <td colspan="6">
-                  <form class="config-form" @submit.prevent="saveConfig">
-                    <label>provider<input v-model.trim="form.provider" :disabled="saving || !!deletingProvider" required readonly /></label>
-                    <label>api_base<input v-model.trim="form.api_base" :disabled="saving || !!deletingProvider" required autocomplete="off" /></label>
-                    <label>model<input v-model.trim="form.model" :disabled="saving || !!deletingProvider" required autocomplete="off" /></label>
-                    <label>api_key<input v-model="form.api_key" :disabled="saving || !!deletingProvider" type="password" autocomplete="new-password" placeholder="留空则保留当前密钥" /></label>
-                    <label class="notes-field">notes<input v-model.trim="form.notes" :disabled="saving || !!deletingProvider" autocomplete="off" /></label>
-                    <label class="enabled-field"><input v-model="form.enabled" :disabled="saving || !!deletingProvider" type="checkbox" /> 启用该 provider</label>
-                    <div class="form-actions">
-                      <button class="primary-action" type="submit" :disabled="saving || !!deletingProvider">{{ saving ? '保存中…' : '保存配置' }}</button>
-                      <button type="button" :disabled="saving || !!deletingProvider" @click="cancelEdit">取消</button>
-                    </div>
-                  </form>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <div v-else class="empty-state">尚无 provider 配置。新增一条配置后可在下方进行测试。</div>
+            </thead>
+            <tbody>
+              <template v-for="config in configRows" :key="config.provider">
+                <tr>
+                  <td><code>{{ config.provider }}</code></td>
+                  <td class="long-value">{{ config.api_base }}</td>
+                  <td>{{ config.model }}</td>
+                  <td><code>{{ keyDisplay(config) }}</code></td>
+                  <td><GfTag :tone="config.enabled ? 'bamboo' : 'ink'">{{ config.enabled ? '已启用' : '停用' }}</GfTag></td>
+                  <td class="row-actions">
+                    <GfButton variant="ghost" small title="编辑配置" :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating" @click="startEdit(config)">编辑</GfButton>
+                    <GfButton
+                      v-if="config.hasStoredConfig"
+                      variant="danger"
+                      small
+                      :title="config.isCatalogProvider ? '删除数据库覆盖并恢复目录默认值' : '删除配置'"
+                      :disabled="saving || !!deletingProvider || editingProvider !== null || isCreating"
+                      @click="deleteConfig(config.provider)"
+                    >
+                      {{ deletingProvider === config.provider ? '删除中…' : config.isCatalogProvider ? '恢复默认' : '删除' }}
+                    </GfButton>
+                  </td>
+                </tr>
+                <tr v-if="editingProvider === config.provider" class="edit-row">
+                  <td colspan="6">
+                    <form class="config-form" @submit.prevent="saveConfig">
+                      <label>provider<input v-model.trim="form.provider" :disabled="saving || !!deletingProvider" required readonly /></label>
+                      <label>api_base<input v-model.trim="form.api_base" :disabled="saving || !!deletingProvider" required autocomplete="off" /></label>
+                      <label>model<input v-model.trim="form.model" :disabled="saving || !!deletingProvider" required autocomplete="off" /></label>
+                      <label>api_key<input v-model="form.api_key" :disabled="saving || !!deletingProvider" type="password" autocomplete="new-password" placeholder="留空则保留当前密钥" /></label>
+                      <label class="notes-field">notes<input v-model.trim="form.notes" :disabled="saving || !!deletingProvider" autocomplete="off" /></label>
+                      <label class="enabled-field"><input v-model="form.enabled" :disabled="saving || !!deletingProvider" type="checkbox" /> 启用该 provider</label>
+                      <div class="form-actions">
+                        <button class="form-submit" type="submit" :disabled="saving || !!deletingProvider">{{ saving ? '保存中…' : '保存配置' }}</button>
+                        <button class="form-cancel" type="button" :disabled="saving || !!deletingProvider" @click="cancelEdit">取消</button>
+                      </div>
+                    </form>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <GfEmpty v-else text="尚无 provider 配置。新增一条配置后可在下方进行测试。" />
         <form v-if="isCreating" class="config-form new-form" @submit.prevent="saveConfig">
           <label>provider<input v-model.trim="form.provider" :disabled="saving || !!deletingProvider" required autocomplete="off" pattern="[A-Za-z0-9_-][A-Za-z0-9._-]*" title="仅支持字母、数字、点、下划线和连字符" /></label>
           <label>api_base<input v-model.trim="form.api_base" :disabled="saving || !!deletingProvider" required autocomplete="off" /></label>
@@ -286,78 +296,181 @@ onMounted(load)
           <label class="notes-field">notes<input v-model.trim="form.notes" :disabled="saving || !!deletingProvider" autocomplete="off" /></label>
           <label class="enabled-field"><input v-model="form.enabled" :disabled="saving || !!deletingProvider" type="checkbox" /> 启用该 provider</label>
           <div class="form-actions">
-            <button class="primary-action" type="submit" :disabled="saving || !!deletingProvider">{{ saving ? '保存中…' : '保存配置' }}</button>
-            <button type="button" :disabled="saving || !!deletingProvider" @click="cancelEdit">取消</button>
+            <button class="form-submit" type="submit" :disabled="saving || !!deletingProvider">{{ saving ? '保存中…' : '保存配置' }}</button>
+            <button class="form-cancel" type="button" :disabled="saving || !!deletingProvider" @click="cancelEdit">取消</button>
           </div>
         </form>
-      </div>
-    </section>
+      </template>
+    </GfCard>
 
-    <section class="test-zone">
-      <div class="section-title">测试台</div>
+    <GfCard title="测试台" seal="试" class="test-zone">
       <textarea v-model="smokePrompt" class="smoke-prompt" aria-label="真实 smoke（冒烟测试）提示词"></textarea>
       <div v-if="testProviders.length" class="test-grid">
         <article v-for="provider in testProviders" :key="provider.provider" class="test-card" :class="{ enabled: provider.enabled }">
-          <div>
+          <div class="test-head">
             <h2>{{ provider.provider }}</h2>
-            <p>{{ provider.model }}</p>
+            <GfTag :tone="provider.enabled ? 'bamboo' : 'ink'">{{ provider.enabled ? '已启用' : '停用' }}</GfTag>
           </div>
+          <p class="test-model">{{ provider.model }}</p>
           <div class="button-row">
-            <button :disabled="saving || !!deletingProvider || !!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run（模拟运行）' }}</button>
-            <button v-if="provider.allowRealSmoke" class="primary-action" :disabled="saving || !!deletingProvider || !!testingProvider || !provider.enabled" @click="realSmoke(provider)">
+            <GfButton variant="ghost" small :disabled="saving || !!deletingProvider || !!testingProvider" @click="dryRun(provider)">{{ testingProvider === provider.provider ? '测试中…' : 'Dry-run（模拟运行）' }}</GfButton>
+            <GfButton v-if="provider.allowRealSmoke" small :disabled="saving || !!deletingProvider || !!testingProvider || !provider.enabled" @click="realSmoke(provider)">
               {{ testingProvider === provider.provider ? '调用中…' : '真实 smoke（冒烟测试）' }}
-            </button>
+            </GfButton>
           </div>
         </article>
       </div>
       <pre aria-live="polite">{{ testResult || '尚未执行测试。真实密钥不会在本页回显或写入调用日志。' }}</pre>
-    </section>
+    </GfCard>
   </div>
 </template>
 
 <style scoped>
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
-.page-head h1 { font-size: 28px; letter-spacing: 0; }
-.page-head p { margin-top: 5px; color: var(--ink-soft); font-size: 13px; }
-.section-title { border-left: 4px solid var(--cinnabar); padding-left: 10px; margin-bottom: 13px; font-size: 16px; font-weight: 700; letter-spacing: 0; }
-.config-zone, .test-zone { border: 1px solid var(--line); background: rgba(255,255,255,.38); padding: 16px; box-shadow: var(--shadow-paper); }
-.test-zone { margin-top: 24px; }
-.muted, .empty-state { color: var(--ink-soft); font-size: 13px; padding: 14px 0; }
-.notice { margin: 0 0 18px; padding: 10px 12px; border: 1px solid var(--line); font-size: 12px; }
-.notice.error { color: var(--cinnabar-deep); border-color: var(--line-cinnabar); background: rgba(178,58,46,.07); }
-.table-wrap { overflow-x: auto; }
+.action-bar { display: flex; justify-content: flex-end; margin: -8px 0 18px; }
+.muted { color: var(--ink-soft); font-size: 13px; padding: 14px 0; font-family: var(--font-kai); letter-spacing: 2px; }
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  font-size: 12px;
+}
+.notice.error {
+  color: var(--cinnabar-deep);
+  border-color: var(--line-cinnabar);
+  background: color-mix(in srgb, var(--cinnabar) 7%, transparent);
+}
+.notice-text { line-height: 1.6; }
+
+.test-zone { margin-top: 20px; }
+
+/* ── 表格：圆角容器 + 楷体表头 + 行 hover 染胭脂 ── */
+.table-wrap { overflow-x: auto; border-radius: var(--radius-small); }
 .config-table { width: 100%; min-width: 820px; border-collapse: collapse; }
 th, td { border-bottom: 1px solid var(--line-soft); padding: 11px 10px; text-align: left; vertical-align: middle; font-size: 12px; }
-th { color: var(--gamboge); font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+th {
+  background: var(--bg-soft);
+  color: var(--gold);
+  font-family: var(--font-kai);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
 td { color: var(--ink-soft); }
-code { font-family: var(--mono); font-size: 11px; color: var(--mineral); }
+tbody tr { transition: background .18s ease; }
+tbody tr:hover { background: color-mix(in srgb, var(--rouge) 8%, transparent); }
+code { font-family: var(--font-mono); font-size: 11px; color: var(--dai); }
 .long-value { max-width: 260px; overflow-wrap: anywhere; }
-.state { border: 1px solid var(--line); color: var(--ink-muted); padding: 2px 6px; font-size: 10px; white-space: nowrap; }
-.state.enabled { border-color: rgba(78,122,98,.45); color: var(--jade); }
 .row-actions, .button-row, .form-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
-button { border: 1px solid var(--line-gold); background: rgba(255,255,255,.42); color: var(--ink-soft); padding: 7px 10px; font-size: 12px; }
-button:hover:not(:disabled) { border-color: var(--cinnabar); color: var(--cinnabar); }
-button:disabled { cursor: not-allowed; opacity: .55; }
-.primary-action { border-color: var(--cinnabar); background: rgba(178,58,46,.08); color: var(--cinnabar); }
-.danger { border-color: rgba(178,58,46,.32); color: var(--cinnabar-deep); }
-.edit-row td { padding: 0; background: rgba(200,153,31,.055); }
-.config-form { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; padding: 14px; border-top: 1px solid var(--line-gold); }
-.new-form { margin-top: 14px; border: 1px solid var(--line-gold); background: rgba(200,153,31,.05); }
-label { display: grid; gap: 5px; color: var(--ink-muted); font-family: var(--mono); font-size: 10px; }
-input { min-width: 0; border: 1px solid var(--line); background: rgba(255,255,255,.52); color: var(--ink); padding: 8px; font: inherit; font-size: 12px; }
-input:focus, .smoke-prompt:focus { outline: 1px solid var(--cinnabar); border-color: var(--cinnabar); }
+.edit-row td { padding: 0; background: color-mix(in srgb, var(--gold) 6%, transparent); }
+.edit-row:hover { background: color-mix(in srgb, var(--gold) 8%, transparent); }
+
+/* ── 表单：圆角 10px 半透底，focus 朱砂描边 + 胭脂光晕 ── */
+.config-form { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; padding: 14px; border-top: 1px solid var(--gold-line); }
+.new-form {
+  margin-top: 14px;
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--gold) 5%, transparent);
+}
+label { display: grid; gap: 6px; color: var(--ink-muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; }
+input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--card);
+  color: var(--ink);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+input:focus, .smoke-prompt:focus {
+  outline: none;
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--rouge-glow);
+}
+input:disabled { opacity: .55; }
 .notes-field { grid-column: span 2; }
-.enabled-field { align-self: end; display: flex; align-items: center; gap: 7px; padding-bottom: 8px; font-family: var(--sans); font-size: 12px; color: var(--ink-soft); }
-.enabled-field input { width: 15px; height: 15px; accent-color: var(--jade); }
+.enabled-field { align-self: end; display: flex; align-items: center; gap: 7px; padding-bottom: 8px; font-family: var(--font-sans); font-size: 12px; color: var(--ink-soft); }
+.enabled-field input { width: 15px; height: 15px; accent-color: var(--bamboo); }
 .form-actions { align-self: end; justify-content: flex-end; }
-.smoke-prompt { display: block; width: 100%; min-height: 76px; resize: vertical; margin-bottom: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.52); color: var(--ink); padding: 10px; font: inherit; font-size: 13px; }
-.test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.test-card { border: 1px solid var(--line); border-top: 3px solid var(--ink-muted); background: rgba(255,255,255,.28); padding: 13px; }
-.test-card.enabled { border-top-color: var(--jade); }
-.test-card h2 { font-family: var(--mono); font-size: 14px; }
-.test-card p { color: var(--ink-muted); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+
+/* 表单内原生提交/取消按钮（GfButton 固定 type=button，提交钮需原生 submit） */
+.form-submit, .form-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  letter-spacing: 2px;
+  font-family: var(--font-kai);
+  cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, color .18s ease, border-color .18s ease;
+}
+.form-submit {
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  color: #FDF6E9;
+  box-shadow: 0 2px 12px var(--cinnabar-glow), var(--shadow-card);
+}
+.form-submit:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 18px var(--cinnabar-glow), var(--shadow-glow-rouge); }
+.form-cancel { background: var(--card); border-color: var(--gold-line); color: var(--ink-soft); }
+.form-cancel:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--rouge); color: var(--cinnabar); box-shadow: var(--shadow-glow-rouge); }
+.form-submit:disabled, .form-cancel:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* ── 测试台 ── */
+.smoke-prompt {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--card);
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+.test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.test-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  padding: 14px;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
+}
+.test-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); border-color: var(--gold-line); }
+.test-card.enabled { border-color: color-mix(in srgb, var(--bamboo) 45%, transparent); }
+.test-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.test-head h2 { font-family: var(--font-mono); font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
+.test-model { color: var(--ink-muted); font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
 .button-row { margin-top: 14px; }
-pre { min-height: 116px; margin-top: 14px; padding: 13px; border: 1px solid var(--line-soft); background: rgba(26,23,20,.035); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-soft); font-family: var(--mono); font-size: 11px; line-height: 1.55; }
+pre {
+  min-height: 116px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  background: var(--bg-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 @media (max-width: 980px) { .test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .config-form { grid-template-columns: repeat(2, minmax(150px, 1fr)); } .notes-field { grid-column: auto; } }
-@media (max-width: 620px) { .page-head { display: grid; align-items: stretch; } .page-head .primary-action { justify-self: start; } .config-zone, .test-zone { padding: 13px; } .test-grid, .config-form { grid-template-columns: 1fr; } .form-actions { justify-content: flex-start; } }
+@media (max-width: 620px) { .action-bar { justify-content: flex-start; } .test-grid, .config-form { grid-template-columns: 1fr; } .form-actions { justify-content: flex-start; } }
 </style>

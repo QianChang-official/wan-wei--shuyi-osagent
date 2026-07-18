@@ -1,113 +1,198 @@
+/* ═══════════════════════════════════════════════════════════════
+   「枢忆·花朝」唯美二次元国风主题 — Design Tokens
+   意象：月下梅影 · 纸上花朝
+   双主题：[data-theme="day"]（宣纸·白昼，默认） / [data-theme="night"]（靛夜·灯影）
+   旧变量名全部保留为别名，映射到新体系。
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 形状与字体（双主题共享） ── */
 :root {
-  /* ── 宣纸与墨 ── */
-  --xuan: #F2E8D5;
-  --xuan-deep: #E8D9BC;
-  --xuan-light: #FAF4E8;
-  --ink: #1A1714;
-  --ink-soft: #4A443B;
-  --ink-muted: #7A7268;
+  /* 圆角：直角 → 圆润 */
+  --radius-card: 16px;
+  --radius-small: 10px;
+  --radius-pill: 999px;
+  --radius-seal: 6px;
 
-  /* ── 传统五色 ── */
-  --cinnabar: #B23A2E;        /* 朱砂 */
-  --cinnabar-deep: #8E2820;
-  --cinnabar-glow: rgba(178,58,46,.22);
-  --mineral: #2E5A6C;         /* 石青 */
-  --mineral-light: #3D7A92;
-  --gamboge: #C8991F;         /* 藤黄 */
-  --gamboge-light: #E0B030;
-  --jade: #4E7A62;            /* 石绿 */
-  --jade-light: #6A9E7F;
-  --vermilion: #D4542A;       /* 赭石 */
+  /* 字体 */
+  --font-kai: "LXGW WenKai", "KaiTi", "STKaiti", "楷体", serif;
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, Menlo, monospace;
 
-  /* ── 扩展传统色 ── */
-  --rouge: #C45C7A;           /* 胭脂 */
-  --indigo: #2B4A7A;          /* 靛蓝 */
-  --pine: #2D5A3D;            /* 松绿 */
-  --ochre: #A67C52;           /* 赭黄 */
-  --silver-ink: #8C8078;      /* 银墨 */
+  /* 旧字体别名 */
+  --serif: "Songti SC", "STSong", "SimSun", Georgia, serif;
+  --kai: var(--font-kai);
+  --sans: var(--font-sans);
+  --mono: var(--font-mono);
 
-  /* ── 线条与分隔 ── */
-  --line: rgba(26,23,20,.14);
-  --line-soft: rgba(26,23,20,.07);
-  --line-gold: rgba(200,153,31,.35);
-  --line-cinnabar: rgba(178,58,46,.3);
-
-  /* ── 阴影系统 ── */
-  --shadow-paper: 0 2px 20px rgba(26,23,20,.09), 0 1px 4px rgba(26,23,20,.06);
-  --shadow-lift: 0 6px 32px rgba(26,23,20,.13), 0 2px 8px rgba(26,23,20,.08);
-  --shadow-seal: 0 0 24px rgba(178,58,46,.45), 0 0 8px rgba(178,58,46,.25);
-  --shadow-ink: inset 0 1px 3px rgba(26,23,20,.12);
-
-  /* ── 字体 ── */
-  --serif: "Songti SC","STSong","SimSun",Georgia,serif;
-  --kai: "KaiTi","STKaiti","楷体",serif;
-  --sans: "PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
-  --mono: "SFMono-Regular",Consolas,Menlo,monospace;
-
-  /* ── 装饰变量 ── */
-  --border-huiwen: 2px solid var(--line-gold);
-  --radius-seal: 3px;
-  --radius-card: 2px;
-
-  /* ── 纸张纹理背景 ── */
-  --bg-paper:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23F2E8D5'/%3E%3Crect x='0' y='0' width='1' height='1' fill='rgba(26,23,20,.018)'/%3E%3Crect x='2' y='2' width='1' height='1' fill='rgba(26,23,20,.012)'/%3E%3C/svg%3E");
+  /* 旧装饰别名 */
+  --border-huiwen: 1px solid var(--line-gold);
 }
 
+/* ══ 浅色 · 宣纸白昼（默认） ══ */
+:root,
+:root[data-theme="day"] {
+  color-scheme: light;
+
+  --bg: #FBF5EA;
+  --bg-soft: #F5EDDC;
+  --card: rgba(255, 255, 255, .72);
+  --card-solid: #FFFDF8;
+  --ink: #332E2A;
+  --ink-soft: #6B6157;
+  --ink-muted: #9A8C7C;
+  --line: rgba(51, 46, 42, .12);
+  --line-soft: rgba(51, 46, 42, .06);
+  --cinnabar: #C8453C;
+  --cinnabar-deep: #A53228;
+  --rouge: #D9708E;
+  --rouge-soft: #F3C9D6;
+  --rouge-glow: rgba(217, 112, 142, .35);
+  --dai: #4A6785;
+  --dai-deep: #35506B;
+  --bamboo: #7FA68C;
+  --gold: #C9A24B;
+  --gold-line: rgba(201, 162, 75, .4);
+  --shadow-card: 0 2px 16px rgba(51, 46, 42, .07), 0 1px 4px rgba(51, 46, 42, .05);
+  --shadow-lift: 0 10px 36px rgba(200, 69, 60, .13), 0 2px 10px rgba(51, 46, 42, .08);
+  --shadow-glow-rouge: 0 0 20px rgba(217, 112, 142, .4);
+
+  /* ── 旧变量别名 → 新体系 ── */
+  --xuan: var(--bg);
+  --xuan-deep: var(--bg-soft);
+  --xuan-light: var(--card-solid);
+  --mineral: var(--dai);
+  --mineral-light: var(--dai-deep);
+  --gamboge: var(--gold);
+  --gamboge-light: #DCB55F;
+  --jade: var(--bamboo);
+  --jade-light: #9ABFA9;
+  --vermilion: #D4584A;
+  --indigo: var(--dai-deep);
+  --pine: #5E8A6E;
+  --ochre: #B08A5E;
+  --silver-ink: var(--ink-muted);
+  --cinnabar-glow: rgba(200, 69, 60, .22);
+  --line-gold: var(--gold-line);
+  --line-cinnabar: rgba(200, 69, 60, .3);
+  --shadow-paper: var(--shadow-card);
+  --shadow-seal: 0 0 24px rgba(200, 69, 60, .35), 0 0 8px rgba(217, 112, 142, .25);
+  --shadow-ink: inset 0 1px 3px rgba(51, 46, 42, .1);
+
+  /* 纸张纹理（宣纸噪点，按主题嵌入底色） */
+  --bg-paper:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23FBF5EA'/%3E%3Crect x='0' y='0' width='1' height='1' fill='rgba(51,46,42,.016)'/%3E%3Crect x='2' y='2' width='1' height='1' fill='rgba(51,46,42,.011)'/%3E%3C/svg%3E");
+  --bg-texture:
+    var(--bg-paper),
+    radial-gradient(1200px 600px at 85% -10%, rgba(217, 112, 142, .07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(201, 162, 75, .06), transparent 55%);
+}
+
+/* ══ 深色 · 靛夜灯影 ══ */
+:root[data-theme="night"] {
+  color-scheme: dark;
+
+  --bg: #181B28;
+  --bg-soft: #12141F;
+  --card: rgba(32, 35, 52, .72);
+  --card-solid: #222639;
+  --ink: #EDE5D3;
+  --ink-soft: #B8AE99;
+  --ink-muted: #847B69;
+  --line: rgba(237, 229, 211, .13);
+  --line-soft: rgba(237, 229, 211, .06);
+  --cinnabar: #E0655A;
+  --cinnabar-deep: #C8453C;
+  --rouge: #F0A6BE;
+  --rouge-soft: #5C3A48;
+  --rouge-glow: rgba(240, 166, 190, .3);
+  --dai: #8FA9C8;
+  --dai-deep: #6E8AAE;
+  --bamboo: #93BFA2;
+  --gold: #D9B36A;
+  --gold-line: rgba(217, 179, 106, .35);
+  --shadow-card: 0 2px 16px rgba(0, 0, 0, .35);
+  --shadow-lift: 0 10px 36px rgba(0, 0, 0, .5), 0 0 20px rgba(224, 101, 90, .12);
+  --shadow-glow-rouge: 0 0 20px rgba(240, 166, 190, .3);
+
+  /* ── 旧变量别名 → 新体系 ── */
+  --xuan: var(--bg);
+  --xuan-deep: var(--bg-soft);
+  --xuan-light: var(--card-solid);
+  --mineral: var(--dai);
+  --mineral-light: var(--dai-deep);
+  --gamboge: var(--gold);
+  --gamboge-light: #E3C17E;
+  --jade: var(--bamboo);
+  --jade-light: #A8CFB6;
+  --vermilion: #E0705F;
+  --indigo: var(--dai-deep);
+  --pine: #6E9E80;
+  --ochre: #BE9868;
+  --silver-ink: var(--ink-muted);
+  --cinnabar-glow: rgba(224, 101, 90, .25);
+  --line-gold: var(--gold-line);
+  --line-cinnabar: rgba(224, 101, 90, .32);
+  --shadow-paper: var(--shadow-card);
+  --shadow-seal: 0 0 24px rgba(224, 101, 90, .4), 0 0 8px rgba(240, 166, 190, .25);
+  --shadow-ink: inset 0 1px 3px rgba(0, 0, 0, .3);
+
+  /* 夜纸纹理 */
+  --bg-paper:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23181B28'/%3E%3Crect x='0' y='0' width='1' height='1' fill='rgba(237,229,211,.02)'/%3E%3Crect x='2' y='2' width='1' height='1' fill='rgba(237,229,211,.014)'/%3E%3C/svg%3E");
+  --bg-texture:
+    var(--bg-paper),
+    radial-gradient(1200px 600px at 85% -10%, rgba(240, 166, 190, .05), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(143, 169, 200, .05), transparent 55%);
+}
+
+/* ══ 基础 Reset ══ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
 
 body {
-  font-family: var(--sans);
+  font-family: var(--font-sans);
+  font-size: 14px;
   color: var(--ink);
-  background-color: var(--xuan);
-  background-image:
-    var(--bg-paper),
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 27px,
-      rgba(26,23,20,.022) 27px,
-      rgba(26,23,20,.022) 28px
-    );
+  background-color: var(--bg);
+  background-image: var(--bg-texture);
+  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color .3s ease, color .3s ease;
 }
 
-/* ── 滚动条 ── */
+::selection { background: var(--rouge-soft); color: var(--cinnabar-deep); }
+
+a { color: var(--dai); text-decoration: none; }
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 2px;
+  border-radius: var(--radius-small);
+}
+
+/* ── 滚动条（圆润胭脂） ── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(178,58,46,.28);
-  border-radius: 0;
+  background: var(--rouge-glow);
+  border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
+::-webkit-scrollbar-thumb:hover { background: var(--rouge); background-clip: content-box; border: 2px solid transparent; }
 ::-webkit-scrollbar-track { background: transparent; }
+html { scrollbar-width: thin; scrollbar-color: var(--rouge-glow) transparent; }
 
-a { color: inherit; text-decoration: none; }
-button { font-family: inherit; cursor: pointer; }
+/* ══ 通用工具类（旧名保留，视觉更新） ══ */
 
-/* ── 回纹边框装饰 ── */
-.huiwen-border {
-  position: relative;
-}
-.huiwen-border::before, .huiwen-border::after {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border: 1px solid var(--line-gold);
-  pointer-events: none;
-}
-.huiwen-border::after {
-  inset: 6px;
-  border-color: rgba(200,153,31,.15);
-}
-
-/* ── 印章基础样式 ── */
+/* 印章：方形圆角 6px + 胭脂光晕 */
 .seal {
-  font-family: var(--kai);
+  font-family: var(--font-kai);
   font-weight: 700;
-  background: var(--cinnabar);
-  color: #F8EDD8;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  color: #FDF6E9;
   display: inline-grid;
   place-items: center;
   border-radius: var(--radius-seal);
@@ -118,30 +203,45 @@ button { font-family: inherit; cursor: pointer; }
   content: '';
   position: absolute;
   inset: 2px;
-  border: 1px solid rgba(248,237,216,.3);
-  border-radius: 1px;
+  border: 1px solid rgba(253, 246, 233, .35);
+  border-radius: 4px;
   pointer-events: none;
 }
 
-/* ── 水墨分隔线 ── */
-.ink-divider {
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--line-gold) 20%, var(--line-gold) 80%, transparent);
-  margin: 0;
-}
-
-/* ── 卡片基础 ── */
+/* 宣纸卡片：半透明 + 柔 blur + 圆角 */
 .paper-card {
-  background: rgba(255,255,255,.38);
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-paper);
+  box-shadow: var(--shadow-card);
   border-radius: var(--radius-card);
 }
 
-/* ── 动效 ── */
+/* 金线分隔 */
+.ink-divider {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--gold-line) 20%, var(--gold-line) 80%, transparent);
+  margin: 0;
+}
+
+/* 回纹边框（柔化保留） */
+.huiwen-border { position: relative; }
+.huiwen-border::before, .huiwen-border::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border: 1px solid var(--gold-line);
+  border-radius: calc(var(--radius-card) - 4px);
+  pointer-events: none;
+}
+.huiwen-border::after { inset: 8px; opacity: .45; }
+
+/* 悬浮上浮 */
 @media (prefers-reduced-motion: no-preference) {
-  .hover-lift { transition: transform .2s ease, box-shadow .2s ease; }
-  .hover-lift:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  .hover-lift { transition: transform .22s ease, box-shadow .22s ease; }
+  .hover-lift:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

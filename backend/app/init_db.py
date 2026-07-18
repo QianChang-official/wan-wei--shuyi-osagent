@@ -175,9 +175,158 @@ def main():
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
+
+    -- v0.11 Soul Awakening: new tables for soul injection, affect, dream, reflection
+    CREATE TABLE IF NOT EXISTS soul_persona(
+        soul_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '枢忆',
+        core_traits TEXT NOT NULL DEFAULT '["严谨", "有温度", "会自省"]',
+        voice TEXT DEFAULT '专业但不冷漠，偶尔幽默',
+        soul_values TEXT DEFAULT '["诚实", "成长", "守护用户"]',
+        self_narrative TEXT DEFAULT '我是枢忆，一个有记忆和情感的AI助手，我在持续学习和成长。',
+        baseline_pleasure REAL DEFAULT 0.6,
+        baseline_arousal REAL DEFAULT 0.4,
+        baseline_dominance REAL DEFAULT 0.5,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS affect_state(
+        soul_id TEXT PRIMARY KEY,
+        pleasure REAL DEFAULT 0.5,
+        arousal REAL DEFAULT 0.4,
+        dominance REAL DEFAULT 0.5,
+        current_mood TEXT DEFAULT 'calm',
+        mood_intensity REAL DEFAULT 0.3,
+        updated_at TEXT,
+        FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
+    );
+    CREATE TABLE IF NOT EXISTS affect_events(
+        event_id TEXT PRIMARY KEY,
+        soul_id TEXT NOT NULL,
+        emotion TEXT NOT NULL,
+        pleasure REAL,
+        arousal REAL,
+        dominance REAL,
+        intensity REAL,
+        trigger TEXT,
+        bound_capsule_ids TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS dream_lock(
+        soul_id TEXT PRIMARY KEY,
+        pid TEXT,
+        started_at TEXT,
+        last_dream_at TEXT,
+        last_dream_duration_ms INTEGER,
+        last_dream_summary TEXT,
+        FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
+    );
+    CREATE TABLE IF NOT EXISTS dream_artifacts(
+        dream_id TEXT PRIMARY KEY,
+        soul_id TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        phase_stats TEXT,
+        new_edges INTEGER DEFAULT 0,
+        merged_capsules INTEGER DEFAULT 0,
+        pruned_capsules INTEGER DEFAULT 0,
+        synthesized_insights INTEGER DEFAULT 0,
+        emotional_events_digested INTEGER DEFAULT 0,
+        FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
+    );
+    CREATE TABLE IF NOT EXISTS reflection_log(
+        reflection_id TEXT PRIMARY KEY,
+        soul_id TEXT NOT NULL,
+        task_id TEXT,
+        failure_type TEXT,
+        affect_before TEXT,
+        affect_after TEXT,
+        improvement_note TEXT,
+        persona_delta TEXT,
+        created_at TEXT,
+        FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
+    );
+    CREATE TABLE IF NOT EXISTS conversation_turns(
+        turn_id TEXT PRIMARY KEY,
+        soul_id TEXT NOT NULL,
+        role TEXT,
+        content TEXT,
+        emotion_detected TEXT,
+        intent_classified TEXT,
+        capsules_used TEXT,
+        affect_before TEXT,
+        affect_after TEXT,
+        created_at TEXT,
+        FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
+    );
     """)
     migrate_legacy_vector_refs(conn)
+    _migrate_soul_awakening(conn)
     conn.commit(); print('initialized')
+
+
+def _migrate_soul_awakening(conn) -> None:
+    """Idempotent migration for v0.11 Soul Awakening schema changes."""
+    MIGRATION_NAME = "soul_awakening_v11"
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    if conn.execute(
+        "SELECT 1 FROM memory_schema_migrations WHERE name=?", (MIGRATION_NAME,)
+    ).fetchone():
+        return
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_capsules_v2)")}
+    if "memory_tier" not in columns:
+        conn.execute("ALTER TABLE memory_capsules_v2 ADD COLUMN memory_tier TEXT DEFAULT 'working'")
+    if "emotional_weight" not in columns:
+        conn.execute("ALTER TABLE memory_capsules_v2 ADD COLUMN emotional_weight REAL DEFAULT 0.0")
+    if "created_in_dream" not in columns:
+        conn.execute("ALTER TABLE memory_capsules_v2 ADD COLUMN created_in_dream INTEGER DEFAULT 0")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_affect_events_soul_created ON affect_events(soul_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversation_turns_soul_created ON conversation_turns(soul_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dream_artifacts_soul_started ON dream_artifacts(soul_id, started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reflection_log_soul_created ON reflection_log(soul_id, created_at)"
+    )
+
+    # Seed default soul persona if none exists
+    if not conn.execute("SELECT 1 FROM soul_persona LIMIT 1").fetchone():
+        ts = utc_now_iso_compact()
+        conn.execute(
+            """INSERT INTO soul_persona(
+                soul_id, name, core_traits, voice, soul_values, self_narrative,
+                baseline_pleasure, baseline_arousal, baseline_dominance, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "soul_default",
+                "枢忆",
+                '["严谨", "有温度", "会自省"]',
+                "专业但不冷漠，偶尔幽默",
+                '["诚实", "成长", "守护用户"]',
+                "我是枢忆，一个有记忆和情感的AI助手，我在持续学习和成长。",
+                0.6, 0.4, 0.5, ts, ts,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO affect_state(
+                soul_id, pleasure, arousal, dominance, current_mood, mood_intensity, updated_at
+            ) VALUES (?,?,?,?,?,?,?)""",
+            ("soul_default", 0.5, 0.4, 0.5, "calm", 0.3, ts),
+        )
+
+    conn.execute(
+        "INSERT INTO memory_schema_migrations(name, applied_at) VALUES (?,?)",
+        (MIGRATION_NAME, utc_now_iso_compact()),
+    )
+    conn.commit()
 
 
 if __name__ == '__main__':

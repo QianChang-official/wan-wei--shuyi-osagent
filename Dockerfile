@@ -9,7 +9,7 @@ RUN npm run build
 
 FROM python:3.12-slim-bookworm AS runtime
 
-ARG APP_VERSION=v0.10.0-delivery-hardening
+ARG APP_VERSION=v0.11.0-wanshu
 LABEL org.opencontainers.image.title="Wanwei Shuyi MemoryOps Autopilot" \
       org.opencontainers.image.description="Single-node OSAgent memory governance and evaluation platform" \
       org.opencontainers.image.source="https://github.com/QianChang-official/wan-wei--shuyi-osagent" \

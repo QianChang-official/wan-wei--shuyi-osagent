@@ -1,0 +1,12 @@
+[Unit]
+Description=宛委·枢忆 OSAgent 秘府控制台（桌面客户端）
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -70,7 +70,7 @@ def test_version_constant():
 
     # 版本号应该是字符串
     assert isinstance(VERSION, str)
-    assert VERSION == "v0.10.0-delivery-hardening"
+    assert VERSION == "v0.11.0-wanshu"
 
     # 版本历史应该是列表
     assert isinstance(VERSION_HISTORY, list)
@@ -78,7 +78,7 @@ def test_version_constant():
 
     # 最新版本应该是当前交付硬化版本
     latest = VERSION_HISTORY[0]
-    assert latest['version'] == "v0.10.0-delivery-hardening"
+    assert latest['version'] == "v0.11.0-wanshu"
     assert latest['status'] == "in_progress"
 
 

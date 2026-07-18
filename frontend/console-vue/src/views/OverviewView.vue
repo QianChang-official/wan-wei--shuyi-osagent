@@ -2,6 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { usePlatformModules } from '@/composables/usePlatformModules'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfStat from '@/components/gf/GfStat.vue'
+import GfTag from '@/components/gf/GfTag.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 const metrics = ref<Record<string,any> | null>(null)
 const loading = ref(true)
@@ -49,63 +53,73 @@ onMounted(async () => {
 <template>
   <div class="overview">
 
-    <!-- 大楷体水印标题 -->
-    <div class="watermark-title" aria-hidden="true">枢忆</div>
+    <!-- 大楷体水印 -->
+    <div class="watermark" aria-hidden="true">枢忆</div>
 
-    <!-- 页头（回纹边框） -->
-    <header class="page-head huiwen-box">
-      <div class="huiwen-corner tl"></div>
-      <div class="huiwen-corner tr"></div>
-      <div class="huiwen-corner bl"></div>
-      <div class="huiwen-corner br"></div>
-      <div class="head-inner">
-        <div class="head-badge">MemoryOps Autopilot</div>
-        <h1>总览 · 宛委枢忆</h1>
-        <p>v0.9.3 Workflow Run 主线 · 端侧记忆治理生产控制面</p>
-      </div>
-      <div class="head-stats">
-        <div class="hstat"><b>{{ modules.length || 20 }}</b><span>平台舱室</span></div>
-        <div class="hstat"><b>{{ statusCounts.partial }}</b><span>部分实现</span></div>
-        <div class="hstat muted"><b>{{ statusCounts.planned }}</b><span>规划标注</span></div>
-      </div>
-    </header>
+    <PageHero
+      seal="览"
+      title="总览 · 宛委枢忆"
+      en="Overview · MemoryOps Autopilot"
+      sub="v0.11.0 Workflow Run 主线 · 端侧记忆治理生产控制面"
+    />
 
-    <!-- 英雄区 -->
-    <section class="hero">
-      <div class="hero-quote">
-        <span class="qm">「</span>
-        不是记忆 demo，而是一台可以自行闭环的精密生产仪器。
-        <span class="qm">」</span>
+    <!-- 舱室统计带 -->
+    <div class="stat-band">
+      <GfStat label="平台舱室" :value="modules.length || 20" tone="rouge" hint="MemoryOps Studio" />
+      <GfStat label="部分实现" :value="statusCounts.partial" tone="gold" hint="partial 标注" />
+      <GfStat label="规划标注" :value="statusCounts.planned" tone="dai" hint="planned 标注" />
+    </div>
+
+    <!-- 月洞门英雄区 -->
+    <section class="moon-hero">
+      <div class="moon-gate" aria-hidden="true">
+        <svg viewBox="0 0 220 220" width="100%" height="100%">
+          <!-- 月洞门圆环 -->
+          <circle cx="110" cy="110" r="86" class="mg-ring" fill="none" />
+          <circle cx="110" cy="110" r="78" class="mg-ring-soft" fill="none" />
+          <!-- 月晕 -->
+          <circle cx="110" cy="110" r="60" class="mg-moon" />
+          <!-- 梅枝 -->
+          <path d="M30 168 Q 78 128 128 138 T 196 96" class="mg-twig" fill="none" />
+          <path d="M126 138 Q 148 148 168 142" class="mg-twig" fill="none" />
+          <!-- 梅花 -->
+          <g class="mg-blossom">
+            <circle cx="96" cy="128" r="5" /><circle cx="107" cy="135.4" r="5" />
+            <circle cx="102.2" cy="148.6" r="5" /><circle cx="85.8" cy="148.6" r="5" />
+            <circle cx="81" cy="135.4" r="5" /><circle cx="94" cy="138.4" r="2.8" class="mg-heart" />
+          </g>
+          <g class="mg-blossom mg-blossom--soft">
+            <circle cx="168" cy="118" r="4.2" /><circle cx="177.2" cy="124.2" r="4.2" />
+            <circle cx="173.2" cy="135.2" r="4.2" /><circle cx="159.6" cy="135.2" r="4.2" />
+            <circle cx="155.4" cy="124.2" r="4.2" /><circle cx="166.4" cy="126.6" r="2.4" class="mg-heart" />
+          </g>
+          <circle cx="188" cy="98" r="3.4" class="mg-bud" />
+          <circle cx="52" cy="158" r="3" class="mg-bud" />
+        </svg>
       </div>
-      <p class="hero-flow">
-        多源接入 → Policy Gate → MemoryCapsule 2.0 → 检索/证据卡 →
-        模型网关 → 指挥闭环 → Workflow Run → 复盘演化 → Arena 评测
-      </p>
+      <div class="moon-body">
+        <p class="hero-quote">
+          <span class="qm">「</span>不是记忆 demo，而是一台可以自行闭环的精密生产仪器。<span class="qm">」</span>
+        </p>
+        <p class="hero-flow">
+          多源接入 → Policy Gate → MemoryCapsule 2.0 → 检索/证据卡 →
+          模型网关 → 指挥闭环 → Workflow Run → 复盘演化 → Arena 评测
+        </p>
+      </div>
     </section>
 
     <div v-if="loading" class="state-row">
       <span class="ldot"></span><span class="ldot"></span><span class="ldot"></span>
-      <span>加载指标中…</span>
+      <span>研墨中，正在加载指标…</span>
     </div>
-    <div v-else-if="!metrics" class="state-row muted">
-      ◎ 无法加载指标 — 运行 <code>./scripts/run_eval.sh</code> 后刷新
-    </div>
+    <GfEmpty v-else-if="!metrics" text="无法加载指标 — 运行 ./scripts/run_eval.sh 后刷新" />
 
     <template v-else>
-      <!-- KV 数字 -->
-      <div class="kv-row">
-        <div class="kv-card accent">
-          <div class="kv-label">MemoryArena Cases</div>
-          <div class="kv-val">{{ metrics.total_cases }}</div>
-        </div>
-        <div class="kv-card accent">
-          <div class="kv-label">断言通过</div>
-          <div class="kv-val">{{ metrics.assertions_passed }}<span class="kv-of">/{{ metrics.total_assertions }}</span></div>
-        </div>
-        <div class="kv-card">
-          <div class="kv-label">Workflow Run</div>
-          <div class="kv-val small">v0.9.3</div>
-        </div>
+      <!-- Arena KV 统计带 -->
+      <div class="stat-band">
+        <GfStat label="MemoryArena Cases" :value="metrics.total_cases" tone="rouge" hint="评测案卷总数" />
+        <GfStat label="断言通过" :value="`${metrics.assertions_passed} / ${metrics.total_assertions}`" tone="bamboo" hint="assertions passed" />
+        <GfStat label="Workflow Run" value="v0.11.0" tone="dai" hint="当前主线版本" />
       </div>
 
       <!-- 指标网格 -->
@@ -118,9 +132,7 @@ onMounted(async () => {
         <div class="metrics-grid">
           <div v-for="(meta, key) in META" :key="key" class="metric-card"
             :class="{ danger: meta.danger && metrics[key] > 0, warn: meta.warn && metrics[key] !== 'pending' && metrics[key] < 0.6 }">
-            <!-- 回纹角装饰 -->
-            <span class="mc-corner tl"></span>
-            <span class="mc-corner br"></span>
+            <span class="mc-bloom" aria-hidden="true"></span>
             <div class="mc-val" :class="{ pending: metrics[key] === 'pending' }">{{ fmt(metrics[key]) }}</div>
             <div class="mc-cn">{{ meta.cn }}</div>
             <div class="mc-en">{{ key }}</div>
@@ -137,7 +149,7 @@ onMounted(async () => {
         </div>
         <div class="case-grid">
           <article v-for="c in CASES" :key="c[0]" class="case-card">
-            <div class="case-vol">{{ c[2] }}</div>
+            <GfTag tone="gold">{{ c[2] }}</GfTag>
             <h3>{{ c[1] }}</h3>
             <code>{{ c[0] }}</code>
             <span class="case-pass">✓</span>
@@ -169,15 +181,15 @@ onMounted(async () => {
 .overview { max-width: 1200px; position: relative; }
 
 /* ══ 大楷体水印 ══ */
-.watermark-title {
+.watermark {
   position: fixed;
   right: 60px;
   top: 50%;
   transform: translateY(-50%);
-  font-family: var(--kai);
+  font-family: var(--font-kai);
   font-size: 280px;
   font-weight: 900;
-  color: rgba(178,58,46,.045);
+  color: color-mix(in srgb, var(--rouge) 6%, transparent);
   pointer-events: none;
   user-select: none;
   line-height: 1;
@@ -185,100 +197,75 @@ onMounted(async () => {
   z-index: 0;
 }
 
-/* ══ 回纹边框盒子 ══ */
-.huiwen-box {
+/* ══ 统计带 ══ */
+.stat-band {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-bottom: 24px;
   position: relative;
-  padding: 20px 24px;
-  background: rgba(255,255,255,.55);
-  backdrop-filter: blur(2px);
-  border: 1px solid rgba(200,153,31,.3);
-  margin-bottom: 24px;
+  z-index: 1;
 }
-/* 四角回纹 — 用 clip-path 模拟 */
-.huiwen-corner {
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  border-color: var(--cinnabar);
-  border-style: solid;
-  opacity: .7;
-}
-.huiwen-corner.tl { top: 4px; left: 4px; border-width: 2px 0 0 2px; }
-.huiwen-corner.tr { top: 4px; right: 4px; border-width: 2px 2px 0 0; }
-.huiwen-corner.bl { bottom: 4px; left: 4px; border-width: 0 0 2px 2px; }
-.huiwen-corner.br { bottom: 4px; right: 4px; border-width: 0 2px 2px 0; }
-/* 内层回纹 */
-.huiwen-corner::after {
-  content: '';
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-color: rgba(200,153,31,.5);
-  border-style: solid;
-}
-.huiwen-corner.tl::after { top: 3px; left: 3px; border-width: 1px 0 0 1px; }
-.huiwen-corner.tr::after { top: 3px; right: 3px; border-width: 1px 1px 0 0; }
-.huiwen-corner.bl::after { bottom: 3px; left: 3px; border-width: 0 0 1px 1px; }
-.huiwen-corner.br::after { bottom: 3px; right: 3px; border-width: 0 1px 1px 0; }
 
-/* ── 页头 ── */
-.head-inner { position: relative; z-index: 1; }
-.head-badge {
-  font-family: var(--kai);
-  font-size: 10px;
-  letter-spacing: 2px;
-  color: var(--cinnabar);
-  border: 1px solid rgba(178,58,46,.4);
-  padding: 2px 8px;
-  display: inline-block;
-  margin-bottom: 8px;
+/* ══ 月洞门英雄区 ══ */
+.moon-hero {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin-bottom: 28px;
+  padding: 26px 30px;
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
 }
-.page-head { display: flex; align-items: center; justify-content: space-between; }
-.page-head h1 {
-  font-family: var(--kai);
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 4px;
-  color: var(--ink);
-  line-height: 1.2;
+.moon-hero:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lift);
+  border-color: var(--gold-line);
 }
-.page-head p { font-size: 12px; color: var(--ink-muted); margin-top: 4px; }
-.head-stats { display: flex; gap: 0; border: 1px solid rgba(200,153,31,.25); position: relative; z-index: 1; }
-.hstat {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 10px 18px; border-left: 1px solid rgba(200,153,31,.2);
+.moon-gate {
+  width: 168px;
+  height: 168px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 14px var(--rouge-glow));
 }
-.hstat:first-child { border-left: 0; }
-.hstat b { font-size: 26px; font-family: Georgia, serif; color: var(--cinnabar); line-height: 1; }
-.hstat.muted b { color: var(--ink-muted); }
-.hstat span { font-size: 10px; color: var(--ink-muted); margin-top: 3px; }
-
-/* ── 英雄区 ── */
-.hero {
-  margin-bottom: 24px;
-  padding: 18px 22px;
-  background: rgba(255,255,255,.42);
-  border-left: 4px solid var(--cinnabar);
-  border-top: 1px solid rgba(200,153,31,.2);
-  border-bottom: 1px solid rgba(200,153,31,.2);
-  border-right: 1px solid rgba(200,153,31,.15);
-  position: relative; z-index: 1;
-}
+.mg-ring { stroke: var(--gold-line); stroke-width: 2; }
+.mg-ring-soft { stroke: var(--gold-line); stroke-width: 1; opacity: .5; stroke-dasharray: 3 5; }
+.mg-moon { fill: var(--rouge-glow); opacity: .22; }
+.mg-twig { stroke: var(--gold); stroke-width: 2.4; stroke-linecap: round; opacity: .8; }
+.mg-blossom circle { fill: var(--rouge); opacity: .9; }
+.mg-blossom--soft circle { fill: var(--rouge); opacity: .55; }
+.mg-blossom .mg-heart { fill: var(--gold); opacity: .95; }
+.mg-bud { fill: var(--rouge); opacity: .5; }
 .hero-quote {
-  font-family: var(--kai);
-  font-size: 18px;
-  letter-spacing: 2px;
-  line-height: 1.6;
-  margin-bottom: 8px;
+  font-family: var(--font-kai);
+  font-size: 20px;
+  letter-spacing: 3px;
+  line-height: 1.8;
+  color: var(--ink);
+  margin-bottom: 12px;
 }
-.qm { color: var(--cinnabar); font-size: 22px; }
-.hero-flow { font-size: 12px; color: var(--ink-soft); line-height: 1.8; }
+.qm { color: var(--cinnabar); font-size: 24px; }
+.hero-flow { font-size: 12.5px; color: var(--ink-soft); line-height: 1.9; letter-spacing: 1px; }
 
-/* ── 状态行 ── */
+/* ══ 状态行（研墨中） ══ */
 .state-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 24px; color: var(--ink-muted); font-size: 13px;
-  border: 1px dashed rgba(200,153,31,.3); margin-bottom: 20px;
+  padding: 26px 24px;
+  font-family: var(--font-kai);
+  letter-spacing: 2px;
+  color: var(--ink-muted); font-size: 13px;
+  background: var(--card);
+  border: 1px dashed var(--gold-line);
+  border-radius: var(--radius-card);
+  margin-bottom: 20px;
   position: relative; z-index: 1;
 }
 .ldot {
@@ -288,113 +275,145 @@ onMounted(async () => {
 .ldot:nth-child(2) { animation-delay: .2s; }
 .ldot:nth-child(3) { animation-delay: .4s; }
 @keyframes ldot { 0%,100%{opacity:.2;transform:scale(.7)} 50%{opacity:1;transform:scale(1)} }
-.state-row code { font-family: var(--mono); font-size: 11px; background: rgba(0,0,0,.06); padding: 1px 5px; }
 
-/* ── KV ── */
-.kv-row { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; position: relative; z-index: 1; }
-.kv-card {
-  border: 1px solid rgba(200,153,31,.25);
-  background: rgba(255,255,255,.5);
-  padding: 14px 20px; min-width: 130px;
-}
-.kv-card.accent { border-left: 4px solid var(--cinnabar); }
-.kv-label { font-size: 10px; color: var(--ink-muted); font-family: var(--mono); margin-bottom: 5px; }
-.kv-val { font-size: 42px; font-weight: 700; font-family: Georgia, serif; color: var(--cinnabar); line-height: 1; }
-.kv-val.small { font-size: 20px; color: var(--mineral); }
-.kv-of { font-size: 18px; color: var(--ink-muted); }
-
-/* ── 章节 ── */
+/* ══ 章节 ══ */
 .section { margin-bottom: 32px; position: relative; z-index: 1; }
-.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .sec-seal {
-  font-family: var(--kai); font-size: 12px; font-weight: 700;
-  width: 28px; height: 28px; display: grid; place-items: center;
-  background: var(--cinnabar); color: #F8EDD8; border-radius: 2px;
-  box-shadow: 0 0 10px rgba(178,58,46,.35); flex-shrink: 0;
+  font-family: var(--font-kai); font-size: 13px; font-weight: 700;
+  width: 30px; height: 30px; display: grid; place-items: center;
+  color: #FDF6E9;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  border-radius: var(--radius-seal);
+  box-shadow: var(--shadow-seal);
+  flex-shrink: 0;
 }
-.sec-head h2 { font-size: 15px; font-weight: 700; letter-spacing: 2px; font-family: var(--kai); }
-.sec-line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(200,153,31,.4), transparent); }
+.sec-head h2 {
+  font-size: 21px; font-weight: 700; letter-spacing: 3px;
+  font-family: var(--font-kai); color: var(--ink);
+}
+.sec-line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--gold-line), transparent); }
 
-/* ── 指标网格 ── */
-.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+/* ══ 指标网格 ══ */
+.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .metric-card {
-  border: 1px solid rgba(200,153,31,.2);
-  border-top: 3px solid var(--mineral);
-  background: rgba(255,255,255,.45);
-  padding: 13px 14px;
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px;
   position: relative;
-  transition: transform .18s, box-shadow .18s;
+  overflow: hidden;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
 }
-.metric-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,23,20,.1); }
-.metric-card.danger { border-top-color: var(--cinnabar); }
-.metric-card.warn { border-top-color: var(--gamboge); }
-/* 回纹角 */
-.mc-corner {
-  position: absolute;
-  width: 10px; height: 10px;
-  border-color: rgba(200,153,31,.4);
-  border-style: solid;
+.metric-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lift);
+  border-color: var(--gold-line);
 }
-.mc-corner.tl { top: 3px; left: 3px; border-width: 1px 0 0 1px; }
-.mc-corner.br { bottom: 3px; right: 3px; border-width: 0 1px 1px 0; }
-.mc-val { font-size: 26px; font-weight: 700; font-family: Georgia, serif; color: var(--mineral); line-height: 1; margin-bottom: 7px; }
-.mc-val.pending { font-size: 15px; color: var(--gamboge); }
+.mc-bloom {
+  position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: linear-gradient(90deg, var(--dai), transparent);
+}
+.metric-card.danger .mc-bloom { background: linear-gradient(90deg, var(--cinnabar), var(--rouge)); }
+.metric-card.warn .mc-bloom { background: linear-gradient(90deg, var(--gold), transparent); }
+.mc-val {
+  font-size: 28px; font-weight: 700; font-family: var(--font-kai);
+  color: var(--dai); line-height: 1; margin: 6px 0 8px; letter-spacing: 1px;
+}
+.mc-val.pending { font-size: 16px; color: var(--gold); }
 .metric-card.danger .mc-val { color: var(--cinnabar); }
-.mc-cn { font-size: 12px; color: var(--ink); }
-.mc-en { font-size: 9.5px; color: var(--ink-muted); font-family: var(--mono); margin-top: 3px; word-break: break-all; }
+.mc-cn { font-size: 12.5px; color: var(--ink); letter-spacing: 1px; }
+.mc-en { font-size: 10px; color: var(--ink-muted); font-family: var(--font-mono); margin-top: 4px; word-break: break-all; }
 
-/* ── 五案卷宗 ── */
-.case-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+/* ══ 五案卷宗 ══ */
+.case-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 .case-card {
-  border: 1px solid rgba(200,153,31,.25);
-  background: rgba(255,255,255,.42);
-  padding: 14px 12px;
-  min-height: 140px;
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px 14px;
+  min-height: 150px;
   position: relative;
-  transition: border-color .18s, transform .18s;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
 }
-.case-card:hover { border-color: rgba(178,58,46,.4); transform: translateY(-2px); }
-.case-vol {
-  font-family: var(--kai); font-size: 11px; color: var(--gamboge);
-  border: 1px solid rgba(200,153,31,.4); padding: 1px 6px;
-  display: inline-block; margin-bottom: 8px; border-radius: 1px;
+.case-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lift);
+  border-color: color-mix(in srgb, var(--rouge) 45%, transparent);
 }
-.case-card h3 { font-size: 13.5px; letter-spacing: 1px; font-family: var(--kai); margin-bottom: 6px; }
-.case-card code { font-size: 9px; color: var(--ink-muted); font-family: var(--mono); word-break: break-all; display: block; }
+.case-card h3 {
+  font-size: 15px; letter-spacing: 2px; font-family: var(--font-kai);
+  color: var(--ink); margin: 10px 0 8px;
+}
+.case-card code {
+  font-size: 9.5px; color: var(--ink-muted); font-family: var(--font-mono);
+  word-break: break-all; display: block; line-height: 1.6;
+}
 .case-pass {
-  position: absolute; right: 8px; bottom: 8px;
-  color: var(--jade); border: 1px solid var(--jade);
-  padding: 1px 6px; font-size: 10px; border-radius: 1px;
+  position: absolute; right: 12px; bottom: 12px;
+  color: var(--bamboo); border: 1px solid var(--bamboo);
+  padding: 1px 8px; font-size: 11px; border-radius: 999px;
 }
 
-/* ── 演示路线 ── */
-.flow { display: flex; border: 1px solid rgba(200,153,31,.25); overflow: hidden; }
+/* ══ 演示路线 ══ */
+.flow {
+  display: flex;
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
 .flow-step {
   flex: 1; display: flex; flex-direction: column; align-items: center;
-  padding: 16px 10px; background: rgba(255,255,255,.38);
-  border-right: 1px solid rgba(200,153,31,.2);
+  padding: 22px 12px;
+  border-right: 1px solid var(--line-soft);
   position: relative; text-align: center;
-  transition: background .18s;
+  transition: background .22s ease;
 }
 .flow-step:last-child { border-right: 0; }
-.flow-step:hover { background: rgba(255,255,255,.6); }
+.flow-step:hover { background: color-mix(in srgb, var(--rouge) 6%, transparent); }
 .flow-icon {
-  font-family: var(--kai); font-size: 20px; font-weight: 700;
-  color: var(--cinnabar); width: 38px; height: 38px;
+  font-family: var(--font-kai); font-size: 20px; font-weight: 700;
+  color: var(--cinnabar); width: 46px; height: 46px;
   display: grid; place-items: center;
-  border: 1px solid rgba(178,58,46,.3); border-radius: 2px;
-  background: rgba(178,58,46,.07); margin-bottom: 8px;
+  border: 1.5px solid color-mix(in srgb, var(--cinnabar) 40%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--rouge) 10%, transparent);
+  box-shadow: 0 0 12px var(--rouge-glow);
+  margin-bottom: 10px;
 }
-.flow-step b { display: block; font-size: 13px; letter-spacing: 1px; font-family: var(--kai); margin-bottom: 4px; }
-.flow-step em { display: block; font-style: normal; font-size: 10.5px; color: var(--ink-muted); line-height: 1.5; }
+.flow-step b {
+  display: block; font-size: 13.5px; letter-spacing: 2px;
+  font-family: var(--font-kai); color: var(--ink); margin-bottom: 5px;
+}
+.flow-step em { display: block; font-style: normal; font-size: 11px; color: var(--ink-muted); line-height: 1.6; }
 .flow-arr {
-  position: absolute; right: -9px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: -8px; top: 50%; transform: translateY(-50%);
   color: var(--cinnabar); font-size: 14px; z-index: 2;
-  background: var(--xuan); padding: 2px 1px;
+  background: var(--card-solid); border-radius: 50%; padding: 2px 3px;
 }
 
-/* ── 响应式 ── */
+/* ══ 响应式 ══ */
 @media (max-width: 1100px) { .case-grid { grid-template-columns: repeat(3,1fr); } }
-@media (max-width: 900px) { .metrics-grid { grid-template-columns: repeat(2,1fr); } .head-stats { display: none; } }
-@media (max-width: 600px) { .case-grid { grid-template-columns: 1fr; } .flow { flex-wrap: wrap; } .flow-step { min-width: 50%; } .flow-arr { display: none; } }
+@media (max-width: 900px) {
+  .metrics-grid { grid-template-columns: repeat(2,1fr); }
+  .stat-band { grid-template-columns: 1fr; }
+  .moon-hero { flex-direction: column; text-align: center; }
+}
+@media (max-width: 600px) {
+  .case-grid { grid-template-columns: 1fr; }
+  .flow { flex-wrap: wrap; }
+  .flow-step { min-width: 50%; }
+  .flow-arr { display: none; }
+}
 </style>

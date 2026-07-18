@@ -1,11 +1,26 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { setApiKey } from '@/api/client'
 import { useHealth } from '@/composables/useHealth'
+import PetalFall from '@/components/gf/PetalFall.vue'
+import ScrollProgress from '@/components/gf/ScrollProgress.vue'
+import ThemeToggle from '@/components/gf/ThemeToggle.vue'
+import { getPetalsEnabled, setPetalsEnabled } from '@/components/gf/shared'
 
 const { online, version } = useHealth()
 const apiKey = ref('')
 function updateApiKey() { setApiKey(apiKey.value) }
+
+const route = useRoute()
+const pageSeal = computed(() => (route.meta.seal as string) || '枢')
+const pageTitle = computed(() => (route.meta.title as string) || '花朝台')
+
+const petalsOn = ref(getPetalsEnabled())
+function togglePetals() {
+  petalsOn.value = !petalsOn.value
+  setPetalsEnabled(petalsOn.value)
+}
 
 const navGroups = [
   {
@@ -30,13 +45,26 @@ const navGroups = [
     ],
   },
   {
-    title: '运行闭环',
+    title: '灵魂觉醒',
     items: [
-      { to: '/capsules', seal: '忆', name: '记忆容器', en: 'Capsules' },
-      { to: '/search', seal: '琅', name: '可信检索', en: 'Search' },
-      { to: '/command', seal: '司', name: '指挥闭环', en: 'Command' },
-      { to: '/reflection', seal: '省', name: '复盘演化', en: 'Reflection' },
-      { to: '/audit', seal: '台', name: '审计流水', en: 'Audit' },
+      { to: '/soul', seal: '灵', name: '灵魂状态', en: 'Soul' },
+      { to: '/chat', seal: '话', name: '灵魂对话', en: 'Chat' },
+      { to: '/dream', seal: '梦', name: '梦境日志', en: 'Dream' },
+    ],
+  },
+  {
+    title: '万枢协作',
+    items: [
+      { to: '/platform/workbench', seal: '枢', name: '万枢工作台', en: 'Workbench' },
+      { to: '/platform/providers', seal: '接', name: '模型接入', en: 'Providers' },
+      { to: '/platform/agents', seal: '智', name: '智能体', en: 'Agents' },
+      { to: '/platform/spaces', seal: '域', name: '空间', en: 'Spaces' },
+      { to: '/platform/automation', seal: '自', name: '自动化', en: 'Automation' },
+      { to: '/platform/knowledge', seal: '知', name: '知识库', en: 'Knowledge' },
+      { to: '/platform/memory', seal: '心', name: '记忆中枢', en: 'Memory' },
+      { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
+      { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
+      { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
     ],
   },
 ]
@@ -44,24 +72,26 @@ const navGroups = [
 
 <template>
   <div class="shell">
-    <!-- 屏风式侧边栏 -->
+    <!-- 全站氛围层 -->
+    <PetalFall />
+    <ScrollProgress />
+
+    <!-- 柔化屏风侧边栏 -->
     <aside class="rail">
-      <!-- 品牌印章 -->
+      <!-- 月洞门品牌区 -->
       <div class="brand">
-        <div class="brand-seal">
-          <span>枢</span>
-          <span>忆</span>
+        <div class="moon-gate" aria-hidden="true">
+          <span class="mg-char">枢</span>
         </div>
         <div class="brand-txt">
           <div class="bt-cn">宛委·枢忆</div>
-          <div class="bt-en">MemoryOps Console</div>
+          <div class="bt-en">花朝台 · MemoryOps</div>
         </div>
       </div>
 
       <!-- 屏风导航 -->
       <nav class="nav">
         <div v-for="(group, gi) in navGroups" :key="group.title" class="screen-panel" :class="`panel-${gi}`">
-          <!-- 屏风折叠线 -->
           <div class="panel-hinge" v-if="gi > 0"></div>
           <div class="panel-title">
             <span>{{ group.title }}</span>
@@ -81,6 +111,33 @@ const navGroups = [
         </div>
       </nav>
 
+      <!-- 梅枝装饰 -->
+      <div class="rail-plum" aria-hidden="true">
+        <svg viewBox="0 0 240 84" width="100%" height="84" preserveAspectRatio="xMidYMax meet">
+          <path d="M-8 82 Q 58 62 106 46 T 222 10" class="pl-branch" fill="none" />
+          <path d="M108 45 Q 140 49 170 42" class="pl-branch pl-branch--thin" fill="none" />
+          <path d="M58 64 Q 76 52 92 52" class="pl-branch pl-branch--thin" fill="none" />
+          <g class="pl-blossom" transform="translate(96,50)">
+            <circle cx="0" cy="-7" r="4" /><circle cx="6.7" cy="-2.2" r="4" />
+            <circle cx="4.1" cy="5.8" r="4" /><circle cx="-4.1" cy="5.8" r="4" />
+            <circle cx="-6.7" cy="-2.2" r="4" /><circle class="pl-heart" cx="0" cy="0" r="2.2" />
+          </g>
+          <g class="pl-blossom pl-blossom--soft" transform="translate(172,34) scale(.78)">
+            <circle cx="0" cy="-7" r="4" /><circle cx="6.7" cy="-2.2" r="4" />
+            <circle cx="4.1" cy="5.8" r="4" /><circle cx="-4.1" cy="5.8" r="4" />
+            <circle cx="-6.7" cy="-2.2" r="4" /><circle class="pl-heart" cx="0" cy="0" r="2.2" />
+          </g>
+          <g class="pl-blossom pl-blossom--soft" transform="translate(216,12) scale(.6)">
+            <circle cx="0" cy="-7" r="4" /><circle cx="6.7" cy="-2.2" r="4" />
+            <circle cx="4.1" cy="5.8" r="4" /><circle cx="-4.1" cy="5.8" r="4" />
+            <circle cx="-6.7" cy="-2.2" r="4" /><circle class="pl-heart" cx="0" cy="0" r="2.2" />
+          </g>
+          <circle cx="140" cy="46" r="2.4" class="pl-bud" />
+          <circle cx="70" cy="60" r="2" class="pl-bud" />
+          <circle cx="196" cy="22" r="2" class="pl-bud" />
+        </svg>
+      </div>
+
       <!-- API 密钥 -->
       <div class="api-auth">
         <label for="api-key">密钥</label>
@@ -98,11 +155,41 @@ const navGroups = [
 
     <!-- 主内容区 -->
     <main class="stage">
-      <RouterView v-slot="{ Component }">
-        <Transition name="scroll" mode="out-in">
-          <component :is="Component" />
-        </Transition>
-      </RouterView>
+      <!-- 顶栏 -->
+      <header class="topbar">
+        <div class="tb-page">
+          <span class="tb-seal">{{ pageSeal }}</span>
+          <span class="tb-title">{{ pageTitle }}</span>
+        </div>
+        <div class="tb-actions">
+          <button
+            class="tb-petal"
+            type="button"
+            :class="{ off: !petalsOn }"
+            :aria-pressed="petalsOn"
+            :title="petalsOn ? '合上花瓣雨' : '撒下花瓣雨'"
+            @click="togglePetals"
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15">
+              <g fill="currentColor">
+                <circle cx="8" cy="3.2" r="2.4" /><circle cx="12.6" cy="6.5" r="2.4" />
+                <circle cx="11" cy="11.8" r="2.4" /><circle cx="5" cy="11.8" r="2.4" />
+                <circle cx="3.4" cy="6.5" r="2.4" />
+              </g>
+              <circle cx="8" cy="8" r="1.5" fill="var(--gold)" />
+            </svg>
+          </button>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      <div class="stage-body">
+        <RouterView v-slot="{ Component }">
+          <Transition name="scroll" mode="out-in">
+            <component :is="Component" />
+          </Transition>
+        </RouterView>
+      </div>
     </main>
   </div>
 </template>
@@ -114,64 +201,61 @@ const navGroups = [
   min-height: 100vh;
 }
 
-/* ══ 屏风侧边栏 ══ */
+/* ══ 侧边栏：半透明宣纸 + 金线（昼） / 靛青（夜） ══ */
 .rail {
-  background: linear-gradient(180deg, #1C1914 0%, #141210 100%);
-  color: #EAE0C8;
   display: flex;
   flex-direction: column;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow: hidden;
-  /* 屏风竖纹 */
-  background-image:
-    linear-gradient(180deg, #1C1914 0%, #141210 100%),
-    repeating-linear-gradient(90deg,
-      transparent 0px, transparent 30px,
-      rgba(200,153,31,.04) 30px, rgba(200,153,31,.04) 31px
-    );
-  border-right: 2px solid rgba(200,153,31,.25);
-  /* 右侧金线阴影模拟屏风边框 */
-  box-shadow: 2px 0 12px rgba(0,0,0,.35), inset -1px 0 0 rgba(200,153,31,.1);
+  color: var(--ink-soft);
+  background: linear-gradient(180deg, rgba(255, 253, 248, .82), rgba(245, 237, 220, .66));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid var(--gold-line);
+  box-shadow: 1px 0 18px rgba(51, 46, 42, .05);
+  transition: background .3s ease;
+}
+:root[data-theme='night'] .rail {
+  background: linear-gradient(180deg, rgba(27, 30, 46, .9), rgba(18, 20, 31, .84));
+  box-shadow: 1px 0 18px rgba(0, 0, 0, .3);
 }
 
-/* ── 品牌区 ── */
+/* ── 月洞门品牌区 ── */
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 18px 16px 14px;
-  border-bottom: 1px solid rgba(200,153,31,.2);
-  background: rgba(0,0,0,.15);
+  gap: 13px;
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.brand-seal {
-  font-family: var(--kai);
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.1;
-  width: 44px;
-  height: 44px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: var(--cinnabar);
-  color: #F8EDD8;
-  border-radius: 2px;
+.moon-gate {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1.5px solid var(--gold-line);
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
-  box-shadow: 0 0 20px rgba(178,58,46,.5), 0 0 6px rgba(178,58,46,.3);
-  position: relative;
+  box-shadow: 0 0 0 4px var(--line-soft), 0 0 18px var(--rouge-glow);
+  background: var(--card);
 }
-.brand-seal::before {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border: 1px solid rgba(248,237,216,.3);
-  border-radius: 1px;
+.mg-char {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-kai);
+  font-size: 18px;
+  font-weight: 700;
+  color: #FDF6E9;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  box-shadow: 0 0 12px var(--cinnabar-glow);
 }
-.bt-cn { font-family: var(--kai); font-size: 16px; letter-spacing: 3px; color: #F0E4C8; }
-.bt-en { font-size: 9.5px; letter-spacing: 1.5px; color: rgba(234,224,200,.4); margin-top: 3px; }
+.bt-cn { font-family: var(--font-kai); font-size: 18px; letter-spacing: 4px; color: var(--ink); }
+.bt-en { font-size: 9.5px; letter-spacing: 1.5px; color: var(--ink-muted); margin-top: 4px; }
 
 /* ── 屏风导航面板 ── */
 .nav {
@@ -179,52 +263,21 @@ const navGroups = [
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
-  scrollbar-color: rgba(178,58,46,.25) transparent;
+  padding-bottom: 6px;
 }
+.screen-panel { position: relative; padding: 0 0 4px; }
 
-.screen-panel {
-  position: relative;
-  padding: 0 0 6px;
-  /* 每块面板有轻微的透视感 */
-  background: linear-gradient(180deg,
-    rgba(255,255,255,.025) 0%,
-    rgba(255,255,255,.01) 100%
-  );
-}
-
-/* 屏风折叠线（面板间的铰链） */
 .panel-hinge {
-  height: 8px;
-  background:
-    linear-gradient(180deg,
-      rgba(0,0,0,.4) 0%,
-      rgba(200,153,31,.15) 40%,
-      rgba(200,153,31,.15) 60%,
-      rgba(0,0,0,.3) 100%
-    );
-  margin: 0;
-  position: relative;
+  height: 1px;
+  margin: 6px 16px;
+  background: linear-gradient(90deg, transparent, var(--gold-line), transparent);
 }
-.panel-hinge::before,
-.panel-hinge::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgba(200,153,31,.5);
-  box-shadow: 0 0 4px rgba(200,153,31,.4);
-}
-.panel-hinge::before { left: 20px; }
-.panel-hinge::after { right: 20px; }
 
 .panel-title {
-  font-size: 9.5px;
+  font-size: 10px;
   letter-spacing: 3px;
-  color: rgba(234,224,200,.35);
-  padding: 10px 16px 6px;
+  color: var(--ink-muted);
+  padding: 10px 18px 6px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -233,91 +286,102 @@ const navGroups = [
   content: '';
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, rgba(200,153,31,.2), transparent);
+  background: linear-gradient(90deg, var(--gold-line), transparent);
+  opacity: .6;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 14px;
-  color: #C4B898;
+  margin: 2px 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-small);
+  color: var(--ink-soft);
   text-decoration: none;
-  transition: background .15s, color .15s;
+  transition: background .18s ease, color .18s ease, transform .18s ease;
   position: relative;
-  border-left: 2px solid transparent;
 }
 .nav-item:hover {
-  background: rgba(234,224,200,.06);
-  color: #EAE0C8;
-  border-left-color: rgba(200,153,31,.3);
+  background: var(--rouge-soft);
+  color: var(--ink);
+  transform: translateX(2px);
 }
+:root[data-theme='night'] .nav-item:hover { background: rgba(240, 166, 190, .1); }
 .nav-item.router-link-exact-active {
-  background: rgba(178,58,46,.15);
-  color: #F3E9CE;
-  border-left-color: var(--cinnabar);
+  background: linear-gradient(90deg, var(--rouge-soft), transparent 130%);
+  color: var(--cinnabar);
+  box-shadow: inset 2px 0 0 var(--cinnabar);
 }
-/* 激活态右侧印章光晕 */
-.nav-item.router-link-exact-active::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, transparent, rgba(178,58,46,.4), transparent);
+:root[data-theme='night'] .nav-item.router-link-exact-active {
+  background: linear-gradient(90deg, rgba(224, 101, 90, .16), transparent 130%);
 }
 
 .ni-seal {
-  font-family: var(--kai);
+  font-family: var(--font-kai);
   font-size: 13px;
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(196,184,152,.25);
-  border-radius: 2px;
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-seal);
   flex-shrink: 0;
-  transition: all .15s;
+  transition: all .18s ease;
 }
 .nav-item.router-link-exact-active .ni-seal {
-  background: rgba(178,58,46,.25);
-  border-color: rgba(178,58,46,.55);
-  box-shadow: 0 0 8px rgba(178,58,46,.25);
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  border-color: transparent;
+  color: #FDF6E9;
+  box-shadow: 0 0 10px var(--cinnabar-glow);
 }
-.ni-txt { display: flex; flex-direction: column; line-height: 1.2; }
-.ni-txt b { font-size: 13px; font-weight: 600; }
-.ni-txt i { font-size: 9.5px; opacity: .45; font-style: normal; }
+.ni-txt { display: flex; flex-direction: column; line-height: 1.25; }
+.ni-txt b { font-size: 13px; font-weight: 600; letter-spacing: 1px; }
+.ni-txt i { font-size: 9.5px; opacity: .5; font-style: normal; letter-spacing: .5px; }
+
+/* ── 梅枝装饰 ── */
+.rail-plum {
+  padding: 4px 10px 0;
+  opacity: .9;
+  pointer-events: none;
+}
+.pl-branch { stroke: var(--gold); stroke-width: 1.6; stroke-linecap: round; opacity: .55; }
+.pl-branch--thin { stroke-width: 1.1; opacity: .4; }
+.pl-blossom circle { fill: var(--rouge); opacity: .8; }
+.pl-blossom--soft circle { opacity: .55; }
+.pl-blossom .pl-heart { fill: var(--gold); opacity: .95; }
+.pl-bud { fill: var(--rouge); opacity: .45; }
 
 /* ── API 密钥 ── */
 .api-auth {
-  padding: 10px 14px;
-  border-top: 1px solid rgba(200,153,31,.15);
-  background: rgba(0,0,0,.1);
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-soft);
 }
 .api-auth label {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 2px;
-  color: rgba(234,224,200,.4);
+  color: var(--ink-muted);
   margin-bottom: 6px;
-  font-family: var(--kai);
+  font-family: var(--font-kai);
 }
 .api-auth input {
   width: 100%;
-  border: 1px solid rgba(234,224,200,.12);
-  border-radius: 1px;
-  background: rgba(255,255,255,.04);
-  color: #EAE0C8;
-  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--card);
+  color: var(--ink);
+  padding: 7px 10px;
   font-size: 11px;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
+  transition: border-color .18s ease, box-shadow .18s ease;
 }
 .api-auth input:focus {
   outline: none;
-  border-color: rgba(178,58,46,.5);
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--rouge-glow);
 }
-.api-auth input::placeholder { color: rgba(234,224,200,.2); }
+.api-auth input::placeholder { color: var(--ink-muted); opacity: .6; }
 
 /* ── 状态栏 ── */
 .rail-foot {
@@ -325,58 +389,130 @@ const navGroups = [
   align-items: center;
   gap: 7px;
   font-size: 11px;
-  color: rgba(234,224,200,.45);
-  padding: 10px 14px;
-  border-top: 1px solid rgba(200,153,31,.12);
-  background: rgba(0,0,0,.15);
+  color: var(--ink-muted);
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line-soft);
 }
 .status-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: rgba(234,224,200,.2); flex-shrink: 0;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--line); flex-shrink: 0;
+  transition: background .2s ease;
 }
 .status-dot.on {
-  background: #6A9E7F;
-  box-shadow: 0 0 7px #4E7A62, 0 0 3px #6A9E7F;
+  background: var(--bamboo);
+  box-shadow: 0 0 8px var(--bamboo);
 }
 .rail-foot em {
   margin-left: auto; font-style: normal;
-  font-size: 9.5px; font-family: var(--mono);
-  color: rgba(234,224,200,.3);
+  font-size: 9.5px; font-family: var(--font-mono);
+  color: var(--ink-muted); opacity: .7;
 }
 
 /* ══ 主内容区 ══ */
-.stage {
-  padding: 36px 44px;
-  background-color: var(--xuan);
-  background-image: url('@/assets/shanshui.svg');
-  background-size: cover;
-  background-position: center top;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-  min-height: 100vh;
-}
+.stage { min-height: 100vh; position: relative; }
 
-/* ══ 卷轴展开动效 ══ */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 32px;
+  background: var(--card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.tb-page { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tb-seal {
+  font-family: var(--font-kai);
+  font-size: 12px;
+  font-weight: 700;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: #FDF6E9;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  border-radius: var(--radius-seal);
+  box-shadow: 0 0 8px var(--cinnabar-glow);
+  flex-shrink: 0;
+}
+.tb-title {
+  font-family: var(--font-kai);
+  font-size: 16px;
+  letter-spacing: 4px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.tb-petal {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--gold-line);
+  background: var(--card);
+  color: var(--rouge);
+  transition: transform .2s ease, box-shadow .2s ease, opacity .2s ease;
+}
+.tb-petal:hover { transform: translateY(-2px) rotate(-10deg); box-shadow: var(--shadow-glow-rouge); }
+.tb-petal.off { opacity: .38; filter: grayscale(.6); }
+
+.stage-body { padding: 28px 40px 48px; }
+
+/* ══ 柔和卷轴过渡：fade + translateY(14px) + scale(.98)，280ms ══ */
 .scroll-enter-active {
-  animation: unroll .35s cubic-bezier(.22,.68,0,1.2);
-  transform-origin: top center;
+  transition: opacity .28s ease-out, transform .28s ease-out;
 }
 .scroll-leave-active {
-  animation: rollup .22s ease-in;
-  transform-origin: top center;
+  transition: opacity .16s ease-in, transform .16s ease-in;
 }
-@keyframes unroll {
-  from { transform: scaleY(0.04); opacity: 0; }
-  to   { transform: scaleY(1);    opacity: 1; }
-}
-@keyframes rollup {
-  from { transform: scaleY(1);    opacity: 1; }
-  to   { transform: scaleY(0.04); opacity: 0; }
-}
+.scroll-enter-from { opacity: 0; transform: translateY(14px) scale(.98); }
+.scroll-leave-to { opacity: 0; transform: translateY(-6px) scale(.99); }
 
+/* ══ 窄屏：侧栏折叠为顶部横排 ══ */
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
-  .rail { position: relative; height: auto; }
-  .stage { padding: 24px 20px; background-attachment: scroll; }
+  .rail {
+    position: relative;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--gold-line);
+  }
+  .brand { padding: 14px 16px 10px; }
+  .moon-gate { width: 44px; height: 44px; }
+  .mg-char { width: 30px; height: 30px; font-size: 15px; }
+  .nav {
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+  }
+  .screen-panel {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0 6px;
+  }
+  .panel-hinge {
+    width: 1px;
+    height: 28px;
+    margin: 0 6px;
+    align-self: center;
+    background: linear-gradient(180deg, transparent, var(--gold-line), transparent);
+  }
+  .panel-title { display: none; }
+  .nav-item { margin: 4px 2px; padding: 6px 9px; }
+  .ni-txt i { display: none; }
+  .rail-plum { display: none; }
+  .api-auth { border-top: 1px solid var(--line-soft); }
+  .stage-body { padding: 20px 18px 40px; }
+  .topbar { padding: 10px 18px; }
 }
 </style>

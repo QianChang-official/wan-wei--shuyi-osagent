@@ -12,7 +12,11 @@ from .security.headers import SecurityHeadersMiddleware
 from .security.rate_limit import RateLimitMiddleware
 from .operations.health import readiness_report
 from .operations.observability import ObservabilityMiddleware, metrics
-from .schemas import MemoryEventIn,ForgetPreviewIn,ForgetConfirmIn,CapsuleWriteIn,CommandLoopIn,ReflectionIn
+from .schemas import (
+    MemoryEventIn, ForgetPreviewIn, ForgetConfirmIn, CapsuleWriteIn,
+    CommandLoopIn, ReflectionIn, SoulConnectIn, SoulChatIn,
+    SoulPersonaUpdateIn, SoulDreamIn,
+)
 from .db import close_all, get_conn
 from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record, record_in_transaction
@@ -36,6 +40,11 @@ from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
 from .utils.datetime_utils import utc_now_iso
+from .soul import create_persona, get_persona, update_persona, get_soul_state, route_chat
+from .affect import AffectState, load_affect, save_affect, transition, tune_response_style
+from .affect.decay_daemon import run_decay_daemon
+from .perception import intake_perception
+from .dream import run_dream, run_dream_scheduler
 from .workflow.service import (
     WorkflowRunIn,
     cleanup_old_runs as workflow_cleanup_old_runs,
@@ -99,6 +108,8 @@ async def lifespan(app: FastAPI):
         get_api_key()
     init_db()
     init_workflow_persistence()
+
+    # -- existing vector delete sweeper --
     delete_sweeper_stop = threading.Event()
     delete_sweeper = threading.Thread(
         target=run_vector_delete_sweeper,
@@ -108,11 +119,36 @@ async def lifespan(app: FastAPI):
         daemon=True,
     )
     delete_sweeper.start()
+
+    # -- new: affect decay daemon (P1) --
+    affect_decay_stop = threading.Event()
+    affect_decay_thread = threading.Thread(
+        target=run_decay_daemon,
+        kwargs={'interval_seconds': 1800, 'stop_event': affect_decay_stop},
+        name='affect-decay-daemon',
+        daemon=True,
+    )
+    affect_decay_thread.start()
+
+    # -- new: dream scheduler (P1 placeholder, full impl in P4) --
+    dream_scheduler_stop = threading.Event()
+    dream_scheduler_thread = threading.Thread(
+        target=run_dream_scheduler,
+        kwargs={'interval_seconds': 600, 'stop_event': dream_scheduler_stop},
+        name='dream-scheduler',
+        daemon=True,
+    )
+    dream_scheduler_thread.start()
+
     try:
         yield
     finally:
         delete_sweeper_stop.set()
         delete_sweeper.join(timeout=65)
+        affect_decay_stop.set()
+        affect_decay_thread.join(timeout=5)
+        dream_scheduler_stop.set()
+        dream_scheduler_thread.join(timeout=5)
         close_all()
 
 _prod_mode = is_production_mode()
@@ -833,6 +869,199 @@ def forget_confirm(req:ForgetConfirmIn):
     response['native_vector'] = stored_result['native_vector']
     return response
 
+# ---------------------------------------------------------------------------
+# v0.11 Soul Awakening endpoints
+# ---------------------------------------------------------------------------
+
+def _ensure_dream_lock(soul_id: str) -> None:
+    """Idempotently seed a dream_lock row for the soul."""
+    conn = get_conn()
+    ts = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO dream_lock(soul_id, pid, started_at, last_dream_at, last_dream_duration_ms, last_dream_summary)
+        VALUES (?, NULL, NULL, NULL, 0, NULL)
+        ON CONFLICT(soul_id) DO NOTHING
+        """,
+        (soul_id,),
+    )
+    conn.commit()
+
+
+@app.post('/soul/connect')
+def soul_connect(req: SoulConnectIn):
+    """Soul injection handshake — returns soul_id + injection_prompt."""
+    soul_id = req.soul_id or create_persona()
+    _ensure_dream_lock(soul_id)
+    injection = build_injection_prompt(soul_id)
+    return {
+        'soul_id': soul_id,
+        'injection_prompt': injection,
+        'persona': get_persona(soul_id),
+    }
+
+
+@app.get('/soul/state/{soul_id}')
+def soul_state(soul_id: str):
+    """Full soul state: persona + affect + core memories."""
+    return get_soul_state(soul_id)
+
+
+@app.put('/soul/persona/{soul_id}')
+def soul_persona_update(soul_id: str, req: SoulPersonaUpdateIn):
+    """Update persona fields (name, core_traits, voice, soul_values, self_narrative)."""
+    update_persona(soul_id, **req.model_dump(exclude_unset=True))
+    return get_persona(soul_id)
+
+
+@app.get('/soul/affect/{soul_id}')
+def soul_affect_get(soul_id: str):
+    """Current PAD affect state."""
+    state = load_affect(soul_id)
+    return {
+        'soul_id': soul_id,
+        'pleasure': state.pleasure,
+        'arousal': state.arousal,
+        'dominance': state.dominance,
+        'current_mood': state.current_mood,
+        'mood_intensity': state.mood_intensity,
+    }
+
+
+@app.put('/soul/affect/{soul_id}')
+def soul_affect_put(soul_id: str, trigger: str = 'manual', intensity: float = 1.0):
+    """Manually trigger an affect transition (e.g., user_thank, user_complaint)."""
+    new_state = transition(soul_id, trigger, intensity)
+    return {
+        'soul_id': soul_id,
+        'trigger': trigger,
+        'affect': {
+            'pleasure': new_state.pleasure,
+            'arousal': new_state.arousal,
+            'dominance': new_state.dominance,
+            'current_mood': new_state.current_mood,
+            'mood_intensity': new_state.mood_intensity,
+        },
+    }
+
+
+@app.post('/soul/dream')
+def soul_dream(req: SoulDreamIn):
+    """Manually trigger a dream cycle for the soul."""
+    result = run_dream(req.soul_id)
+    return {
+        'soul_id': req.soul_id,
+        'dream': result,
+    }
+
+
+# ---------------------------------------------------------------------------
+# /soul/chat — OpenAI-compatible soul-injected chat
+# ---------------------------------------------------------------------------
+
+def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
+    """Lightweight chat completion via the configured model gateway.
+
+    P1: tries openai_compatible first, falls back to local_mock.
+    """
+    import os
+    import httpx
+
+    from .model_gateway.service import _get_config, _openai_compatible_smoke
+    from .security.ssrf import validate_external_url
+
+    api_base = os.getenv('WANWEI_OPENAI_COMPATIBLE_BASE', '').strip()
+    api_model = os.getenv('WANWEI_OPENAI_COMPATIBLE_MODEL', '').strip() if model == 'default' else model
+
+    if api_base and api_model:
+        try:
+            allowlist_env = os.getenv('WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST')
+            allowlist = [h.strip() for h in allowlist_env.split(',') if h.strip()] if allowlist_env else None
+            validate_external_url(api_base, allowlist=allowlist)
+            status, latency_ms, text = _openai_compatible_smoke(
+                api_base,
+                '',
+                api_model,
+                '',
+                512,
+            )
+            # Re-run with actual messages payload
+            payload = {
+                'model': api_model,
+                'messages': messages,
+                'temperature': 0.7,
+                'max_tokens': 512,
+                'stream': False,
+            }
+            headers = {'Content-Type': 'application/json'}
+            with httpx.Client(timeout=90, follow_redirects=False) as client:
+                response = client.post(api_base.rstrip('/') + '/chat/completions', json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+            choices = data.get('choices') or []
+            content = choices[0].get('message', {}).get('content', '') if choices else ''
+            return {
+                'provider': 'openai_compatible',
+                'model': api_model,
+                'content': content,
+                'latency_ms': latency_ms,
+                'status': 'ok',
+            }
+        except Exception:
+            pass
+
+    # Fallback: local_mock deterministic response
+    return {
+        'provider': 'local_mock',
+        'model': 'memoryops-local-mock',
+        'content': '（local_mock 回复）我收到了你的消息，正在思考中……',
+        'latency_ms': 0,
+        'status': 'ok',
+    }
+
+
+@app.post('/soul/chat')
+def soul_chat(req: SoulChatIn):
+    """Soul-injected chat endpoint.
+
+    1. Inject soul prompt into messages
+    2. Retrieve relevant memories (optional enrichment)
+    3. Call model gateway
+    4. Perception intake on user + assistant turns
+    5. Tune response style by affect
+    6. Return full result
+    """
+    soul_id = req.soul_id
+
+    # 1. Soul injection
+    routed = route_chat(soul_id, req.messages)
+    injected_messages = routed['injected_messages']
+
+    # 2. Perception: intake user messages
+    user_contents = [m['content'] for m in req.messages if m.get('role') == 'user']
+    for content in user_contents:
+        intake_perception(soul_id, role='user', content=content)
+
+    # 3. Call model gateway
+    completion = _chat_complete(injected_messages, model=req.model)
+
+    # 4. Perception: intake assistant reply
+    assistant_content = completion.get('content', '')
+    if assistant_content:
+        intake_perception(soul_id, role='assistant', content=assistant_content)
+
+    # 5. Tune response style by current affect
+    current_affect = load_affect(soul_id)
+    tuned_content = tune_response_style(assistant_content, current_affect)
+    completion['content'] = tuned_content
+
+    return {
+        'soul_id': soul_id,
+        'injection_prompt': routed['injection_prompt'],
+        'messages': injected_messages,
+        'completion': completion,
+    }
+
 # v0.6 MemoryOps Runtime endpoints
 @app.post('/memory/v2/capsules')
 def v2_write_capsule(req: CapsuleWriteIn):
@@ -865,3 +1094,8 @@ def v2_reflection(req: ReflectionIn):
 @app.get('/audit/logs')
 def audit_logs(limit:int=50,trace_id:str|None=None):
     return {'items':list_logs(limit,trace_id)}
+
+# 万枢协作平台聚合路由：platform_api 包自动发现子模块 router，
+# 单个子模块导入失败仅告警跳过，不影响整体启动。
+from app.platform_api import api_router as platform_api_router
+app.include_router(platform_api_router, prefix='/platform')

@@ -206,4 +206,33 @@ export const api = {
   deepeningVisualVerificationProtocol: () => req<any>('/deepening/visual-verification/protocol'),
   deepeningVisualVerificationChecklistDryRun: (body: Record<string, unknown>) =>
     req<any>('/deepening/visual-verification/checklist-dry-run', { method: 'POST', body: JSON.stringify(body) }),
+  // v0.11 Soul Awakening
+  soulConnect: (soulId?: string) =>
+    req<{ soul_id: string; injection_prompt: string; persona: any }>('/soul/connect', {
+      method: 'POST',
+      body: JSON.stringify({ soul_id: soulId || null }),
+    }),
+  soulChat: (soulId: string, messages: any[], model = 'default') =>
+    req<any>('/soul/chat', {
+      method: 'POST',
+      body: JSON.stringify({ soul_id: soulId, messages, model }),
+    }),
+  soulState: (soulId: string) => req<any>(`/soul/state/${encodeURIComponent(soulId)}`),
+  soulPersonaUpdate: (soulId: string, body: Record<string, unknown>) =>
+    req<any>(`/soul/persona/${encodeURIComponent(soulId)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  soulAffect: (soulId: string) => req<any>(`/soul/affect/${encodeURIComponent(soulId)}`),
+  soulAffectPut: (soulId: string, trigger: string, intensity = 1.0) =>
+    req<any>(`/soul/affect/${encodeURIComponent(soulId)}?trigger=${encodeURIComponent(trigger)}&intensity=${intensity}`, { method: 'PUT' }),
+  soulDream: (soulId: string) =>
+    req<any>('/soul/dream', { method: 'POST', body: JSON.stringify({ soul_id: soulId }) }),
+}
+
+// ── Soul 追加封装（Worker E，纯追加，未改既有代码） ──
+// POST /soul/dream 的 SoulDreamIn 要求 task_id 必填，既有 api.soulDream 未携带会被 422 拒绝，
+// 故另立此封装供梦境触发使用。
+export function soulDreamCycle(soulId: string, taskId = 'manual-dream'): Promise<any> {
+  return req<any>('/soul/dream', {
+    method: 'POST',
+    body: JSON.stringify({ soul_id: soulId, task_id: taskId }),
+  })
 }

@@ -1,0 +1,113 @@
+{
+  "name": "wanwei-shuyi-desktop",
+  "productName": "wanwei-shuyi-desktop",
+  "version": "0.11.0",
+  "private": true,
+  "description": "宛委·枢忆 OSAgent 秘府控制台 — 麒麟 Linux 桌面客户端（Electron 封装，Web 业务代码零改动）",
+  "main": "src/main.js",
+  "author": "WanWei Shuyi Team",
+  "license": "Mulan-PSL-2.0",
+  "homepage": "https://document.kylinos.cn/document/center",
+  "scripts": {
+    "start": "electron .",
+    "pack:dir": "electron-builder --dir",
+    "pack:deb": "bash scripts/build-linux.sh deb",
+    "pack:rpm": "bash scripts/build-linux.sh rpm",
+    "pack:all": "bash scripts/build-linux.sh all"
+  },
+  "devDependencies": {
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "cn.wanwei.shuyi.console",
+    "productName": "wanwei-shuyi-desktop",
+    "executableName": "wanwei-shuyi-desktop",
+    "copyright": "Copyright © 2026 WanWei Shuyi Team",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icons/**/*"
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "rpm"
+      ],
+      "category": "Utility",
+      "icon": "build/icons",
+      "maintainer": "WanWei Shuyi Team <dev@wanwei.example.cn>",
+      "vendor": "WanWei Shuyi Team",
+      "synopsis": "枢忆·花朝 秘府控制台",
+      "description": "宛委·枢忆 MemoryOps Autopilot Platform 的麒麟桌面客户端。内嵌 FastAPI 后端与 Vue3 控制台，与 Web 端共享同一套业务代码。",
+      "desktop": {
+        "Name": "枢忆·花朝",
+        "Name[zh_CN]": "枢忆·花朝",
+        "GenericName": "MemoryOps Console",
+        "GenericName[zh_CN]": "秘府控制台",
+        "Comment": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
+        "Comment[zh_CN]": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
+        "Categories": "Utility;Development;",
+        "Terminal": "false",
+        "StartupWMClass": "wanwei-shuyi-desktop"
+      }
+    },
+    "deb": {
+      "depends": [
+        "python3 (>= 3.10)",
+        "python3-venv",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils"
+      ],
+      "afterInstall": "packaging/linux/postinst.sh",
+      "afterRemove": "packaging/linux/postrm.sh"
+    },
+    "rpm": {
+      "depends": [
+        "python3 >= 3.10",
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils"
+      ],
+      "afterInstall": "packaging/linux/postinst.sh",
+      "afterRemove": "packaging/linux/postrm.sh"
+    },
+    "extraFiles": [
+      {
+        "from": "packaging/linux/systemd/wanwei-shuyi-desktop.service",
+        "to": "systemd/wanwei-shuyi-desktop.service"
+      },
+      {
+        "from": "packaging/linux/autostart/wanwei-shuyi-desktop.desktop",
+        "to": "autostart/wanwei-shuyi-desktop.desktop"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.venv/**",
+          "!**/tests/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../frontend/console-vue/dist",
+        "to": "frontend/console-vue/dist"
+      }
+    ]
+  }
+}

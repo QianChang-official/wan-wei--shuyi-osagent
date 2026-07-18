@@ -1,48 +1,22 @@
-# 宛委·枢忆 MemoryOps Autopilot Platform
+# 宛委·枢忆 万枢平台
 
-面向麒麟 OS Agent 的端侧记忆治理、检索、评测和安全工作流研究原型。
+端侧记忆治理与麒麟桌面级 AI 聊天协作平台（FastAPI + Vue3 花朝控制台 + Electron 麒麟桌面端）。
 
-> 当前版本：v0.10.0-delivery-hardening。这是可运行的单节点 alpha 与参赛研发底座，不是高可用生产平台；所有 partial、planned 和仅在特定环境验证的能力均保留明确边界。
+> 当前版本：v0.11.0「万枢」。这是可运行的单节点 alpha，不是高可用生产平台；凡标注 stub / simulated / 规划的能力，均不构成已可用承诺。
 
-## 文档中心
+## 序
 
-[文档中心](文档中心_DOCUMENTATION_HUB.md)收录项目全文文档，并按项目与版本、架构与运行时、记忆与 Schema、治理与安全、API 与工作流、评测与合规、麒麟适配、部署与运维、研究资料和历史备份分类。它是根目录唯一的文档入口；每份收录内容都保留来源路径、状态、哈希和稳定锚点，便于审阅和追溯。
+荐读 / 序文：[知乎专栏文章](https://zhuanlan.zhihu.com/p/85370228)。本文为项目序文与背景阅读，建议先读此文再读下文。
 
-## 可运行能力
+## 故事
 
-| 能力 | 当前实现 | 运行边界 |
-| --- | --- | --- |
-| 记忆运行时 | FastAPI、SQLite、FTS5、MemoryCapsule 2.0、Policy Gate、Evidence Cards、审计和 Vue 同源控制台 | 单节点本地运行时 |
-| 记忆操作 | Capsule 写入、列表、检索、命令、复盘，以及 preview/confirm 的精准遗忘 | 受策略门和审计约束 |
-| 检索 | 官方 Kylin embedding/vector SDK 可用时原生向量检索优先；不可用或失败时显式回退 SQLite FTS5 | 原生 SDK 是可选能力，不是所有环境的前提 |
-| 工作流 | SQLite 持久化的安全 dry-run：run、trace、artifacts 和 audit | 不执行危险工具动作；模型生成延迟单独报告 |
-| 模型接入 | local_mock 离线可用；显式配置的本地 OpenAI-compatible endpoint 可做真实 smoke | Anthropic/Gemini 是 catalog/configuration stub，不宣称已接入生产调用 |
-| 交付与防护 | 非 root 容器、只读根文件系统、默认 localhost 绑定、生产密钥约束、health/readiness、受保护 metrics、Windows/Linux CI 与容器 smoke | 单节点，不提供多副本高可用或生产 SLA |
+《吴越春秋》载，大禹治水至宛委山，得金简玉字之书，通山川之理。宛委山因传为藏书之地，后人以「宛委」称典籍汇聚之所；清代编《宛委别藏》，取义亦在此。
 
-## 已验证证据
+我们把端侧记忆平台命名为「宛委·枢忆」：宛委主藏书，象征把记忆与知识留在自己机器里；枢忆主枢机，象征记忆可被检索、被治理、被审计。v0.11.0 在记忆底座之上长出协作层，取名「万枢」——枢机万千，调度与协作皆在一台信创桌面之内。
 
-| 项目 | 结果 | 范围 |
-| --- | --- | --- |
-| MemoryArena-Lite | 5 cases、16 assertions 全部通过；unsafe_autonomy_rate=0.0 | misleading_memory_rate 与 production_task_success_rate 仍为 pending |
-| 本机 SQLite 检索 | capsule_search_zh p95 为 0.8072 ms | 100 次、50 个 seed capsules、单机单进程、排除模型生成延迟 |
-| Kylin SDK 快照 | Kylin V11 2603 x86_64 QEMU/WHPX VM 的捕获源码快照中，官方 embedding/vector Bridge、原生写入、语义检索、遗忘、重建和延迟采样均有原始证据 | 30 次 loopback HTTP 搜索 p50 195.320 ms、p95 246.473 ms；不覆盖最终合并提交、物理目标硬件、LoongArch/ARM、OCR、大规模数据、长期稳定性或 SLA |
+为什么坚持端侧？因为记忆是私产。模型密钥不出机，记忆数据不出机，危险改动必经人审。万枢不是把 Web 控制台套一层浏览器壳，而是接管浏览器给不了的系统能力：后端守护、系统托盘、开机自启、防睡眠、局域网手机伴侣、浮动小窗。架构理念参照 stablyai/orca（worktree-native、多智能体并行、人在环审查），遵循麒麟桌面开发标准，全离线可跑。
 
-详见[兼容性测试报告](文档中心_DOCUMENTATION_HUB.md#doc-compatibility-test-report-b002acd2)、[Kylin SDK 集成说明](文档中心_DOCUMENTATION_HUB.md#doc-kylin-native-sdk-integration-29604159)、[评测说明](文档中心_DOCUMENTATION_HUB.md#doc-evaluation-52ba5bd9)和[生产记忆评测](文档中心_DOCUMENTATION_HUB.md#doc-production-memory-eval-fae4873e)。该 VM 快照不覆盖其后的源码提交；待交付的最终提交仍须在目标 VM 按精确源码哈希重新构建并重跑证据。
-
-## 赛题映射
-
-| 赛题方向 | 项目支撑 | 状态 |
-| --- | --- | --- |
-| 多源数据接入 | 输入校验、source layer、JSON/Markdown/PDF/日志入口设计 | partial |
-| 偏好与知识记忆 | MemoryCapsule、偏好/知识双轨、provenance 与关系边 | partial |
-| 安全过滤与遗忘 | Policy Gate、确认门、quarantine/reject、遗忘预览与审计 | 可运行链路 |
-| 关联检索 | 原生向量优先、FTS5 后备、Evidence Cards | 可运行链路，SDK 依环境可选 |
-| 量化评测 | MemoryArena-Lite、报告和指标接口 | 可运行基线；正式赛题硬指标待补齐 |
-| 麒麟适配 | Kylin VM SDK 证据、Bridge、兼容性报告 | VM 快照已验证；物理硬件/其他架构/OCR 待验证 |
-
-完整映射见[竞赛要求覆盖矩阵](文档中心_DOCUMENTATION_HUB.md#doc-competition-requirement-coverage-beaccf0d)。
-
-## 快速开始
+## 部署
 
 前置条件：Python 3.10+、Node.js 20+、npm 10+。
 
@@ -51,12 +25,12 @@
     powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
     powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1
 
-控制台：http://127.0.0.1:8010/console/
-
 ### Linux / 麒麟 OS
 
     bash scripts/setup.sh
     bash scripts/run_dev.sh
+
+控制台入口：http://127.0.0.1:8010/console/ （万枢工作台与既有 MemoryOps Studio 同源）。
 
 ### 容器
 
@@ -67,31 +41,51 @@
 
 Compose 默认以生产模式运行，要求通过 secret 文件提供 API key，并仅将端口绑定到 127.0.0.1，除非显式修改配置。
 
-## 验证
+### 麒麟 deb 安装包
 
-    .\scripts\smoke.ps1
-    .\backend\.venv\Scripts\python.exe -m pytest
-    .\scripts\run_eval.ps1
-    .\scripts\verify.ps1 -SkipInstall -IncludeArena
+从 GitHub Releases 页面下载麒麟 deb 安装包后安装即可（deb 打包上架通道随版本规划推进，以 Releases 页面实际提供的产物为准）。
 
-smoke.ps1 覆盖 health/readiness、鉴权、Memory v2、workflow 和 metrics；verify.ps1 执行 Python 编译、后端测试、两次确定性前端生产构建，并可选运行 MemoryArena。
+## 性能与教程
 
-## 关键入口
+### 性能实测
 
-| 接口或页面 | 用途 |
-| --- | --- |
-| /console/ | Vue MemoryOps Studio |
-| /health/live、/health/ready | 存活与就绪探针 |
-| /memory/v2/capsules、/memory/v2/search | Capsule 写入、读取和检索 |
-| /memory/forget/preview、/memory/forget/confirm | 受确认的精准遗忘 |
-| /workflow/runs | 持久化安全 dry-run、trace 和 artifacts |
-| /kylin/sdk/status | 原生 SDK/索引状态，需正常 API 鉴权 |
-| /metrics | 受保护的 Prometheus 文本指标 |
+| 项目 | 结果 | 范围 |
+| --- | --- | --- |
+| 本机 SQLite FTS5 检索 | capsule_search_zh p95 为 0.8072 ms | 100 次、50 个 seed capsules、单机单进程、排除模型生成延迟 |
+| 麒麟原生 SDK（V11 VM） | 30 次 loopback HTTP 搜索 p50 195.320 ms、p95 246.473 ms | Kylin V11 2603 x86_64 QEMU/WHPX VM 快照证据；不覆盖物理目标硬件、其他架构与长期稳定性 |
+| MemoryArena-Lite | 5 cases、16 assertions 全部通过，unsafe_autonomy_rate=0.0 | misleading_memory_rate 与 production_task_success_rate 仍为 pending |
+
+完整证据与边界见[文档中心](文档中心_DOCUMENTATION_HUB.md)。
+
+### 教程：第一次使用万枢
+
+1. **发第一段对话**：打开 http://127.0.0.1:8010/console/ 进入「万枢工作台」，在输入框直接提问即可；离线环境下走 local_mock 通路，无需任何密钥。
+2. **配置模型接入**：进入「模型接入」视图，31 家供应商中任选一家，填入 API key 保存。local 通路为真实探测，其余供应商的真实外部调用在 alpha 阶段诚实标注为 stub，不宣称已接通生产调用。
+3. **创建智能体并选档位**：进入「智能体」视图新建智能体，选择思考深度（low / medium / high / xhigh / max / ultracode）与工作档位（人工审查 / 沙盒工作 / 整台设备）。「人工审查」档位下关键步骤会挂起，须人工放行后才继续。
+4. **说「记住」生成记忆指令**：在对话中说「记住……」，系统会把它追加为一条记忆指令（上限 200 行，超限时淘汰最旧），可在「记忆中枢」查看与编辑；「梦境归档」则把近期会话整理为时间线，alpha 单节点为手动或启动时补跑。
+5. **手机局域网控制**：桌面端一键切换后端监听 `127.0.0.1 ↔ 0.0.0.0`，自动生成手机访问地址，浏览器打开 `/mobile` 页面即可在局域网内用手机操控工作台。
+
+## 许可证
+
+本项目采用**木兰宽松许可证 第2版（Mulan PSL v2）**。
+
+要点：
+
+- 宽松许可证：允许自由使用、复制、修改、分发，包括商用，无 copyleft 传染义务。
+- 明确授予专利许可，并含专利反诉终止条款，降低专利诉讼风险。
+- 中英双语同等法律效力，条款表述符合中国法律法规语境。
+- 与主流宽松许可证兼容性好，已被麒麟 / openKylin 等国产开源生态广泛采用。
+
+为何选择它：本项目面向麒麟桌面与信创生态，采用国产开源许可证木兰宽松许可证第2版，既保留宽松使用的自由度，又与麒麟 / openKylin 生态的许可证惯例一致。
 
 ## 真实边界
 
-- 当前系统是 alpha research prototype，不宣称企业生产级、多副本高可用或 SLA。
-- 正式偏好提取准确率、知识检索召回率和冲突处理正确率尚未形成赛题级实测报告。
-- 研究复现与 Deepening 接口提供 catalog、schema、读取或 dry-run，不等同于外部系统的完整官方复现或模型训练。
+- 当前系统是单节点 alpha，不宣称企业生产级、多副本高可用或 SLA。
+- 31 家模型接入中，未接通真实外部调用的供应商均诚实标注为 stub；OAuth 设备授权流程为模拟 stub。
+- 沙盒执行、梦境「每夜整理」等自动化能力在 alpha 阶段为手动 / 启动时补跑或受约束的 dry-run。
 - 原生 Kylin 检索在 SDK 不可用时回退 FTS5；OCR、物理目标硬件和其他目标架构仍需独立验收。
-- 公开 Release 仍等待项目所有者选择许可证；自动化不会擅自决定法律条款。
+- 正式偏好提取准确率、知识检索召回率和冲突处理正确率尚未形成赛题级实测报告。
+
+## 文档中心
+
+[文档中心](文档中心_DOCUMENTATION_HUB.md)收录项目全文文档，并按项目与版本、架构与运行时、记忆与 Schema、治理与安全、API 与工作流、评测与合规、麒麟适配、部署与运维、研究资料和历史备份分类。万枢平台架构详见 [docs/万枢平台-架构设计.md](docs/万枢平台-架构设计.md)。

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { api } from '@/api/client'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfCard from '@/components/gf/GfCard.vue'
+import GfButton from '@/components/gf/GfButton.vue'
+import GfTag from '@/components/gf/GfTag.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 const taskId = ref('task_demo_' + Math.random().toString(36).slice(2, 8))
 const goalAchieved = ref(true)
@@ -26,58 +31,159 @@ async function run() {
 }
 
 const ACTION_LABEL: Record<string,string> = { reinforce:'强化', deprecate:'废弃', promote:'提升', conflict_mark:'标冲突' }
+type TagTone = 'rouge' | 'dai' | 'bamboo' | 'gold' | 'ink'
+const ACTION_TONE: Record<string, TagTone> = { reinforce: 'bamboo', deprecate: 'ink', promote: 'gold', conflict_mark: 'rouge' }
 </script>
 
 <template>
   <div>
-    <div class="page-head">
-      <h1>句芒演化 · 复盘反思</h1>
-      <p>复盘反思 — 任务结束后复盘，触发记忆演化动作（强化 / 废弃 / 提升为风险记忆）</p>
-    </div>
-    <div class="form">
+    <PageHero
+      seal="鉴"
+      title="兰台复盘"
+      en="Reflection"
+      sub="任务结束后复盘，触发记忆演化动作（强化 / 废弃 / 提升为风险记忆）"
+    />
+
+    <GfCard seal="复" title="复盘录" class="form-card">
       <label>task_id</label>
       <input v-model="taskId" />
-      <label><input type="checkbox" v-model="goalAchieved" /> 目标达成 goal_achieved</label>
+      <label class="check-row">
+        <input type="checkbox" v-model="goalAchieved" />
+        <span>目标达成 goal_achieved</span>
+      </label>
       <label>有帮助的记忆 ID（逗号分隔）→ reinforce（强化）</label>
       <input v-model="helpful" placeholder="cap_xxx, cap_yyy" />
       <label>误导的记忆 ID（逗号分隔）→ deprecate（废弃）</label>
       <input v-model="misleading" placeholder="cap_zzz" />
       <label>新风险 → 写入风险记忆 risk memory（promote 提升）</label>
       <textarea v-model="newRisk" rows="2"></textarea>
-      <button @click="run" :disabled="loading">{{ loading ? '复盘中…' : '▶ 提交复盘' }}</button>
-    </div>
+      <template #footer>
+        <GfButton @click="run" :disabled="loading">{{ loading ? '复盘中…' : '提交复盘' }}</GfButton>
+      </template>
+    </GfCard>
+
     <div v-if="err" class="err">{{ err }}</div>
-    <div v-if="result" class="result">
+
+    <GfCard v-if="result" class="result-card">
+      <template #header>
+        <span class="rc-seal">鉴</span>
+        <h3 class="rc-title">演化动作 <span class="cnt">{{ result.evolution_actions?.length || 0 }}</span></h3>
+      </template>
       <div class="rid">复盘编号 {{ result.reflection_id }}</div>
-      <h3>演化动作 <span class="cnt">{{ result.evolution_actions?.length || 0 }}</span></h3>
-      <div v-if="!result.evolution_actions?.length" class="empty">本次复盘未触发演化动作</div>
+      <GfEmpty v-if="!result.evolution_actions?.length" text="本次复盘未触发演化动作" />
       <div v-for="(a, i) in result.evolution_actions" :key="i" class="action">
-        <span class="act-badge">{{ ACTION_LABEL[a.action] || a.action }}</span>
+        <GfTag :tone="ACTION_TONE[a.action] || 'ink'">{{ ACTION_LABEL[a.action] || a.action }}</GfTag>
         <span class="act-cap">{{ a.capsule_id }}</span>
-        <span v-if="a.memory_class" class="act-cls">{{ a.memory_class }}</span>
+        <GfTag v-if="a.memory_class" tone="dai">{{ a.memory_class }}</GfTag>
       </div>
-    </div>
+    </GfCard>
   </div>
 </template>
 
 <style scoped>
-.page-head { margin-bottom: 24px; }
-.page-head h1 { font-size: 28px; font-weight: 700; letter-spacing: 3px; }
-.page-head p { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
-.form { border: 1px solid var(--line); background: rgba(255,255,255,.35); padding: 16px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 9px; max-width: 640px; }
-label { font-size: 12px; color: var(--ink-soft); }
-input, textarea { width: 100%; border: 1px solid var(--line); padding: 7px 10px; background: rgba(255,255,255,.6); font-family: inherit; font-size: 13px; color: var(--ink); }
-button { align-self: flex-start; background: var(--ink); color: #EFE7D3; border: none; padding: 9px 22px; font-family: inherit; font-size: 13px; letter-spacing: 1px; cursor: pointer; }
-button:hover { background: var(--cinnabar); }
-button:disabled { opacity: .5; }
-.err { color: var(--cinnabar); font-size: 13px; }
-.result { border: 1px solid var(--line); background: rgba(255,255,255,.3); padding: 16px; max-width: 640px; }
-.rid { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; }
-h3 { font-size: 15px; letter-spacing: 2px; margin-bottom: 12px; }
-.cnt { font-size: 11px; background: var(--cinnabar); color: #fff; border-radius: 10px; padding: 1px 7px; }
-.empty { font-size: 13px; color: var(--ink-soft); }
-.action { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--line); margin-bottom: 8px; }
-.act-badge { background: var(--jade); color: #fff; padding: 2px 10px; font-size: 12px; border-radius: 2px; }
-.act-cap { font-family: var(--mono); font-size: 12px; color: var(--ink); }
-.act-cls { background: var(--mineral); color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 2px; }
+.form-card { max-width: 640px; margin-bottom: 20px; }
+label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--ink-muted);
+  margin-bottom: 5px;
+}
+input, textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  padding: 8px 12px;
+  background: var(--card);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  transition: border-color .18s ease, box-shadow .18s ease;
+  margin-bottom: 12px;
+}
+input:focus, textarea:focus {
+  outline: none;
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--rouge-glow);
+}
+textarea { resize: vertical; }
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  letter-spacing: 1px;
+}
+.check-row input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: var(--cinnabar);
+  flex-shrink: 0;
+}
+.err {
+  color: var(--cinnabar);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 32%, transparent);
+  background: color-mix(in srgb, var(--cinnabar) 7%, transparent);
+  border-radius: var(--radius-small);
+  max-width: 640px;
+}
+.result-card { max-width: 640px; }
+.rc-seal {
+  font-family: var(--font-kai);
+  font-size: 13px;
+  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: #FDF6E9;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  border-radius: var(--radius-seal);
+  box-shadow: 0 0 10px var(--cinnabar-glow);
+  flex-shrink: 0;
+}
+.rc-title {
+  font-family: var(--font-kai);
+  font-size: 20px;
+  letter-spacing: 3px;
+  color: var(--ink);
+  font-weight: 700;
+}
+.cnt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  color: #FDF6E9;
+  border-radius: 999px;
+  padding: 1px 9px;
+  margin-left: 6px;
+  letter-spacing: 0;
+  box-shadow: 0 0 8px var(--cinnabar-glow);
+}
+.rid { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); margin-bottom: 14px; }
+.action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  background: var(--card);
+  margin-bottom: 8px;
+  transition: background .18s ease, border-color .18s ease;
+}
+.action:hover {
+  background: color-mix(in srgb, var(--rouge) 8%, transparent);
+  border-color: color-mix(in srgb, var(--rouge) 28%, transparent);
+}
+.act-cap { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
 </style>

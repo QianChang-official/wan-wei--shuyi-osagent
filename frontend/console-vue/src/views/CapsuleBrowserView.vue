@@ -3,6 +3,10 @@ import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import CapsuleDetail from '@/components/CapsuleDetail.vue'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfCard from '@/components/gf/GfCard.vue'
+import GfButton from '@/components/gf/GfButton.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 const route = useRoute()
 
@@ -12,9 +16,9 @@ const loading = ref(true)
 const err = ref('')
 
 const LIFECYCLE_COLOR: Record<string,string> = {
-  active: 'var(--mineral)', reinforced: 'var(--pine)', candidate: 'var(--gamboge)',
+  active: 'var(--dai)', reinforced: 'var(--bamboo)', candidate: 'var(--gold)',
   quarantined: 'var(--cinnabar)', rejected: 'var(--cinnabar)', deprecated: 'var(--ink-soft)',
-  forgotten: 'var(--ink-soft)', conflicted: 'var(--gamboge)',
+  forgotten: 'var(--ink-soft)', conflicted: 'var(--gold)',
 }
 
 async function load() {
@@ -35,45 +39,79 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <h1>枢忆核 · 记忆容器</h1>
-      <p>MemoryCapsule 2.0 浏览器 — 点击查看治理 / 状态 / 溯源</p>
-      <button class="btn-ghost" @click="load">刷新</button>
+    <div class="hero-wrap">
+      <PageHero
+        seal="忆"
+        title="枢忆核"
+        en="Memory Capsules"
+        sub="MemoryCapsule 2.0 浏览器 — 点击查看治理 / 状态 / 溯源"
+      />
+      <GfButton class="hero-act" variant="ghost" small @click="load">刷新</GfButton>
     </div>
+
     <div v-if="err" class="err">{{ err }}</div>
-    <div v-if="loading" class="muted">加载中…</div>
-    <div v-else-if="!items.length" class="muted">暂无记忆容器。去「命令回路」或「写入」创建。</div>
+    <div v-if="loading" class="loading">研墨中…</div>
+    <GfEmpty v-else-if="!items.length" text="匣中尚无记忆容器 — 可去「司契指挥」或「写入」创建一枚" />
+
     <div class="cap-layout" v-else>
-      <ul class="cap-list">
-        <li v-for="c in items" :key="c.capsule_id" @click="open(c.capsule_id)"
-            :class="{ sel: selected?.capsule_id === c.capsule_id }">
-          <span class="cap-class">{{ c.memory_class }}</span>
-          <span class="cap-dot" :style="{ background: LIFECYCLE_COLOR[c.state?.lifecycle] || 'var(--ink-soft)' }"></span>
-          <span class="cap-life">{{ c.state?.lifecycle }}</span>
-          <span class="cap-id">{{ c.capsule_id }}</span>
-        </li>
-      </ul>
+      <GfCard :pad="false" class="cap-list-card">
+        <ul class="cap-list">
+          <li v-for="c in items" :key="c.capsule_id" @click="open(c.capsule_id)"
+              :class="{ sel: selected?.capsule_id === c.capsule_id }">
+            <span class="cap-class">{{ c.memory_class }}</span>
+            <span class="cap-dot" :style="{ background: LIFECYCLE_COLOR[c.state?.lifecycle] || 'var(--ink-soft)' }"></span>
+            <span class="cap-life">{{ c.state?.lifecycle }}</span>
+            <span class="cap-id">{{ c.capsule_id }}</span>
+          </li>
+        </ul>
+      </GfCard>
       <CapsuleDetail :capsule="selected" />
     </div>
   </div>
 </template>
 
 <style scoped>
-.page-head { margin-bottom: 20px; position: relative; }
-.page-head h1 { font-size: 28px; font-weight: 700; letter-spacing: 3px; }
-.page-head p { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
-.btn-ghost { position: absolute; top: 2px; right: 0; border: 1px solid var(--line); background: transparent; padding: 6px 14px; cursor: pointer; font-family: inherit; color: var(--ink); }
-.btn-ghost:hover { border-color: var(--cinnabar); color: var(--cinnabar); }
-.err { color: var(--cinnabar); font-size: 13px; margin-bottom: 10px; }
-.muted { color: var(--ink-soft); font-size: 13px; }
-.cap-layout { display: grid; grid-template-columns: 340px 1fr; gap: 18px; }
-.cap-list { border: 1px solid var(--line); background: rgba(255,255,255,.3); max-height: 62vh; overflow-y: auto; }
-.cap-list li { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12px; }
-.cap-list li:hover { background: rgba(178,58,46,.06); }
-.cap-list li.sel { background: rgba(178,58,46,.1); border-left: 3px solid var(--cinnabar); }
-.cap-class { font-weight: 700; color: var(--mineral); min-width: 74px; }
-.cap-dot { width: 8px; height: 8px; border-radius: 50%; }
+.hero-wrap { position: relative; }
+.hero-act { position: absolute; top: 6px; right: 0; }
+.err {
+  color: var(--cinnabar);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 32%, transparent);
+  background: color-mix(in srgb, var(--cinnabar) 7%, transparent);
+  border-radius: var(--radius-small);
+}
+.loading {
+  font-family: var(--font-kai);
+  font-size: 14px;
+  letter-spacing: 4px;
+  color: var(--ink-muted);
+  padding: 40px 0;
+  text-align: center;
+}
+.cap-layout { display: grid; grid-template-columns: 340px 1fr; gap: 20px; align-items: start; }
+.cap-list-card:hover { transform: none; }
+.cap-list { max-height: 62vh; overflow-y: auto; list-style: none; }
+.cap-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background .18s ease, box-shadow .18s ease;
+}
+.cap-list li:last-child { border-bottom: none; }
+.cap-list li:hover { background: color-mix(in srgb, var(--rouge) 8%, transparent); }
+.cap-list li.sel {
+  background: color-mix(in srgb, var(--rouge) 13%, transparent);
+  box-shadow: inset 3px 0 0 var(--cinnabar);
+}
+.cap-class { font-weight: 700; color: var(--dai); min-width: 74px; letter-spacing: 1px; }
+.cap-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px var(--rouge-glow); flex-shrink: 0; }
 .cap-life { color: var(--ink-soft); min-width: 72px; }
-.cap-id { font-family: var(--mono); font-size: 10px; color: var(--ink-soft); margin-left: auto; }
+.cap-id { font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted); margin-left: auto; }
 @media (max-width: 900px) { .cap-layout { grid-template-columns: 1fr; } }
 </style>
