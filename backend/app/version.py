@@ -19,7 +19,7 @@ VERSION_HISTORY = [
             "桌面端防睡眠、局域网手机控制、浮动工作区小窗",
             "单节点 alpha；未接通的真实外部调用以 stub 诚实标注",
         ],
-        "status": "in_progress",
+        "status": "released",
     },
     {
         "version": "v0.10.0-delivery-hardening",
