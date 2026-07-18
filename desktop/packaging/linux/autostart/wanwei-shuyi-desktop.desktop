@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=枢忆·花朝
+Name[zh_CN]=枢忆·花朝
+GenericName=MemoryOps Console
+GenericName[zh_CN]=秘府控制台
+Comment=宛委·枢忆 OSAgent 秘府控制台桌面客户端
+Comment[zh_CN]=宛委·枢忆 OSAgent 秘府控制台桌面客户端
+Exec=/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop %U
+Icon=wanwei-shuyi-desktop
+Terminal=false
+Categories=Utility;Development;
+StartupWMClass=wanwei-shuyi-desktop
+X-GNOME-Autostart-enabled=true

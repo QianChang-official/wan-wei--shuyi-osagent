@@ -1094,3 +1094,8 @@ def v2_reflection(req: ReflectionIn):
 @app.get('/audit/logs')
 def audit_logs(limit:int=50,trace_id:str|None=None):
     return {'items':list_logs(limit,trace_id)}
+
+# 万枢协作平台聚合路由：platform_api 包自动发现子模块 router，
+# 单个子模块导入失败仅告警跳过，不影响整体启动。
+from app.platform_api import api_router as platform_api_router
+app.include_router(platform_api_router, prefix='/platform')

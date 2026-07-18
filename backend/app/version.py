@@ -4,10 +4,23 @@
 统一版本号，供 /health 端点和其他模块使用。
 """
 
-VERSION = "v0.10.0-delivery-hardening"
+VERSION = "v0.11.0-wanshu"
 
 # 版本历史
 VERSION_HISTORY = [
+    {
+        "version": "v0.11.0-wanshu",
+        "date": "2026-07-18",
+        "features": [
+            "万枢平台：providers 31 家模型接入与统一模型网关门面",
+            "agents 多智能体编排、spaces 项目任务空间（tree-main-perch）",
+            "automation AI 可编辑工作流、knowledge 知识库",
+            "memory_center 记忆指令与梦境、system_svc 系统服务、mcp_hub MCP 枢纽",
+            "桌面端防睡眠、局域网手机控制、浮动工作区小窗",
+            "单节点 alpha；未接通的真实外部调用以 stub 诚实标注",
+        ],
+        "status": "in_progress",
+    },
     {
         "version": "v0.10.0-delivery-hardening",
         "date": "2026-07-10",

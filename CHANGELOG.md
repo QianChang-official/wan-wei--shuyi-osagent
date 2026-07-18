@@ -2,6 +2,24 @@
 
 本日志按时间倒序记录可追溯的项目变更。Unreleased 条目尚未形成发布版本或 Git tag，不代表已对外发布。
 
+## 2026-07-18 - v0.11.0「万枢」桌面协作平台
+
+- 新增 `backend/app/platform_api/` 万枢平台 API 聚合包，由 `app.main` 统一以 `/platform` 前缀挂载，子模块自动发现、单模块导入失败仅告警跳过，共八个后端模块：
+  - `providers`：31 家模型厂商接入目录（catalog）与用户配置管理，密钥 Fernet 加密落盘、接口只写不读；配置就绪才真实调用，否则返回明确 stub 标识。
+  - `agents`：多智能体编排运行（run），全平台共享思考深度六档（low/medium/high/xhigh/max/ultracode）与工作档位三档 gear 门禁（human_review/sandbox/device，device 默认禁用）。
+  - `spaces`：项目任务空间 tree / main / perch 三态状态机；alpha 期为目录级物理隔离 + 状态机建模，真实 `git worktree` 绑定列入 M2。
+  - `automation`：AI 可编辑工作流，规则式中文解析器把自然语言指令转为流程定义 diff（engine='mock'，诚实标注为模拟引擎）；运行模拟不真实执行 shell/http/agent/memory 步骤，仅返回 would_run 说明。
+  - `knowledge`：知识库收录、分块与检索；麒麟官方 embedding/vector SDK 可用时走原生向量检索，不可用或失败时显式回退 SQLite FTS5 并如实标注。
+  - `memory_center`：记忆指令（「记住……」快捷写入，单条不超过 200 行，写入前过 Policy Gate）与每夜梦境整理（压缩冗余、合并近义、标记冲突、生成摘要，全程审计、不做静默删除）。
+  - `system_svc`：系统服务出口（平台聚合健康、版本与模块清单、防睡眠状态镜像、LAN 模式与手机配对 token 签发、自启动状态查询）。
+  - `mcp_hub`：MCP 服务器注册表与工具调用骨架；真实 stdio/SSE 连接为 M2 主线，未连通前一切调用返回明确 simulated 标识。
+- 新增 `frontend/console-vue/src/views/platform/` 十一个中文视图：万枢工作台（WorkbenchView）、模型接入（ProvidersView）、智能体（AgentsView）、空间（SpacesView）、自动化（AutomationView）、知识库（KnowledgeView）、记忆中枢（MemoryCenterView）、会话（SessionsView）、设置（SettingsView）、帮助（HelpView）、手机伴侣（MobileView）。
+- 桌面端 `desktop/src` 新增防睡眠（`powerSaveBlocker` app/display 双模式）、局域网手机控制（后端 `127.0.0.1 ↔ 0.0.0.0` 热重启切换、私有网段 IPv4 优选、LAN token 配对）与浮动工作区小窗（420×640 无边框置顶，加载移动视图）。
+- 修复自动化模块路由：统一收敛到 `/platform/automation` 前缀，固定路径（/flows/ai-edit、/flows/schedule/overview）先于参数路径（/flows/{fid}）注册，避免被参数路径吞掉。
+- 新增 `docs/万枢平台-架构设计.md`：愿景定位、Orca 理念映射、麒麟标准符合性清单、系统架构、八模块 M1 契约、安全边界与 M1–M3 路线图。
+- 许可证改用国产木兰宽松许可证第 2 版（Mulan PSL v2）。
+- 事实边界保持诚实：本平台仍为可运行单节点 alpha；真实模型 API 调用、MCP 真实连接、git worktree 真实绑定、device 整台设备档等未接通能力一律以 stub / simulated / 默认禁用明确标注，不宣称已可用。
+
 ## Unreleased
 
 ### 2026-07-12 - 文档中心整合
@@ -45,7 +63,7 @@
 - 增加非 root 多阶段 Docker 镜像、安全默认 Compose、Windows/Linux setup、smoke、verify、backup 和 secret 初始化脚本。
 - 增加 health/readiness、受保护 metrics、请求 ID、SQLite 在线备份、完整性校验、停机恢复、生产密钥强度和可信代理限流边界。
 - 增加跨平台 CI、HTTP/容器 smoke、CodeQL、依赖审查、Trivy、SBOM 和发布前检查；README 明确 alpha、赛题就绪度和未验收边界。
-- v0.10.0-delivery-hardening 仍为 in_progress；公开 Release 仍等待所有者选择许可证。
+- v0.10.0-delivery-hardening 仍为 in_progress；公开 Release 的许可证前置条件已满足——项目所有者已选定国产开源许可证木兰宽松许可证第2版（Mulan PSL v2），全文见根目录 LICENSE。
 
 ## 2026-07-09 - v0.9.6.2 CI/CD 清理
 

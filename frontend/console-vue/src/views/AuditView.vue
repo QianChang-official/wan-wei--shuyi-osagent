@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '@/api/client'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfButton from '@/components/gf/GfButton.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 const items = ref<any[]>([])
 const loading = ref(false)
@@ -25,21 +28,25 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <h1>兰台鉴证 · 审计流水</h1>
-      <p>运行时审计记录，默认最近 50 条；支持按 workflow trace_id 过滤。</p>
-      <button class="refresh" @click="load">刷新</button>
+    <div class="hero-wrap">
+      <PageHero
+        seal="台"
+        title="审计流水"
+        en="Audit Trail"
+        sub="运行时审计记录，默认最近 50 条；支持按 workflow trace_id 过滤"
+      />
+      <GfButton class="hero-act" variant="ghost" small @click="load">刷新</GfButton>
     </div>
 
     <div class="filter-row">
       <input v-model="traceId" placeholder="trace_id 过滤，例如 trace_xxx" @keyup.enter="load" />
-      <button @click="load">按 trace 过滤</button>
-      <button @click="traceId=''; load()">清空</button>
+      <GfButton variant="ghost" small @click="load">按 trace 过滤</GfButton>
+      <GfButton variant="ghost" small @click="traceId=''; load()">清空</GfButton>
     </div>
 
     <div v-if="err" class="err">{{ err }}</div>
-    <div v-if="loading" class="muted">加载中…</div>
-    <div v-else-if="!items.length" class="empty">暂无审计记录。先写入 capsule 或运行 command loop。</div>
+    <div v-if="loading" class="loading">研墨中…</div>
+    <GfEmpty v-else-if="!items.length" text="兰台尚无新墨 — 先写入 capsule 或运行一次 command loop" />
 
     <div v-else class="timeline">
       <article v-for="row in items" :key="row.audit_id" class="audit-card">
@@ -61,25 +68,102 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page-head { margin-bottom: 22px; position: relative; }
-.page-head h1 { font-size: 28px; letter-spacing: 3px; }
-.page-head p { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
-.refresh { position: absolute; right: 0; top: 0; border: 1px solid var(--line); background: transparent; padding: 7px 15px; color: var(--ink); }
-.refresh:hover { border-color: var(--cinnabar); color: var(--cinnabar); }
-.filter-row { display: flex; gap: 8px; margin-bottom: 16px; }
-.filter-row input { flex: 1; border: 1px solid var(--line); background: rgba(255,255,255,.45); color: var(--ink); padding: 8px; }
-.filter-row button { border: 1px solid var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,46,.07); padding: 8px 12px; }
-.err { color: var(--cinnabar); font-size: 13px; }
-.muted,.empty { color: var(--ink-soft); font-size: 13px; }
-.timeline { display: flex; flex-direction: column; gap: 12px; }
+.hero-wrap { position: relative; }
+.hero-act { position: absolute; top: 6px; right: 0; }
+.filter-row { display: flex; gap: 10px; margin-bottom: 18px; align-items: center; }
+.filter-row input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--card);
+  color: var(--ink);
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.filter-row input:focus {
+  outline: none;
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--rouge-glow);
+}
+.err {
+  color: var(--cinnabar);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 32%, transparent);
+  background: color-mix(in srgb, var(--cinnabar) 7%, transparent);
+  border-radius: var(--radius-small);
+}
+.loading {
+  font-family: var(--font-kai);
+  font-size: 14px;
+  letter-spacing: 4px;
+  color: var(--ink-muted);
+  padding: 40px 0;
+  text-align: center;
+}
+.timeline { display: flex; flex-direction: column; gap: 14px; }
 .audit-card { display: grid; grid-template-columns: 42px 1fr; gap: 12px; }
 .left { display: flex; flex-direction: column; align-items: center; }
-.stamp { width: 30px; height: 30px; display: grid; place-items: center; border: 2px solid var(--cinnabar); color: var(--cinnabar); border-radius: 4px; font-weight: 700; }
-.line { flex: 1; width: 1px; background: var(--line); margin-top: 6px; }
-.body { border: 1px solid var(--line); background: rgba(255,255,255,.35); padding: 13px 15px; }
+.stamp {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-kai);
+  font-weight: 700;
+  font-size: 14px;
+  border: 1.5px solid var(--cinnabar);
+  color: var(--cinnabar);
+  border-radius: var(--radius-seal);
+  background: var(--card-solid);
+  box-shadow: 0 0 10px var(--rouge-glow);
+  flex-shrink: 0;
+}
+.line {
+  flex: 1;
+  width: 1px;
+  background: linear-gradient(180deg, var(--gold-line), transparent);
+  margin-top: 8px;
+}
+.body {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
+}
+.body:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+  border-color: var(--gold-line);
+}
 .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.head b { color: var(--cinnabar); letter-spacing: 1px; }
-.head code { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); }
-.time { font-size: 11px; color: var(--ink-soft); margin: 4px 0 8px; }
-pre { border: 1px solid var(--line); background: rgba(28,26,23,.04); padding: 10px; font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; }
+.head b {
+  font-family: var(--font-kai);
+  font-size: 15px;
+  color: var(--cinnabar);
+  letter-spacing: 2px;
+}
+.head code { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+.time { font-size: 11px; color: var(--ink-muted); margin: 4px 0 9px; letter-spacing: 1px; }
+pre {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  background: var(--bg-soft);
+  padding: 11px 13px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  max-height: 220px;
+  overflow: auto;
+}
 </style>

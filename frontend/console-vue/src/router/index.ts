@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
+import { platformRoutes } from './platform'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { title: '总览', seal: '览' } },
@@ -17,6 +18,12 @@ const routes: RouteRecordRaw[] = [
   { path: '/command', name: 'command', component: () => import('@/views/CommandView.vue'), meta: { title: '司契指挥', seal: '契' } },
   { path: '/reflection', name: 'reflection', component: () => import('@/views/ReflectionView.vue'), meta: { title: '兰台复盘', seal: '鉴' } },
   { path: '/audit', name: 'audit', component: () => import('@/views/AuditView.vue'), meta: { title: '审计流水', seal: '台' } },
+  // v0.11 Soul Awakening
+  { path: '/soul', name: 'soul', component: () => import('@/views/SoulView.vue'), meta: { title: '灵魂状态', seal: '灵' } },
+  { path: '/chat', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: '灵魂对话', seal: '话' } },
+  { path: '/dream', name: 'dream', component: () => import('@/views/DreamView.vue'), meta: { title: '梦境日志', seal: '梦' } },
+  // v0.12 万枢协作平台
+  ...platformRoutes,
 ]
 
 export const router = createRouter({

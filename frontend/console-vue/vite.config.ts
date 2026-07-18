@@ -17,6 +17,7 @@ const apiPrefixes = [
   '/workflow',
   '/reproduction',
   '/deepening',
+  '/soul',
 ]
 
 export default defineConfig(({ command }) => ({

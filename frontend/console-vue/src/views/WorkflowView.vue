@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, shallowRef } from 'vue'
 import { api } from '@/api/client'
+import PageHero from '@/components/gf/PageHero.vue'
+import GfCard from '@/components/gf/GfCard.vue'
+import GfTag from '@/components/gf/GfTag.vue'
+import GfButton from '@/components/gf/GfButton.vue'
+import GfStat from '@/components/gf/GfStat.vue'
+import GfEmpty from '@/components/gf/GfEmpty.vue'
+import InkDivider from '@/components/gf/InkDivider.vue'
 
 const loading = shallowRef(true)
 const running = shallowRef(false)
@@ -24,6 +31,15 @@ function statusText(status: string) {
   if (status === 'skipped') return '跳过'
   if (status === 'failed') return '失败'
   return status || '待运行'
+}
+
+type GfTone = 'rouge' | 'dai' | 'bamboo' | 'gold' | 'ink'
+function stageTone(status: string): GfTone {
+  if (status === 'completed' || status === 'done') return 'bamboo'
+  if (status === 'skipped' || status === 'partial') return 'gold'
+  if (status === 'failed') return 'rouge'
+  if (status === 'running') return 'dai'
+  return 'ink'
 }
 
 async function load() {
@@ -73,104 +89,115 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <h1>赛题工作流 · 工作流运行</h1>
-      <p>v0.9.3 工作流运行主线：把平台舱室收束为一条安全 dry-run OSAgent 闭环。</p>
+    <PageHero
+      seal="流"
+      title="赛题工作流"
+      en="Workflow Closed Loop"
+      sub="v0.11.0 工作流运行主线：把平台舱室收束为一条安全 dry-run OSAgent 闭环。"
+    />
+
+    <div class="stat-row">
+      <GfStat label="工作流阶段" :value="design.stages?.length || 10" tone="rouge" />
+      <GfStat label="已完成" :value="doneCount" tone="bamboo" />
+      <GfStat label="部分完成" :value="partialCount" tone="gold" />
+      <GfStat label="赛题要求映射" :value="requirementCount" tone="dai" />
+      <GfStat label="OSAgent 控制链路" :value="runSummary.latency_ms || '待运行'" hint="毫秒" />
     </div>
 
-    <section class="hero-board">
-      <div><b>{{ design.stages?.length || 10 }}</b><span>工作流阶段</span></div>
-      <div><b>{{ doneCount }}</b><span>已完成</span></div>
-      <div><b>{{ partialCount }}</b><span>部分完成</span></div>
-      <div><b>{{ requirementCount }}</b><span>赛题要求映射</span></div>
-      <div><b>{{ runSummary.latency_ms || '待运行' }}</b><span>OSAgent 控制链路 ms</span></div>
-    </section>
+    <p class="note-boundary">本页不是新增孤岛页面；它把石渠校验、司契护栏、枢忆核、通玄模型舱、百工技能舱、忘机机制、兰台鉴证和云笈导出串成一次可回放 workflow run。默认安全 dry-run：不执行危险工具，不写生产记忆，不把模型生成延迟混入 OSAgent 控制链路。</p>
 
-    <div class="boundary">本页不是新增孤岛页面；它把石渠校验、司契护栏、枢忆核、通玄模型舱、百工技能舱、忘机机制、兰台鉴证和云笈导出串成一次可回放 workflow run。默认安全 dry-run：不执行危险工具，不写生产记忆，不把模型生成延迟混入 OSAgent 控制链路。</div>
-
-    <div v-if="loading" class="muted">加载工作流...</div>
-    <div v-else-if="error" class="muted">{{ error }}</div>
+    <GfEmpty v-if="loading" text="研墨中，正在加载工作流…" />
+    <p v-else-if="error" class="error-note">{{ error }}</p>
 
     <template v-else>
-      <section class="section-block two-col">
-        <article class="panel">
-          <div class="section-title">启动一次工作流运行</div>
+      <div class="grid-two section">
+        <GfCard title="启动一次工作流运行" seal="启">
           <div class="run-row">
-            <select v-model="selectedScenario">
+            <select v-model="selectedScenario" class="gf-input">
               <option v-for="item in design.scenarios" :key="item.id" :value="item.id">{{ item.name_cn }}</option>
             </select>
-            <button :disabled="running" @click="startWorkflowRun">{{ running ? '运行中…' : '启动工作流运行' }}</button>
+            <GfButton :disabled="running" @click="startWorkflowRun">{{ running ? '运行中…' : '启动运行' }}</GfButton>
           </div>
-          <textarea v-model="userGoal"></textarea>
-          <dl v-if="run" class="run-meta">
+          <textarea v-model="userGoal" class="gf-input gf-textarea"></textarea>
+          <div v-if="running" class="run-live"><GfTag tone="dai" class="pulse-tag">运行中</GfTag></div>
+          <dl v-if="run" class="meta-list">
             <dt>run_id</dt><dd>{{ run.run_id }}</dd>
             <dt>trace_id</dt><dd>{{ run.trace_id }}</dd>
-            <dt>status</dt><dd>{{ run.status }}</dd>
+            <dt>status</dt>
+            <dd><GfTag :tone="stageTone(run.status || '')" :class="{ 'pulse-tag': run.status === 'running' }">{{ statusText(run.status) }}</GfTag></dd>
             <dt>dry_run</dt><dd>{{ run.dry_run }}</dd>
-            <dt>risk</dt><dd>{{ runSummary.risk_level }}</dd>
+            <dt>risk</dt><dd><GfTag tone="gold">{{ runSummary.risk_level }}</GfTag></dd>
             <dt>next</dt><dd>{{ runSummary.next_action }}</dd>
           </dl>
           <p v-else class="muted">等待启动；运行后会生成 run_id、trace_id、10 阶段证据与审计记录。</p>
-        </article>
-        <article class="panel">
-          <div class="section-title">模型接入位置与延迟边界</div>
-          <dl>
+        </GfCard>
+        <GfCard title="模型接入位置与延迟边界" seal="玄">
+          <dl class="meta-list meta-list--flat">
             <dt>provider</dt><dd>{{ design.model_gateway.provider }}</dd>
             <dt>api_base</dt><dd>{{ design.model_gateway.api_base }}</dd>
-            <dt>status</dt><dd>{{ design.model_gateway.status }}</dd>
+            <dt>status</dt><dd><GfTag tone="dai">{{ design.model_gateway.status }}</GfTag></dd>
             <dt>boundary</dt><dd>{{ design.model_gateway.boundary }}</dd>
             <dt>control_ms</dt><dd>{{ controlLatency || '待运行' }}</dd>
           </dl>
-        </article>
-      </section>
+        </GfCard>
+      </div>
 
-      <section class="section-block">
-        <div class="section-title">10 阶段进度条</div>
-        <div class="progress-rail">
-          <article v-for="(stage, index) in (trace.length ? trace : design.stages)" :key="stage.stage_id || stage.id" class="progress-step" :class="stage.status || stage.implemented">
-            <span>{{ index + 1 }}</span>
-            <b>{{ stage.stage || stage.name_cn }}</b>
-            <em>{{ statusText(stage.status) }}</em>
-            <small>{{ stage.latency_ms ? `${stage.latency_ms}ms` : stage.implemented }}</small>
-          </article>
-        </div>
-      </section>
-
-      <section v-if="trace.length" class="section-block">
-        <div class="section-title">阶段证据卡</div>
-        <div class="evidence-grid">
-          <article v-for="item in trace" :key="item.stage_id" class="evidence-card" :class="item.status">
-            <div class="evidence-head">
-              <h2>{{ item.order }}. {{ item.stage }}</h2>
-              <span>{{ item.risk_level }}</span>
+      <section class="section">
+        <h2 class="sec-title">十阶进度 · 金线串联</h2>
+        <div class="rail">
+          <article
+            v-for="(stage, index) in (trace.length ? trace : design.stages)"
+            :key="stage.stage_id || stage.id"
+            class="rail-step"
+          >
+            <span class="rail-dot" :data-tone="stageTone(stage.status || stage.implemented)" aria-hidden="true"></span>
+            <div class="rail-card">
+              <b>{{ index + 1 }} · {{ stage.stage || stage.name_cn }}</b>
+              <GfTag :tone="stageTone(stage.status || stage.implemented)">{{ statusText(stage.status) }}</GfTag>
+              <small>{{ stage.latency_ms ? `${stage.latency_ms}ms` : stage.implemented }}</small>
             </div>
-            <code>{{ item.stage_id }} · {{ item.route }}</code>
-            <p>{{ item.output.summary }}</p>
-            <div v-if="item.skip_reason" class="skip">跳过原因：{{ item.skip_reason }}</div>
-            <div class="chips"><span v-for="ev in item.evidence" :key="ev.kind + ev.ref">{{ ev.kind }} · {{ ev.source_layer }}</span></div>
-            <footer>{{ item.next_action }}</footer>
           </article>
         </div>
       </section>
 
-      <section v-if="trace.length" class="section-block two-col">
-        <article class="panel">
-          <div class="section-title">追踪回放</div>
-          <pre>{{ trace }}</pre>
-        </article>
-        <article class="panel">
-          <div class="section-title">运行产物 / 边界</div>
-          <pre>{{ artifacts }}</pre>
-        </article>
-      </section>
+      <template v-if="trace.length">
+        <section class="section">
+          <h2 class="sec-title">阶段证据卡</h2>
+          <div class="grid-2">
+            <GfCard v-for="item in trace" :key="item.stage_id">
+              <div class="ev-head">
+                <h3>{{ item.order }}. {{ item.stage }}</h3>
+                <GfTag :tone="stageTone(item.status)">{{ item.risk_level }}</GfTag>
+              </div>
+              <code class="code-line">{{ item.stage_id }} · {{ item.route }}</code>
+              <p class="ev-summary">{{ item.output.summary }}</p>
+              <p v-if="item.skip_reason" class="skip-note">跳过原因：{{ item.skip_reason }}</p>
+              <div class="chip-list">
+                <GfTag v-for="ev in item.evidence" :key="ev.kind + ev.ref" tone="ink">{{ ev.kind }} · {{ ev.source_layer }}</GfTag>
+              </div>
+              <template #footer><span class="ev-next">{{ item.next_action }}</span></template>
+            </GfCard>
+          </div>
+        </section>
 
-      <section class="section-block">
-        <div class="section-title">赛题要求映射</div>
+        <div class="grid-two section">
+          <GfCard title="追踪回放" seal="迹">
+            <pre class="pre-scroll">{{ trace }}</pre>
+          </GfCard>
+          <GfCard title="运行产物 / 边界" seal="物">
+            <pre class="pre-scroll">{{ artifacts }}</pre>
+          </GfCard>
+        </div>
+      </template>
+
+      <section class="section">
+        <InkDivider label="赛题要求映射" />
         <div class="mapping-grid">
-          <article v-for="(items, requirement) in mapping.items" :key="requirement" class="mapping-card">
-            <h3>{{ requirement }}</h3>
-            <span v-for="item in items" :key="item.stage_id">{{ item.stage }} · {{ item.implemented }} · {{ item.route }}</span>
-          </article>
+          <GfCard v-for="(items, requirement) in mapping.items" :key="requirement" :title="String(requirement)">
+            <div class="chip-list">
+              <GfTag v-for="item in items" :key="item.stage_id" :tone="stageTone(item.implemented)">{{ item.stage }} · {{ item.implemented }} · {{ item.route }}</GfTag>
+            </div>
+          </GfCard>
         </div>
       </section>
     </template>
@@ -178,51 +205,153 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page-head { margin-bottom: 22px; }
-.page-head h1 { font-size: 28px; letter-spacing: 3px; }
-.page-head p, .muted { color: var(--ink-soft); font-size: 13px; margin-top: 5px; }
-.hero-board { display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line); background: rgba(28,26,23,.04); margin-bottom: 12px; }
-.hero-board div { display: grid; place-items: center; padding: 16px 8px; border-left: 1px solid var(--line-soft); text-align: center; }
-.hero-board div:first-child { border-left: 0; }
-.hero-board b { font-size: 30px; font-family: Georgia, serif; color: var(--cinnabar); }
-.hero-board span { color: var(--ink-soft); font-size: 11px; }
-.boundary { border-left: 4px solid var(--cinnabar); background: rgba(255,255,255,.36); padding: 12px 14px; color: var(--ink-soft); font-size: 13px; margin-bottom: 18px; }
-.section-block { margin-top: 26px; }
-.section-title { border-left: 4px solid var(--cinnabar); padding-left: 10px; margin-bottom: 12px; font-size: 16px; font-weight: 700; letter-spacing: 2px; }
-.two-col { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; }
-.panel { border: 1px solid var(--line); background: rgba(255,255,255,.34); padding: 15px; min-width: 0; }
-.run-row { display: flex; gap: 8px; margin-bottom: 10px; }
-select, textarea { width: 100%; border: 1px solid var(--line); background: rgba(255,255,255,.45); padding: 8px; color: var(--ink); }
-textarea { min-height: 66px; resize: vertical; }
-button { border: 1px solid var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,46,.07); padding: 8px 11px; white-space: nowrap; }
-button:disabled { opacity: .55; cursor: wait; }
-dl { display: grid; grid-template-columns: 90px 1fr; gap: 8px; margin-top: 12px; }
-dt { color: var(--gamboge); font-family: var(--mono); font-size: 11px; }
-dd { color: var(--ink-soft); font-size: 12px; word-break: break-all; }
-.progress-rail { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; }
-.progress-step { border: 1px solid var(--line); border-top: 4px solid var(--ink-soft); background: rgba(255,255,255,.34); padding: 10px; min-height: 118px; }
-.progress-step.completed, .progress-step.done { border-top-color: var(--jade); }
-.progress-step.skipped { border-top-color: var(--gamboge); }
-.progress-step span { display: inline-grid; place-items: center; width: 24px; height: 24px; background: var(--cinnabar); color: #fff; border-radius: 50%; font-size: 12px; }
-.progress-step b { display: block; margin-top: 8px; font-size: 12px; line-height: 1.35; }
-.progress-step em, .progress-step small { display: block; margin-top: 5px; color: var(--ink-soft); font-style: normal; font-size: 10.5px; }
-.evidence-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-.evidence-card { border: 1px solid var(--line); border-top: 4px solid var(--jade); background: rgba(255,255,255,.34); padding: 13px; }
-.evidence-card.skipped { border-top-color: var(--gamboge); }
-.evidence-head { display: flex; justify-content: space-between; gap: 12px; }
-.evidence-head h2 { font-size: 15px; }
-.evidence-head span { color: var(--cinnabar); font-family: var(--mono); font-size: 11px; }
-.evidence-card code { display: block; color: var(--mineral); font-size: 10.5px; margin: 7px 0; }
-.evidence-card p, .skip, footer { color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
-.chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-.chips span, .mapping-card span { border: 1px solid var(--line-soft); padding: 2px 6px; color: var(--ink-soft); font-size: 10.5px; background: rgba(255,255,255,.38); }
-footer { border-top: 1px solid var(--line-soft); margin-top: 10px; padding-top: 8px; }
-pre { border: 1px solid var(--line); background: rgba(28,26,23,.04); color: var(--ink-soft); padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; font-size: 11px; }
-.mapping-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.mapping-card { border: 1px solid var(--line); background: rgba(255,255,255,.34); padding: 12px; }
-.mapping-card h3 { font-size: 14px; margin-bottom: 8px; }
-.mapping-card span { display: inline-block; margin: 0 5px 5px 0; }
-@media (max-width: 1200px) { .progress-rail { grid-template-columns: repeat(5, 1fr); } .mapping-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 900px) { .hero-board, .two-col, .evidence-grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .progress-rail, .mapping-grid { grid-template-columns: 1fr; } }
+.stat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; }
+.section { margin-top: 22px; }
+.note-boundary {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--gold-line);
+  border-left: 3px solid var(--cinnabar);
+  background: var(--card);
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.error-note {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--line-cinnabar);
+  background: color-mix(in srgb, var(--cinnabar) 8%, transparent);
+  color: var(--cinnabar);
+  font-size: 13px;
+}
+.muted { color: var(--ink-muted); font-size: 13px; line-height: 1.7; }
+.sec-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-kai);
+  font-size: 22px;
+  letter-spacing: 4px;
+  color: var(--ink);
+  margin-bottom: 14px;
+}
+.sec-title::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+  box-shadow: 0 0 8px var(--rouge-glow);
+  flex-shrink: 0;
+}
+.grid-two { display: grid; grid-template-columns: 1.15fr .85fr; gap: 20px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.run-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.gf-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: var(--radius-small);
+  padding: 9px 12px;
+  color: var(--ink);
+  font-size: 13px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.gf-input:focus { outline: none; border-color: var(--cinnabar); box-shadow: 0 0 0 3px var(--rouge-glow); }
+.gf-textarea { min-height: 72px; resize: vertical; line-height: 1.6; }
+.run-live { margin: 4px 0 8px; }
+.meta-list { display: grid; grid-template-columns: 88px 1fr; gap: 9px 12px; margin-top: 14px; align-items: center; }
+.meta-list--flat { margin-top: 2px; }
+.meta-list dt { color: var(--gold); font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; }
+.meta-list dd { color: var(--ink-soft); font-size: 12px; word-break: break-all; line-height: 1.6; }
+
+/* 十阶时间线：朱砂圆点 + 金线 */
+.rail {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(10, minmax(132px, 1fr));
+  gap: 12px;
+  padding-top: 26px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.rail::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 40px;
+  right: 40px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-line) 10%, var(--gold-line) 90%, transparent);
+}
+.rail-step { position: relative; min-width: 0; }
+.rail-dot {
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--cinnabar);
+  border: 2px solid var(--card-solid);
+  box-shadow: 0 0 0 2px var(--gold-line), 0 0 10px var(--rouge-glow);
+  z-index: 1;
+}
+.rail-dot[data-tone='bamboo'] { background: var(--bamboo); }
+.rail-dot[data-tone='gold'] { background: var(--gold); }
+.rail-dot[data-tone='dai'] { background: var(--dai); }
+.rail-dot[data-tone='ink'] { background: var(--ink-muted); box-shadow: 0 0 0 2px var(--line); }
+.rail-card {
+  border: 1px solid var(--line-soft);
+  background: var(--card);
+  border-radius: var(--radius-small);
+  box-shadow: var(--shadow-card);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-height: 118px;
+}
+.rail-card b { font-size: 12.5px; line-height: 1.5; color: var(--ink); font-family: var(--font-kai); letter-spacing: 1px; }
+.rail-card small { color: var(--ink-muted); font-size: 10.5px; font-family: var(--font-mono); }
+
+.ev-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ev-head h3 { font-size: 15px; font-family: var(--font-kai); letter-spacing: 2px; color: var(--ink); }
+.code-line { display: block; color: var(--dai); font-size: 10.5px; margin: 8px 0; font-family: var(--font-mono); word-break: break-all; }
+.ev-summary { color: var(--ink-soft); font-size: 12.5px; line-height: 1.7; }
+.skip-note { margin-top: 8px; color: var(--gold); font-size: 12px; line-height: 1.6; }
+.chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ev-next { color: var(--ink-muted); font-size: 12px; line-height: 1.6; }
+
+.pre-scroll {
+  border: 1px solid var(--line-soft);
+  background: var(--bg-soft);
+  border-radius: var(--radius-small);
+  color: var(--ink-soft);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+.mapping-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+
+.pulse-tag { animation: gf-pulse 1.8s ease-out infinite; }
+@keyframes gf-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dai) 45%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .pulse-tag { animation: none; } }
+
+@media (max-width: 1200px) { .mapping-grid { grid-template-columns: repeat(2, 1fr); } .stat-row { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 900px) { .grid-two, .grid-2, .mapping-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
 </style>

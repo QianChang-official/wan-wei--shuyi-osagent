@@ -15,6 +15,18 @@ partial, planned, simulated, and measured capabilities.
 The numbered 20-cabin product model and its Chinese domain names are intentional.
 Do not recommend deleting or renaming them merely for stylistic uniformity.
 
+Version v0.11.0「万枢」adds a collaboration layer on top of that base: eight
+backend modules under `backend/app/platform_api/` auto-discovered and mounted at
+`/platform` (`providers` with a 31-vendor model catalog, `agents`, `spaces`,
+`automation`, `knowledge`, `memory_center`, `system_svc`, `mcp_hub`), eleven
+Chinese console views under `frontend/console-vue/src/views/platform/`, and
+desktop capabilities in `desktop/src/` (powerSaveBlocker prevent-sleep, LAN
+mobile companion with token pairing, floating workspace window). Capabilities
+that are not wired to real external systems (real model API calls, MCP stdio/SSE
+connections, git worktree binding, the `device` gear) are intentionally labeled
+stub/simulated or disabled by default; do not flag those labels as missing
+features, but do flag any change that presents them as real, working behavior.
+
 ## Review Scope and Severity
 
 - Report an issue only when the changed code provides concrete evidence of a bug,
@@ -113,9 +125,10 @@ Do not recommend deleting or renaming them merely for stylistic uniformity.
   and smoke tests are part of the delivery surface. Review their failure paths.
 - GitHub Actions permissions must stay least-privilege. Dependency upgrades need
   lockfile changes, relevant builds/tests, and review of major-version behavior.
-- Do not bypass the public-release preflight. A release remains blocked until the
-  owner commits a chosen root `LICENSE` and sets `VERSION_HISTORY[0].status` to
-  `released`. Review automation must not choose a license for the owner.
+- Do not bypass the public-release preflight. The owner has chosen the Mulan
+  Permissive Software License v2 (木兰宽松许可证第2版, Mulan PSL v2) and committed
+  the root `LICENSE`; a release remains blocked until `VERSION_HISTORY[0].status`
+  is set to `released`. Review automation must not change the license choice.
 
 ## Expected Validation
 
