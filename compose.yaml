@@ -19,8 +19,11 @@ services:
     environment:
       WANWEI_PRODUCTION: "1"
       WANWEI_MEMORY_DB: /data/memory.db
+      WANWEI_PLATFORM_DIR: /data/platform
       WANWEI_API_KEY_FILE: /run/secrets/wanwei_api_key
       WANWEI_ENCRYPTION_KEY: "${WANWEI_ENCRYPTION_KEY:-}"
+      WANWEI_DEVICE_GEAR_ENABLED: "${WANWEI_DEVICE_GEAR_ENABLED:-0}"
+      WANWEI_MCP_STDIO_COMMANDS: "${WANWEI_MCP_STDIO_COMMANDS:-}"
       WANWEI_TRUSTED_PROXY_IPS: ""
     secrets:
       - wanwei_api_key

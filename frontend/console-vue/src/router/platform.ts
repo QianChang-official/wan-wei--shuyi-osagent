@@ -1,7 +1,8 @@
 import type { RouteRecordRaw } from 'vue-router'
 
-// 万枢协作平台路由（v0.12）。各视图由后续子代理整体实现，
-// 当前为最小占位文件，懒加载仅在实际访问时解析。
+// 万枢协作平台路由（v0.12）：工作台 / 模型接入 / 智能体 / 空间 / 自动化 /
+// 知识库 / 记忆中枢 / 会话管理 / 通用设置 / 帮助，以及手机伴侣（/mobile）。
+// 各视图均已实现，懒加载仅在实际访问时解析。
 export const platformRoutes: RouteRecordRaw[] = [
   { path: '/platform/workbench', name: 'platformWorkbench', component: () => import('@/views/platform/WorkbenchView.vue'), meta: { title: '万枢工作台', seal: '枢' } },
   { path: '/platform/providers', name: 'platformProviders', component: () => import('@/views/platform/ProvidersView.vue'), meta: { title: '模型接入', seal: '接' } },

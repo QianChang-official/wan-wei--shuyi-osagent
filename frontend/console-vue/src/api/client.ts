@@ -107,7 +107,19 @@ export interface VersionMapping {
   evidence_files: string[]
 }
 
-let apiKey = import.meta.env.DEV ? import.meta.env.VITE_WANWEI_DEV_API_KEY : ''
+function _loadApiKey(): string {
+  if (import.meta.env.DEV) {
+    return import.meta.env.VITE_WANWEI_DEV_API_KEY || ''
+  }
+  // 桌面端 preload 会把密钥写入 localStorage，生产/打包构建时优先读取
+  try {
+    return localStorage.getItem('wanwei-desktop-api-key') || ''
+  } catch {
+    return ''
+  }
+}
+
+let apiKey = _loadApiKey()
 
 export function setApiKey(value: string): void {
   apiKey = value.trim()
@@ -223,13 +235,11 @@ export const api = {
   soulAffect: (soulId: string) => req<any>(`/soul/affect/${encodeURIComponent(soulId)}`),
   soulAffectPut: (soulId: string, trigger: string, intensity = 1.0) =>
     req<any>(`/soul/affect/${encodeURIComponent(soulId)}?trigger=${encodeURIComponent(trigger)}&intensity=${intensity}`, { method: 'PUT' }),
-  soulDream: (soulId: string) =>
-    req<any>('/soul/dream', { method: 'POST', body: JSON.stringify({ soul_id: soulId }) }),
 }
 
 // ── Soul 追加封装（Worker E，纯追加，未改既有代码） ──
-// POST /soul/dream 的 SoulDreamIn 要求 task_id 必填，既有 api.soulDream 未携带会被 422 拒绝，
-// 故另立此封装供梦境触发使用。
+// POST /soul/dream 的 SoulDreamIn 要求 task_id 必填；原 api.soulDream 未携带 task_id、
+// 调用即 422 且全仓零调用，已删除（09-#10）。梦境触发统一走此封装。
 export function soulDreamCycle(soulId: string, taskId = 'manual-dream'): Promise<any> {
   return req<any>('/soul/dream', {
     method: 'POST',

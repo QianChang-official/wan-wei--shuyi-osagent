@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机的 build.log 中抓取 fpm/error 错误上下文。
 import sys
 import time
 

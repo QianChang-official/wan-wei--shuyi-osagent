@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -7,59 +8,93 @@ import uuid
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 from .schemas import (
     ModelGatewayConfigOut,
     ModelGatewayTestIn,
     ModelGatewayTestOut,
     ModelProvider,
 )
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..security import encryption
 from ..security.ssrf import SSRFError, validate_external_url
 from ..utils.datetime_utils import utc_now_iso
 
-LOCAL_LLAMA_BASE = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "").strip()
-LOCAL_LLAMA_MODEL = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "").strip()
-LOCAL_LLAMA_CONFIGURED = bool(LOCAL_LLAMA_BASE and LOCAL_LLAMA_MODEL)
+# 03-#14 配置单源化：WANWEI_OPENAI_COMPATIBLE_* 的 env 解析只在本模块这一处
+# 实现。运行时路径（list_providers / run_provider_test / main._chat_complete）
+# 一律经下面的访问函数读取，消除「导入期快照与请求期重读各自解析、可漂移」
+# 的双源问题；allowlist 解析与超时常量同样收口于此。
+# 模块级 LOCAL_LLAMA_* / PROVIDERS 仅作既有调用方的导入期快照兼容保留，
+# 运行时代码不得再引用。
+def local_llama_settings() -> tuple[str, str, bool]:
+    """读取本地 OpenAI 兼容端点配置：(api_base, model, configured)。"""
+    base = os.getenv("WANWEI_OPENAI_COMPATIBLE_BASE", "").strip()
+    model = os.getenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "").strip()
+    return base, model, bool(base and model)
 
-PROVIDERS: list[ModelProvider] = [
-    ModelProvider(
-        provider="openai_compatible",
-        api_base=LOCAL_LLAMA_BASE,
-        api_key_alias="NONE_LOCAL_LLAMA_CPP",
-        model=LOCAL_LLAMA_MODEL,
-        enabled=LOCAL_LLAMA_CONFIGURED,
-        status="available_configured" if LOCAL_LLAMA_CONFIGURED else "configuration_required",
-        notes="Set WANWEI_OPENAI_COMPATIBLE_BASE and WANWEI_OPENAI_COMPATIBLE_MODEL to enable a real local smoke call. No API key is stored.",
-    ),
-    ModelProvider(
-        provider="anthropic",
-        api_base="https://api.anthropic.com",
-        api_key_alias="ANTHROPIC_API_KEY",
-        model="claude-sonnet-4",
-        enabled=False,
-        status="planned_configurable",
-        notes="Anthropic provider stub with dry-run connectivity semantics.",
-    ),
-    ModelProvider(
-        provider="gemini",
-        api_base="https://generativelanguage.googleapis.com",
-        api_key_alias="GEMINI_API_KEY",
-        model="gemini-2.5-pro",
-        enabled=False,
-        status="planned_configurable",
-        notes="Gemini provider stub; no outbound call is made in v0.9.4 dry-run.",
-    ),
-    ModelProvider(
-        provider="local_mock",
-        api_base="local://memoryops/mock-model",
-        api_key_alias="NONE",
-        model="memoryops-local-mock",
-        enabled=True,
-        status="available_stub",
-        notes="Deterministic local dry-run provider for demos and CI.",
-    ),
-]
+
+def local_llama_allowlist() -> list[str] | None:
+    """解析 WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST 为主机白名单列表。"""
+    raw = os.getenv("WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST")
+    return [h.strip() for h in raw.split(",") if h.strip()] if raw else None
+
+
+# 03-#18 线程池耗尽风险如实标注（本版本不重构，仅标注）：
+# 一次真实 smoke / soul chat 调用会以该超时阻塞 FastAPI 同步线程池的一个
+# worker 最长 90s（默认约 40 线程）。慢端点并发可打满线程池并拖垮全部同步
+# 接口；后续版本应引入慢路径专用池/队列或收紧超时。
+OPENAI_COMPATIBLE_TIMEOUT_S = 90
+
+
+LOCAL_LLAMA_BASE, LOCAL_LLAMA_MODEL, LOCAL_LLAMA_CONFIGURED = local_llama_settings()
+
+
+def _build_providers() -> list[ModelProvider]:
+    """按当前 env 配置构建 provider 目录（运行时单一事实源）。"""
+    base, model, configured = local_llama_settings()
+    return [
+        ModelProvider(
+            provider="openai_compatible",
+            api_base=base,
+            api_key_alias="NONE_LOCAL_LLAMA_CPP",
+            model=model,
+            enabled=configured,
+            status="available_configured" if configured else "configuration_required",
+            notes="Set WANWEI_OPENAI_COMPATIBLE_BASE and WANWEI_OPENAI_COMPATIBLE_MODEL to enable a real local smoke call. No API key is stored.",
+        ),
+        ModelProvider(
+            provider="anthropic",
+            api_base="https://api.anthropic.com",
+            api_key_alias="ANTHROPIC_API_KEY",
+            model="claude-sonnet-4",
+            enabled=False,
+            status="planned_configurable",
+            notes="Anthropic provider stub with dry-run connectivity semantics.",
+        ),
+        ModelProvider(
+            provider="gemini",
+            api_base="https://generativelanguage.googleapis.com",
+            api_key_alias="GEMINI_API_KEY",
+            model="gemini-2.5-pro",
+            enabled=False,
+            status="planned_configurable",
+            notes="Gemini provider stub; no outbound call is made in v0.9.4 dry-run.",
+        ),
+        ModelProvider(
+            provider="local_mock",
+            api_base="local://memoryops/mock-model",
+            api_key_alias="NONE",
+            model="memoryops-local-mock",
+            enabled=True,
+            status="available_stub",
+            notes="Deterministic local dry-run provider for demos and CI.",
+        ),
+    ]
+
+
+# 导入期快照（兼容保留）；运行时一律使用 _build_providers()。
+PROVIDERS: list[ModelProvider] = _build_providers()
 
 
 def _ensure_config_table() -> None:
@@ -83,7 +118,7 @@ def _ensure_config_table() -> None:
 
 
 def list_providers() -> dict:
-    return {"items": [provider.model_dump() for provider in PROVIDERS]}
+    return {"items": [provider.model_dump() for provider in _build_providers()]}
 
 
 def _encode_api_key(api_key: str) -> str:
@@ -93,7 +128,17 @@ def _encode_api_key(api_key: str) -> str:
 def _decode_api_key(api_key_encrypted: str | None) -> str:
     if not api_key_encrypted:
         return ""
-    return encryption.decrypt(api_key_encrypted)
+    try:
+        return encryption.decrypt(api_key_encrypted)
+    except encryption.LegacyCiphertextError:
+        # 02-#4：旧 base64 明文不再原样返回。视同不可解密，走调用方既有的
+        # 「Stored API key cannot be decrypted」显式错误路径（不 500、不泄露明文）；
+        # 可按 encryption.migrate_legacy_ciphertext() 指引一次性迁移。
+        logger.warning(
+            "model_gateway config contains legacy base64 ciphertext; treating as "
+            "undecryptable. Migrate via security.encryption.migrate_legacy_ciphertext()."
+        )
+        return ""
 
 
 def _get_config(provider: str) -> dict | None:
@@ -171,23 +216,22 @@ def upsert_config(
     encoded_key = _encode_api_key(api_key) if api_key else (
         existing["api_key_encrypted"] if existing else None
     )
-    conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO model_gateway_configs(
-            provider,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?)
-        ON CONFLICT(provider) DO UPDATE SET
-            api_base=excluded.api_base,
-            api_key_encrypted=excluded.api_key_encrypted,
-            model=excluded.model,
-            enabled=excluded.enabled,
-            notes=excluded.notes,
-            updated_at=excluded.updated_at
-        """,
-        (provider, api_base, encoded_key, model, int(enabled), notes, now, now),
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO model_gateway_configs(
+                provider,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(provider) DO UPDATE SET
+                api_base=excluded.api_base,
+                api_key_encrypted=excluded.api_key_encrypted,
+                model=excluded.model,
+                enabled=excluded.enabled,
+                notes=excluded.notes,
+                updated_at=excluded.updated_at
+            """,
+            (provider, api_base, encoded_key, model, int(enabled), notes, now, now),
+        )
     return ModelGatewayConfigOut(
         provider=provider,
         api_base=api_base,
@@ -199,11 +243,10 @@ def upsert_config(
 
 def delete_config(provider: str) -> bool:
     _ensure_config_table()
-    conn = get_conn()
-    deleted = conn.execute(
-        "DELETE FROM model_gateway_configs WHERE provider=?", (provider,)
-    ).rowcount
-    conn.commit()
+    with transaction() as conn:
+        deleted = conn.execute(
+            "DELETE FROM model_gateway_configs WHERE provider=?", (provider,)
+        ).rowcount
     return bool(deleted)
 
 
@@ -211,7 +254,7 @@ def _provider_config(provider_name: str) -> dict | None:
     configured = _get_config(provider_name)
     if configured is not None:
         return configured
-    provider = next((item for item in PROVIDERS if item.provider == provider_name), None)
+    provider = next((item for item in _build_providers() if item.provider == provider_name), None)
     if provider is None:
         return None
     return {
@@ -231,6 +274,12 @@ def _openai_compatible_smoke(
     prompt: str,
     max_tokens: int,
 ) -> tuple[str, int, str]:
+    """同步阻塞式 smoke 调用。
+
+    03-#18 如实标注：本函数在 FastAPI 同步线程池中执行，超时
+    OPENAI_COMPATIBLE_TIMEOUT_S（90s）内独占一个 worker 线程；慢端点并发
+    可耗尽默认约 40 线程的池，拖垮全部同步接口。本版本不重构池化方案。
+    """
     started = time.perf_counter()
     payload = {
         "model": model,
@@ -245,7 +294,7 @@ def _openai_compatible_smoke(
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    with httpx.Client(timeout=90, follow_redirects=False) as client:
+    with httpx.Client(timeout=OPENAI_COMPATIBLE_TIMEOUT_S, follow_redirects=False) as client:
         response = client.post(api_base.rstrip("/") + "/chat/completions", json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -307,9 +356,8 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
         )
     api_base = provider["api_base"]
     try:
-        allowlist_env = os.getenv("WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST")
-        allowlist = [h.strip() for h in allowlist_env.split(",") if h.strip()] if allowlist_env else None
-        validate_external_url(api_base, allowlist=allowlist)
+        # 03-#14: allowlist 解析收口到 local_llama_allowlist()（单源）
+        validate_external_url(api_base, allowlist=local_llama_allowlist())
         status, latency_ms, preview = _openai_compatible_smoke(
             api_base,
             provider["api_key"],

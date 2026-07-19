@@ -1,25 +1,32 @@
 <script setup lang="ts">
 /**
  * 万枢工作台 —— 旗舰 AI 聊天工作台（V1）。
- * 契约（后端 platform_api/agents.py、system_svc.py 并行建设中）：
- *   GET  /agents                       智能体列表
- *   GET  /agents/context-size          上下文用量
- *   PUT  /agents/{id}/goal             设定当前智能体目标
- *   POST /agents/chat                  对话 {message, agent_id, depth, gear, goal, attachments}
- *   POST /agents/subagent              派生子任务
- *   GET  /agents/workspace/floating    浮动工作区子代理列表
- *   GET  /agents/runs                  运行记录
- *   POST /agents/runs/{id}/approve     批准人工审查中的运行
- *   POST /system/voice                 语音输入上传
- * 全部调用失败均降级为本地示例 / 离线模拟，并在 UI 明确标注。
+ * 契约（backend/app/platform_api/agents.py、system_svc.py）：
+ *   GET  /agents                        智能体列表
+ *   GET  /agents/context-size?agent_id= 上下文用量（返回 total_tokens / limit）
+ *   PUT  /agents/{id}                   设定当前智能体目标
+ *   POST /agents/chat                   对话 {message, agent_id, depth, gear, goal, attachments}
+ *   POST /agents/subagent               派生子任务
+ *   GET  /agents/workspace/floating     浮动工作区子代理列表
+ *   GET  /agents/runs                   运行记录
+ *   POST /agents/runs/{id}/approve      批准人工审查中的运行（以后端返回的真实 status 为准）
+ *   POST /system/voice                  语音输入上传
+ * 降级口径：仅网络异常（isNetworkError）时降级为本地示例 / 离线模拟并在 UI 明确标注；
+ * 鉴权失败等其他错误如实提示，不伪装成功、不做本地假放行。
  */
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
 import GfButton from '@/components/gf/GfButton.vue'
 import GfEmpty from '@/components/gf/GfEmpty.vue'
+
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
 
 /* ── 类型 ─────────────────────────────────────────────── */
 interface AgentInfo {
@@ -303,8 +310,10 @@ function estimateContext(): void {
 
 async function loadContextSize(): Promise<void> {
   try {
-    const res = await apiGet<Record<string, any>>('/agents/context-size')
-    const used = Number(res?.used ?? res?.tokens ?? res?.context_tokens ?? res?.used_tokens ?? NaN)
+    // 后端 agents.py context_size 接受 ?agent_id=，返回 total_tokens / limit（total_tokens 置候选链首位）
+    const qs = currentAgentId.value ? `?agent_id=${encodeURIComponent(currentAgentId.value)}` : ''
+    const res = await apiGet<Record<string, any>>(`/agents/context-size${qs}`)
+    const used = Number(res?.total_tokens ?? res?.used ?? res?.tokens ?? res?.context_tokens ?? res?.used_tokens ?? NaN)
     const limit = Number(res?.limit ?? res?.max ?? res?.max_tokens ?? res?.window ?? NaN)
     if (Number.isFinite(limit) && limit > 0) ctxLimit.value = limit
     if (Number.isFinite(used) && used >= 0) {
@@ -340,9 +349,10 @@ async function loadAgents(): Promise<void> {
       agents.value = FALLBACK_AGENTS
       agentsOffline.value = true
     }
-  } catch {
-    agents.value = FALLBACK_AGENTS
-    agentsOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    agents.value = network ? FALLBACK_AGENTS : []
+    agentsOffline.value = network
   }
   if (!agents.value.some((a) => a.id === currentAgentId.value)) {
     currentAgentId.value = agents.value[0]?.id ?? ''
@@ -367,14 +377,18 @@ async function saveGoal(): Promise<void> {
   goalSaving.value = true
   const g = goalDraft.value.trim()
   try {
-    await apiPut(`/agents/${encodeURIComponent(currentAgentId.value)}/goal`, { goal: g })
+    await apiPut(`/agents/${encodeURIComponent(currentAgentId.value)}`, { goal: g })
     goalLocal.value = false
     localStorage.removeItem(goalKey())
     toastMsg('目标已落笔，并同步到当前智能体', 'ok')
-  } catch {
+  } catch (e) {
     localStorage.setItem(goalKey(), g)
     goalLocal.value = true
-    toastMsg('后端未连通，目标已暂存本机', 'info')
+    if (isAuthError(e)) {
+      toastMsg(`鉴权失败：${e.message}（请检查左侧 API 密钥）`, 'error')
+    } else {
+      toastMsg('后端未连通，目标已暂存本机', 'info')
+    }
   } finally {
     goal.value = g
     goalSaving.value = false
@@ -382,13 +396,23 @@ async function saveGoal(): Promise<void> {
 }
 
 function onGoalEnter(e: KeyboardEvent): void {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     e.preventDefault()
     void saveGoal()
   }
 }
 
 /* ── 附件 ─────────────────────────────────────────────── */
+// 前端限制：单次最多 5 个附件、单文件不超过 10 MB。
+// 后端契约仅接收附件元数据（name/mime/size），内容本就不上传；
+// 限制主要为防止图片 dataURL 预览把内存拖垮，并在超限时刻给出中文提示。
+const ATTACH_MAX_COUNT = 5
+const ATTACH_MAX_SIZE = 10 * 1024 * 1024
+
+// 长会话防内存无限增长：消息列表硬上限与修剪目标
+const MESSAGE_CAP = 200
+const MESSAGE_KEEP = 160
+
 function pickFiles(): void {
   fileInputEl.value?.click()
 }
@@ -397,6 +421,14 @@ function onPickFiles(e: Event): void {
   const input = e.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
   for (const f of files) {
+    if (attachments.value.length >= ATTACH_MAX_COUNT) {
+      toastMsg(`附件最多 ${ATTACH_MAX_COUNT} 个，超出部分已忽略`, 'error')
+      break
+    }
+    if (f.size > ATTACH_MAX_SIZE) {
+      toastMsg(`「${f.name}」大小 ${fmtSize(f.size)}，超过单文件 ${fmtSize(ATTACH_MAX_SIZE)} 上限，未添加`, 'error')
+      continue
+    }
     const att: AttachmentMeta = {
       name: f.name,
       mime: f.type || 'application/octet-stream',
@@ -464,26 +496,31 @@ async function uploadVoice(blob: Blob): Promise<void> {
     const dataUrl = await blobToDataUrl(blob)
     const base64 = dataUrl.split(',')[1] ?? ''
     const res = await apiPost<Record<string, any>>('/system/voice', {
-      audio_base64: base64,
+      audio_b64: base64,
       mime: blob.type,
-      name: 'voice-input.webm',
-      size: blob.size,
+      duration_ms: 0,
     })
-    const text = String(res?.text ?? res?.transcript ?? '').trim()
+    const text = String(res?.transcription ?? '').trim()
     if (text) {
       draft.value = draft.value ? `${draft.value}\n${text}` : text
       toastMsg('语音已转写并填入输入框', 'ok')
     } else {
       toastMsg('语音已上传，后端未返回转写文本', 'info')
     }
-  } catch {
-    toastMsg('语音上传失败：后端未连通', 'error')
+  } catch (e) {
+    toastMsg(`语音上传失败：${platformErrText(e)}`, 'error')
   } finally {
     voiceBusy.value = false
   }
 }
 
 /* ── 发送消息 ─────────────────────────────────────────── */
+function trimMessages(): void {
+  if (messages.value.length > MESSAGE_CAP) {
+    messages.value = messages.value.slice(-MESSAGE_KEEP)
+  }
+}
+
 function scrollToBottom(): void {
   void nextTick(() => {
     const el = msgListEl.value
@@ -495,21 +532,23 @@ async function send(): Promise<void> {
   const text = draft.value.trim()
   const atts = attachments.value
   if (sending.value || (!text && atts.length === 0)) return
+  // 发送消息时只保留附件元数据，不持久化图片 dataURL，避免长会话内存膨胀
   const userMsg: ChatMessage = {
     id: uid(),
     role: 'user',
     content: text || '（随信附件）',
     time: nowTime(),
-    attachments: atts.map((a) => ({ ...a })),
+    attachments: atts.map((a) => ({ name: a.name, mime: a.mime, size: a.size })),
   }
   messages.value = [...messages.value, userMsg]
+  trimMessages()
   draft.value = ''
   attachments.value = []
   sending.value = true
   scrollToBottom()
   const payload = {
     message: text,
-    agent_id: currentAgentId.value,
+    agent_id: currentAgentId.value || undefined,
     depth: depth.value,
     gear: gear.value,
     goal: goal.value,
@@ -534,37 +573,43 @@ async function send(): Promise<void> {
         contextTokens: Number.isFinite(ct) ? ct : undefined,
       },
     ]
+    trimMessages()
     if (Number.isFinite(ct)) {
       ctxUsed.value = ct
       ctxEstimated.value = false
     }
-  } catch {
-    const sim = [
-      '（离线模拟回复）未能连通万枢后端，以下为本地模拟应答，并非真实模型输出。',
-      '',
-      `你刚才说：「${text || '（附件）'}」`,
-      '',
-      `- 思考深度：${depthLabel(depth.value)}（${currentDepth.value.desc}）`,
-      `- 工作档位：${gearLabel(gear.value)}（${currentGear.value.desc}）`,
-      goal.value ? `- 当前目标：${goal.value}` : '- 当前目标：未设定',
-      '',
-      '服务恢复后，将按以上配置真实执行。',
-    ].join('\n')
-    messages.value = [
-      ...messages.value,
-      {
-        id: uid(),
-        role: 'assistant',
-        content: sim,
-        time: nowTime(),
-        depth: depth.value,
-        gear: gear.value,
-        engine: '本地模拟',
-        offline: true,
-      },
-    ]
-    toastMsg('后端未连通，已切换为离线模拟回复', 'error')
-    if (ctxEstimated.value) estimateContext()
+  } catch (e) {
+    if (isNetworkError(e)) {
+      const sim = [
+        '（离线模拟回复）未能连通万枢后端，以下为本地模拟应答，并非真实模型输出。',
+        '',
+        `你刚才说：「${text || '（附件）'}」`,
+        '',
+        `- 思考深度：${depthLabel(depth.value)}（${currentDepth.value.desc}）`,
+        `- 工作档位：${gearLabel(gear.value)}（${currentGear.value.desc}）`,
+        goal.value ? `- 当前目标：${goal.value}` : '- 当前目标：未设定',
+        '',
+        '服务恢复后，将按以上配置真实执行。',
+      ].join('\n')
+      messages.value = [
+        ...messages.value,
+        {
+          id: uid(),
+          role: 'assistant',
+          content: sim,
+          time: nowTime(),
+          depth: depth.value,
+          gear: gear.value,
+          engine: '本地模拟',
+          offline: true,
+        },
+      ]
+      trimMessages()
+      toastMsg('后端未连通，已切换为离线模拟回复', 'error')
+      if (ctxEstimated.value) estimateContext()
+    } else {
+      toastMsg(`发送失败：${platformErrText(e)}`, 'error')
+    }
   } finally {
     sending.value = false
     scrollToBottom()
@@ -572,7 +617,7 @@ async function send(): Promise<void> {
 }
 
 function onEnterKey(e: KeyboardEvent): void {
-  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+  if (e.key === 'Enter' && !e.isComposing && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault()
     void send()
   }
@@ -590,9 +635,10 @@ async function loadFloating(): Promise<void> {
       status: w.status ? String(w.status) : 'running',
     }))
     floatingOffline.value = false
-  } catch {
-    floating.value = FALLBACK_FLOATING
-    floatingOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    floating.value = network ? FALLBACK_FLOATING : []
+    floatingOffline.value = network
   } finally {
     floatingLoading.value = false
   }
@@ -611,9 +657,10 @@ async function loadRuns(): Promise<void> {
       summary: r.summary ?? r.note,
     }))
     runsOffline.value = false
-  } catch {
-    runs.value = FALLBACK_RUNS
-    runsOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    runs.value = network ? FALLBACK_RUNS : []
+    runsOffline.value = network
   } finally {
     runsLoading.value = false
   }
@@ -626,27 +673,31 @@ async function spawnSubagent(): Promise<void> {
   try {
     await apiPost('/agents/subagent', {
       task,
-      agent_id: currentAgentId.value,
+      agent_id: currentAgentId.value || undefined,
       depth: depth.value,
       gear: gear.value,
     })
     subTask.value = ''
     toastMsg('子任务已派发至浮动工作区', 'ok')
     await loadFloating()
-  } catch {
-    floating.value = [
-      ...floating.value,
-      { id: `local-${uid()}`, name: '临时子代理', task, status: 'queued', simulated: true },
-    ]
-    subTask.value = ''
-    toastMsg('后端未连通，已本地模拟派生', 'info')
+  } catch (e) {
+    if (isNetworkError(e)) {
+      floating.value = [
+        ...floating.value,
+        { id: `local-${uid()}`, name: '临时子代理', task, status: 'queued', simulated: true },
+      ]
+      subTask.value = ''
+      toastMsg('后端未连通，已本地模拟派生', 'info')
+    } else {
+      toastMsg(`派发失败：${platformErrText(e)}`, 'error')
+    }
   } finally {
     spawning.value = false
   }
 }
 
 function onSubEnter(e: KeyboardEvent): void {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     e.preventDefault()
     void spawnSubagent()
   }
@@ -656,12 +707,20 @@ async function approveRun(run: RunRecord): Promise<void> {
   if (approving.value) return
   approving.value = run.id
   try {
-    await apiPost(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
-    toastMsg('已批阅放行该运行', 'ok')
-  } catch {
-    toastMsg('后端未连通，已在本地标记为已批准', 'info')
+    const res = await apiPost<Record<string, any>>(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
+    // 以后端返回的真实 status 为准（批准后通常回到 running 继续推进），不再本地假置 approved；
+    // 响应缺 status 时回退为整表刷新（与 MobileView decide() 修法对齐）。
+    const actual = typeof res?.status === 'string' && res.status ? res.status : ''
+    if (actual) {
+      runs.value = runs.value.map((r) => (r.id === run.id ? { ...r, status: actual } : r))
+    } else {
+      await loadRuns()
+    }
+    toastMsg(actual === 'running' ? '已批阅放行，运行继续推进' : '已批阅放行该运行', 'ok')
+  } catch (e) {
+    // 含断网在内的任何失败都如实提示，不做本地假放行
+    toastMsg(`批准失败：${platformErrText(e)}`, 'error')
   } finally {
-    runs.value = runs.value.map((r) => (r.id === run.id ? { ...r, status: 'approved' } : r))
     approving.value = ''
   }
 }
@@ -677,12 +736,15 @@ function subStatusMeta(status?: string): { label: string; tone: TagTone } {
 
 function runStatusMeta(status?: string): { label: string; tone: TagTone; review: boolean } {
   const s = (status ?? '').toLowerCase()
-  if (['human_review', 'pending_review', 'review', 'awaiting_approval', 'waiting_review'].includes(s)) {
-    return { label: '人工审查中', tone: 'gold', review: true }
+  // awaiting_review 是后端 agents.py 的真实审查态（与 AgentsView 对齐）；
+  // 其余 4 个为历史/兼容别名，保留容错。
+  if (['awaiting_review', 'human_review', 'pending_review', 'review', 'awaiting_approval', 'waiting_review'].includes(s)) {
+    return { label: '待审查', tone: 'gold', review: true }
   }
   if (['running', 'in_progress', 'processing'].includes(s)) return { label: '运行中', tone: 'dai', review: false }
   if (s === 'approved') return { label: '已批准', tone: 'bamboo', review: false }
   if (s === 'rejected') return { label: '已驳回', tone: 'rouge', review: false }
+  if (s === 'cancelled') return { label: '已取消', tone: 'ink', review: false }
   if (['done', 'completed', 'success', 'finished'].includes(s)) return { label: '已完成', tone: 'bamboo', review: false }
   if (['failed', 'error'].includes(s)) return { label: '失败', tone: 'rouge', review: false }
   return { label: status || '未知', tone: 'ink', review: false }
@@ -883,7 +945,7 @@ onMounted(async () => {
             ></textarea>
             <div class="composer-bar">
               <input ref="fileInputEl" type="file" multiple hidden aria-hidden="true" @change="onPickFiles" />
-              <GfButton variant="ghost" small @click="pickFiles">插入文件 / 图片</GfButton>
+              <GfButton variant="ghost" small :title="`最多 ${ATTACH_MAX_COUNT} 个附件，单文件不超过 ${fmtSize(ATTACH_MAX_SIZE)}`" @click="pickFiles">插入文件 / 图片</GfButton>
               <GfButton
                 variant="ghost"
                 small

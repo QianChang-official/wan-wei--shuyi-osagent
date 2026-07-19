@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
+import { GEAR_TONES } from '@/utils/platformEnums'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
@@ -9,10 +10,16 @@ import GfEmpty from '@/components/gf/GfEmpty.vue'
 import GfStat from '@/components/gf/GfStat.vue'
 import InkDivider from '@/components/gf/InkDivider.vue'
 
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
+
 /* ══ 契约类型（对应后端 platform_api/agents 模块约定） ══ */
 type ThinkDepth = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode'
 type WorkGear = 'human_review' | 'sandbox' | 'device'
-type RunStatus = 'queued' | 'running' | 'awaiting_review' | 'done' | 'failed'
+type RunStatus = 'queued' | 'running' | 'awaiting_review' | 'done' | 'failed' | 'cancelled' | 'rejected'
 type TeamMode = 'sequential' | 'parallel' | 'review_loop'
 type TagTone = 'rouge' | 'dai' | 'bamboo' | 'gold' | 'ink'
 
@@ -46,6 +53,8 @@ interface AgentRun {
   id: string
   subject: string
   isTeam: boolean
+  isSub: boolean
+  kind: string
   task: string
   goal: string
   depth: ThinkDepth
@@ -73,11 +82,6 @@ const GEAR_LABELS: Record<WorkGear, string> = {
   sandbox: '沙盒工作',
   device: '整台设备',
 }
-const GEAR_TONES: Record<WorkGear, TagTone> = {
-  human_review: 'bamboo',
-  sandbox: 'gold',
-  device: 'rouge',
-}
 const GEAR_DESCS: Record<WorkGear, string> = {
   human_review: '每一步动作均需人工过目批准，最为稳妥。',
   sandbox: '动作限于沙箱之内，权限收敛、风险可控。',
@@ -89,6 +93,8 @@ const RUN_STATUS_META: Record<RunStatus, { label: string; tone: TagTone }> = {
   awaiting_review: { label: '待审查', tone: 'gold' },
   done: { label: '已完成', tone: 'bamboo' },
   failed: { label: '已失败', tone: 'rouge' },
+  cancelled: { label: '已取消', tone: 'ink' },
+  rejected: { label: '已驳回', tone: 'rouge' },
 }
 const TEAM_MODE_META: Record<TeamMode, { label: string; desc: string }> = {
   sequential: { label: '顺序编排', desc: '成员依次接力，前者产出交予后者。' },
@@ -137,19 +143,19 @@ const SAMPLE_TEAMS: AgentTeam[] = [
 ]
 const SAMPLE_RUNS: AgentRun[] = [
   {
-    id: 'run-1042', subject: '墨研', isTeam: false, task: '重写 store 层缓存', goal: '读写延迟降低三成',
+    id: 'run-1042', subject: '墨研', isTeam: false, isSub: false, kind: 'solo', task: '重写 store 层缓存', goal: '读写延迟降低三成',
     depth: 'ultracode', gear: 'sandbox', status: 'running', created_at: new Date(Date.now() - 6 * 60_000).toISOString(), note: '', simulated: true,
   },
   {
-    id: 'run-1041', subject: '文心', isTeam: false, task: '起草权限矩阵设计', goal: '覆盖五权三档',
+    id: 'run-1041', subject: '文心', isTeam: false, isSub: false, kind: 'solo', task: '起草权限矩阵设计', goal: '覆盖五权三档',
     depth: 'high', gear: 'human_review', status: 'awaiting_review', created_at: new Date(Date.now() - 26 * 60_000).toISOString(), note: '方案已就绪，等待人工放行。', simulated: true,
   },
   {
-    id: 'run-1039', subject: '梓竹班', isTeam: true, task: '整理周更 CHANGELOG', goal: '归档本周迭代',
+    id: 'run-1039', subject: '梓竹班', isTeam: true, isSub: false, kind: 'team', task: '整理周更 CHANGELOG', goal: '归档本周迭代',
     depth: 'medium', gear: 'sandbox', status: 'done', created_at: new Date(Date.now() - 2 * 3600_000).toISOString(), note: '', simulated: true,
   },
   {
-    id: 'run-1038', subject: '纸笺', isTeam: false, task: '校验构建产物', goal: '确认产物可分发',
+    id: 'run-1038', subject: '纸笺', isTeam: false, isSub: false, kind: 'solo', task: '校验构建产物', goal: '确认产物可分发',
     depth: 'medium', gear: 'human_review', status: 'failed', created_at: new Date(Date.now() - 5 * 3600_000).toISOString(), note: '权限不足：shell 未开启。', simulated: true,
   },
 ]
@@ -215,24 +221,30 @@ function normTeam(r: Record<string, unknown>, idx: number): AgentTeam {
     name: pickStr(r, ['name', 'title'], '未名团队'),
     members: (rawMembers as unknown[]).map((m) => (typeof m === 'string' ? m : pickStr(asRecord(m), ['id', 'agent_id', 'name'], ''))).filter(Boolean),
     mode: normMode(r.mode ?? r.orchestration),
-    goal: pickStr(r, ['goal', 'objective']),
+    goal: pickStr(r, ['goal', 'objective', 'description']),
   }
 }
 function normRun(r: Record<string, unknown>, idx: number): AgentRun {
   const teamName = pickStr(r, ['team_name'])
   const teamId = pickStr(r, ['team_id'])
   const isTeam = Boolean(teamName || teamId) || r.is_team === true
+  // 子代理运行：kind/parent_run_id 多字段名宽容读取（SubagentIn 字段后端并行补齐中）
+  const kind = pickStr(r, ['kind', 'run_kind', 'type'])
+  const parentRunId = pickStr(r, ['parent_run_id', 'parent_id', 'parent', 'parentRunId'])
+  const isSub = kind === 'subagent' || Boolean(parentRunId) || r.is_subagent === true
   return {
     id: pickStr(r, ['id', 'run_id'], `run-${idx}`),
-    subject: teamName || pickStr(r, ['agent_name', 'name', 'agent_id'], teamId || '未名'),
+    subject: teamName || pickStr(r, ['agent_name', 'name', 'agent_id', 'agent'], isSub ? '子代理' : teamId || '未名'),
     isTeam,
+    isSub,
+    kind,
     task: pickStr(r, ['task', 'title']),
     goal: pickStr(r, ['goal', 'objective']),
     depth: normDepth(r.depth),
     gear: normGear(r.gear),
     status: normStatus(r.status),
     created_at: pickStr(r, ['created_at', 'started_at', 'updated_at']),
-    note: pickStr(r, ['note', 'error', 'message', 'output']),
+    note: pickStr(r, ['note', 'result', 'error', 'message', 'output']),
     simulated: r.simulated === true,
   }
 }
@@ -265,6 +277,7 @@ const approvingId = ref('')
 const teamModalOpen = ref(false)
 const teamSaving = ref(false)
 const teamEditingId = ref<string | null>(null)
+const teamError = ref('')
 const teamForm = ref<{ name: string; goal: string; mode: TeamMode; members: string[] }>({ name: '', goal: '', mode: 'sequential', members: [] })
 
 /* ══ 派生 ══ */
@@ -302,9 +315,10 @@ async function loadAgents() {
     const raw = await apiGet<unknown>('/agents')
     agents.value = asList(raw).map(normAgent)
     agentsOffline.value = false
-  } catch {
-    agentsOffline.value = true
-    if (!agents.value.length) agents.value = [...SAMPLE_AGENTS]
+  } catch (e) {
+    const network = isNetworkError(e)
+    agentsOffline.value = network
+    if (network && !agents.value.length) agents.value = [...SAMPLE_AGENTS]
   }
 }
 async function loadTeams() {
@@ -312,9 +326,10 @@ async function loadTeams() {
     const raw = await apiGet<unknown>('/agents/teams')
     teams.value = asList(raw).map(normTeam)
     teamsOffline.value = false
-  } catch {
-    teamsOffline.value = true
-    if (!teams.value.length) teams.value = [...SAMPLE_TEAMS]
+  } catch (e) {
+    const network = isNetworkError(e)
+    teamsOffline.value = network
+    if (network && !teams.value.length) teams.value = [...SAMPLE_TEAMS]
   }
 }
 async function loadRuns() {
@@ -322,9 +337,10 @@ async function loadRuns() {
     const raw = await apiGet<unknown>('/agents/runs')
     runs.value = asList(raw).map(normRun)
     runsOffline.value = false
-  } catch {
-    runsOffline.value = true
-    if (!runs.value.length) runs.value = [...SAMPLE_RUNS]
+  } catch (e) {
+    const network = isNetworkError(e)
+    runsOffline.value = network
+    if (network && !runs.value.length) runs.value = [...SAMPLE_RUNS]
   }
 }
 async function loadAll() {
@@ -382,12 +398,19 @@ async function saveAgent() {
   const id = editingId.value
   try {
     if (agentsOffline.value) throw new Error('offline')
-    if (id) await apiPut(`/agents/${encodeURIComponent(id)}`, payload)
-    else await apiPost('/agents', payload)
+    let createdId = ''
+    if (id) {
+      await apiPut(`/agents/${encodeURIComponent(id)}`, payload)
+    } else {
+      const res = await apiPost<unknown>('/agents', payload)
+      const rec = asRecord(res)
+      createdId = pickStr(rec, ['id', 'agent_id', 'pid']) || pickStr(asRecord(rec.agent), ['id', 'agent_id', 'pid'])
+    }
     await loadAgents()
     note.value = id ? `「${name}」已保存。` : `「${name}」已入谱。`
     if (!id) {
-      const created = agents.value.find((a) => a.name === name)
+      // 优先按创建响应 id 找回，避免重名误选；无 id 时回退按名称匹配
+      const created = (createdId ? agents.value.find((a) => a.id === createdId) : undefined) ?? agents.value.find((a) => a.name === name)
       if (created) selectAgent(created)
     }
   } catch (e) {
@@ -403,7 +426,7 @@ async function saveAgent() {
       }
       note.value = '离线模式：改动仅暂存于本页，刷新后还原。'
     } else {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = platformErrText(e)
     }
   } finally {
     saving.value = false
@@ -447,6 +470,8 @@ async function dispatchRun() {
           id: `local-run-${Date.now()}`,
           subject,
           isTeam: runType.value === 'team',
+          isSub: false,
+          kind: runType.value === 'team' ? 'team' : 'solo',
           task,
           goal: runGoal.value.trim(),
           depth: runDepth.value,
@@ -462,7 +487,7 @@ async function dispatchRun() {
       runGoal.value = ''
       note.value = '离线模式：已生成一条模拟运行记录，不会真正执行。'
     } else {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = platformErrText(e)
     }
   } finally {
     dispatching.value = false
@@ -485,7 +510,7 @@ async function approveRun(run: AgentRun) {
       runs.value = runs.value.map((r) => (r.id === run.id ? { ...r, status: 'done', note: '离线模式：本地模拟放行。' } : r))
       note.value = '离线模式：已在本地模拟放行。'
     } else {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = platformErrText(e)
     }
   } finally {
     approvingId.value = ''
@@ -502,15 +527,18 @@ function avatarTone(seed: string): (typeof AVATAR_TONES)[number] {
 function openNewTeam() {
   teamEditingId.value = null
   teamForm.value = { name: '', goal: '', mode: 'sequential', members: [] }
+  teamError.value = ''
   teamModalOpen.value = true
 }
 function openEditTeam(team: AgentTeam) {
   teamEditingId.value = team.id
   teamForm.value = { name: team.name, goal: team.goal, mode: team.mode, members: [...team.members] }
+  teamError.value = ''
   teamModalOpen.value = true
 }
 function closeTeamModal() {
   if (teamSaving.value) return
+  teamError.value = ''
   teamModalOpen.value = false
 }
 function toggleTeamMember(id: string) {
@@ -524,17 +552,22 @@ async function saveTeam() {
   if (teamSaving.value) return
   const name = teamForm.value.name.trim()
   if (!name) {
-    error.value = '请先为团队取名。'
+    teamError.value = '请先为团队取名。'
     return
   }
   if (!teamForm.value.members.length) {
-    error.value = '团队至少需一名成员。'
+    teamError.value = '团队至少需一名成员。'
     return
   }
   teamSaving.value = true
-  error.value = ''
+  teamError.value = ''
   note.value = ''
-  const payload = { name, goal: teamForm.value.goal.trim(), mode: teamForm.value.mode, members: teamForm.value.members }
+  const payload = {
+    name,
+    description: teamForm.value.goal.trim(),
+    orchestration: teamForm.value.mode,
+    member_ids: teamForm.value.members,
+  }
   const id = teamEditingId.value
   try {
     if (teamsOffline.value) throw new Error('offline')
@@ -545,23 +578,35 @@ async function saveTeam() {
     note.value = id ? `团队「${name}」已保存。` : `团队「${name}」已建班。`
   } catch (e) {
     if (teamsOffline.value) {
-      if (id) teams.value = teams.value.map((t) => (t.id === id ? { ...payload, id } : t))
-      else teams.value = [...teams.value, { ...payload, id: `local-team-${Date.now()}` }]
+      const localTeam: AgentTeam = {
+        id: id || `local-team-${Date.now()}`,
+        name,
+        members: teamForm.value.members,
+        mode: teamForm.value.mode,
+        goal: teamForm.value.goal.trim(),
+      }
+      if (id) teams.value = teams.value.map((t) => (t.id === id ? localTeam : t))
+      else teams.value = [...teams.value, localTeam]
       teamModalOpen.value = false
       note.value = '离线模式：团队改动仅暂存于本页，刷新后还原。'
     } else {
-      error.value = e instanceof Error ? e.message : String(e)
+      // 弹层内联展示错误，避免被 modal-mask 遮挡页面顶部提示条
+      teamError.value = platformErrText(e)
     }
   } finally {
     teamSaving.value = false
   }
 }
 
-/* ══ 轮询：运行监视每 5 秒 ══ */
+/* ══ 轮询：运行监视每 5 秒；页面不可见时暂停，切回时立即刷新一次 ══ */
 let timer: number | undefined
+function tickLoadRuns() {
+  if (document.hidden) return
+  void loadRuns()
+}
 onMounted(async () => {
   await loadAll()
-  timer = window.setInterval(loadRuns, 5000)
+  timer = window.setInterval(tickLoadRuns, 5000)
 })
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer)
@@ -763,7 +808,7 @@ onUnmounted(() => {
           <ul v-if="runs.length" class="run-list">
             <li v-for="run in runs" :key="run.id" class="run-item">
               <div class="run-head">
-                <span class="run-subject">{{ run.subject }}<i v-if="run.isTeam" class="run-kind">班组</i></span>
+                <span class="run-subject">{{ run.subject }}<i v-if="run.isTeam" class="run-kind">班组</i><i v-if="run.isSub" class="run-kind">子代理</i></span>
                 <span class="run-tags">
                   <GfTag v-if="run.simulated" tone="gold">模拟</GfTag>
                   <GfTag :tone="RUN_STATUS_META[run.status].tone">{{ RUN_STATUS_META[run.status].label }}</GfTag>
@@ -887,6 +932,7 @@ onUnmounted(() => {
           </ul>
           <p v-else class="muted-inline">尚无智能体可选，请先在左侧「智囊谱」新建。</p>
         </div>
+        <p v-if="teamError" class="team-error" role="alert">{{ teamError }}</p>
         <div class="form-actions">
           <button class="form-submit" type="button" :disabled="teamSaving" @click="saveTeam">{{ teamSaving ? '保存中…' : '保存团队' }}</button>
           <button class="form-cancel" type="button" :disabled="teamSaving" @click="closeTeamModal">取消</button>
@@ -991,6 +1037,7 @@ select.input { appearance: auto; cursor: pointer; }
 .hd-action { margin-left: auto; }
 .muted { color: var(--ink-soft); font-size: 13px; padding: 14px 0; font-family: var(--font-kai); letter-spacing: 2px; }
 .muted-inline { font-size: 12px; color: var(--ink-muted); }
+.team-error { margin-top: 12px; font-size: 12px; color: var(--cinnabar-deep); line-height: 1.6; }
 
 /* ── 左栏：智能体列表 ── */
 .agent-list { list-style: none; display: grid; gap: 10px; }

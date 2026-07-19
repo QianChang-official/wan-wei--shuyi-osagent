@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP screendump 截取麒麟 V11 虚拟机画面并转为 PNG（依赖 PIL）。
 import struct
 import sys
 import time

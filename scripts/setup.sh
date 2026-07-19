@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 一键环境安装：创建 backend/.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 20+、npm 10+）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

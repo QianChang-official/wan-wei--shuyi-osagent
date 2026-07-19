@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 交付验收：安装依赖后运行后端 compileall+pytest、前端双构建摘要比对（可复现性）；venv 缺失时明确报错并提示先跑 setup。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

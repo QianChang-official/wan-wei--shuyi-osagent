@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 生成 API key 密钥文件（secrets/wanwei_api_key.txt）并写入 .env 引用；已存在时拒绝覆盖，除非 WANWEI_FORCE_SECRET_ROTATION=1。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

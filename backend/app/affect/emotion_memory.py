@@ -7,7 +7,7 @@ for retrieval prioritisation.
 
 import json
 
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..utils.datetime_utils import utc_now_iso_compact
 from .state_machine import AffectState
 
@@ -47,11 +47,11 @@ def bind_emotion_to_capsule(
         "bound_at": ts,
     })
 
-    conn.execute(
-        "UPDATE memory_capsules_v2 SET affective_metadata=?, updated_at=? WHERE capsule_id=?",
-        (json.dumps(metadata, ensure_ascii=False), ts, capsule_id),
-    )
-    conn.commit()
+    with transaction() as txn:
+        txn.execute(
+            "UPDATE memory_capsules_v2 SET affective_metadata=?, updated_at=? WHERE capsule_id=?",
+            (json.dumps(metadata, ensure_ascii=False), ts, capsule_id),
+        )
 
 
 def apply_emotional_weight(capsule_id: str, weight: float) -> None:
@@ -60,11 +60,10 @@ def apply_emotional_weight(capsule_id: str, weight: float) -> None:
 
     Weight is clamped to [0, 1] and persisted alongside an updated_at stamp.
     """
-    conn = get_conn()
     clamped = max(0.0, min(1.0, weight))
     ts = utc_now_iso_compact()
-    conn.execute(
-        "UPDATE memory_capsules_v2 SET emotional_weight=?, updated_at=? WHERE capsule_id=?",
-        (clamped, ts, capsule_id),
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE memory_capsules_v2 SET emotional_weight=?, updated_at=? WHERE capsule_id=?",
+            (clamped, ts, capsule_id),
+        )

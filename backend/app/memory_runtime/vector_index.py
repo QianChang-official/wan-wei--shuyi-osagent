@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from ..audit.service import record
-from ..db import get_conn
+from ..db import get_conn, database_path, transaction
 from ..kylin_sdk.native import MAX_BRIDGE_TIMEOUT_SECONDS, KylinNativeSdkError, get_native_sdk
 from ..utils.datetime_utils import utc_now_iso_compact
 
@@ -28,12 +28,29 @@ _reindex_state_lock = threading.Lock()
 _reindex_active = False
 _delete_sweep_lock = threading.Lock()
 DELETE_VERIFICATION_DELAY_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
+
+# B2: 模块级 once 标记，按 db_path 缓存。避免 8 处调用点每次都跑 4 条
+# CREATE TABLE + migrate + 2 次 commit。测试切换 db 时新路径会重新 init。
+_vector_schema_done: set[str] = set()
+_vector_schema_lock = threading.Lock()
 DELETE_CLAIM_LEASE_SECONDS = int(MAX_BRIDGE_TIMEOUT_SECONDS) + 1
 DELETE_CLAIM_WAIT_SECONDS = 1.0
 DELETE_CLAIM_POLL_SECONDS = 0.02
 
 
 def init_vector_schema() -> None:
+    """初始化向量索引 schema，每个 db_path 只跑一次（线程安全）。"""
+    path = str(database_path())
+    if path in _vector_schema_done:
+        return
+    with _vector_schema_lock:
+        if path in _vector_schema_done:
+            return
+        _init_vector_schema_impl()
+        _vector_schema_done.add(path)
+
+
+def _init_vector_schema_impl() -> None:
     conn = get_conn()
     conn.execute(
         """
@@ -170,15 +187,14 @@ def _index_capsule_with_adapter(
         "model": response.get("model"),
         "dimension": response.get("dimension"),
     }
-    conn = get_conn()
-    conn.execute(
-        """
-        UPDATE memory_capsules_v2 SET index_refs=?, updated_at=?
-        WHERE capsule_id=? AND json_extract(state,'$.lifecycle')='active'
-        """,
-        (json.dumps(index_refs, ensure_ascii=False, sort_keys=True), utc_now_iso_compact(), capsule_id),
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE memory_capsules_v2 SET index_refs=?, updated_at=?
+            WHERE capsule_id=? AND json_extract(state,'$.lifecycle')='active'
+            """,
+            (json.dumps(index_refs, ensure_ascii=False, sort_keys=True), utc_now_iso_compact(), capsule_id),
+        )
     record("kylin_sdk_vector_index", {"capsule_id": capsule_id, "vector_id": vector_id, "status": "indexed"})
     return {"backend": "kylin_native", "indexed": True, "vector_id": vector_id, "collection": adapter.collection}
 
@@ -631,17 +647,17 @@ def _get_or_create_vector_ref(capsule_id: str, collection_name: str) -> int:
             raise KylinNativeSdkError("native_vector_delete_in_progress")
         return int(row["vector_id"])
     timestamp = utc_now_iso_compact()
-    vector_id = _allocate_vector_id_in_transaction(conn, timestamp)
-    conn.execute(
-        """
-        INSERT INTO memory_vector_refs(
-            vector_id,capsule_id,provider,collection_name,status,
-            attempt_generation,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?)
-        """,
-        (vector_id, capsule_id, PROVIDER, collection_name, "allocated", 0, timestamp, timestamp),
-    )
-    conn.commit()
+    with transaction() as txn:
+        vector_id = _allocate_vector_id_in_transaction(txn, timestamp)
+        txn.execute(
+            """
+            INSERT INTO memory_vector_refs(
+                vector_id,capsule_id,provider,collection_name,status,
+                attempt_generation,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (vector_id, capsule_id, PROVIDER, collection_name, "allocated", 0, timestamp, timestamp),
+        )
     return vector_id
 
 
@@ -669,17 +685,16 @@ def _pending_capsules(collection_name: str, limit: int, *, retry_failed: bool) -
 
 
 def _set_status(vector_id: int, status: str, *, model_name: Any = None, dimension: Any = None) -> None:
-    conn = get_conn()
-    conn.execute(
-        """
-        UPDATE memory_vector_refs
-        SET status=?, model_name=COALESCE(?, model_name), dimension=COALESCE(?, dimension), updated_at=?
-        WHERE vector_id=?
-        """,
-        (status, model_name if isinstance(model_name, str) else None, dimension if isinstance(dimension, int) else None,
-         utc_now_iso_compact(), vector_id),
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE memory_vector_refs
+            SET status=?, model_name=COALESCE(?, model_name), dimension=COALESCE(?, dimension), updated_at=?
+            WHERE vector_id=?
+            """,
+            (status, model_name if isinstance(model_name, str) else None, dimension if isinstance(dimension, int) else None,
+             utc_now_iso_compact(), vector_id),
+        )
 
 
 def _set_status_if_current(
@@ -689,17 +704,16 @@ def _set_status_if_current(
     expected_status: str,
     attempt_generation: int | None = None,
 ) -> bool:
-    conn = get_conn()
     generation_clause = " AND attempt_generation=?" if attempt_generation is not None else ""
     parameters: tuple[Any, ...] = (status, utc_now_iso_compact(), vector_id, expected_status)
     if attempt_generation is not None:
         parameters += (attempt_generation,)
-    updated = conn.execute(
-        "UPDATE memory_vector_refs SET status=?, updated_at=? "
-        f"WHERE vector_id=? AND status=?{generation_clause}",
-        parameters,
-    )
-    conn.commit()
+    with transaction() as conn:
+        updated = conn.execute(
+            "UPDATE memory_vector_refs SET status=?, updated_at=? "
+            f"WHERE vector_id=? AND status=?{generation_clause}",
+            parameters,
+        )
     return updated.rowcount == 1
 
 
@@ -789,28 +803,27 @@ def _publish_indexed_if_active(
     model_name: Any = None,
     dimension: Any = None,
 ) -> bool:
-    conn = get_conn()
-    published = conn.execute(
-        """
-        UPDATE memory_vector_refs
-        SET status='indexed', model_name=COALESCE(?, model_name),
-            dimension=COALESCE(?, dimension), updated_at=?
-        WHERE vector_id=? AND status='indexing' AND attempt_generation=?
-          AND EXISTS (
-              SELECT 1 FROM memory_capsules_v2
-              WHERE capsule_id=? AND json_extract(state,'$.lifecycle')='active'
-          )
-        """,
-        (
-            model_name if isinstance(model_name, str) else None,
-            dimension if isinstance(dimension, int) else None,
-            utc_now_iso_compact(),
-            vector_id,
-            attempt_generation,
-            capsule_id,
-        ),
-    )
-    conn.commit()
+    with transaction() as conn:
+        published = conn.execute(
+            """
+            UPDATE memory_vector_refs
+            SET status='indexed', model_name=COALESCE(?, model_name),
+                dimension=COALESCE(?, dimension), updated_at=?
+            WHERE vector_id=? AND status='indexing' AND attempt_generation=?
+              AND EXISTS (
+                  SELECT 1 FROM memory_capsules_v2
+                  WHERE capsule_id=? AND json_extract(state,'$.lifecycle')='active'
+              )
+            """,
+            (
+                model_name if isinstance(model_name, str) else None,
+                dimension if isinstance(dimension, int) else None,
+                utc_now_iso_compact(),
+                vector_id,
+                attempt_generation,
+                capsule_id,
+            ),
+        )
     return published.rowcount == 1
 
 
@@ -845,10 +858,9 @@ def _allocate_vector_id_in_transaction(conn: sqlite3.Connection, timestamp: str)
 
 
 def _record_vector_tombstone(vector_id: int, collection_name: str) -> None:
-    conn = get_conn()
     timestamp = utc_now_iso_compact()
-    _record_vector_tombstone_in_transaction(conn, vector_id, collection_name, timestamp)
-    conn.commit()
+    with transaction() as conn:
+        _record_vector_tombstone_in_transaction(conn, vector_id, collection_name, timestamp)
 
 
 def _record_vector_tombstone_in_transaction(
@@ -1064,17 +1076,16 @@ def _current_delete_status(vector_id: int, collection_name: str) -> str | None:
 
 
 def _set_tombstone_status(vector_id: int, collection_name: str, status: str) -> None:
-    conn = get_conn()
     timestamp = utc_now_iso_compact()
-    conn.execute(
-        """
-        UPDATE memory_vector_tombstones
-        SET status=?,checked_at=?,updated_at=?
-        WHERE provider=? AND collection_name=? AND vector_id=?
-        """,
-        (status, timestamp, timestamp, PROVIDER, collection_name, vector_id),
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            """
+            UPDATE memory_vector_tombstones
+            SET status=?,checked_at=?,updated_at=?
+            WHERE provider=? AND collection_name=? AND vector_id=?
+            """,
+            (status, timestamp, timestamp, PROVIDER, collection_name, vector_id),
+        )
 
 
 def _claim_deleted_tombstone_verification(
@@ -1083,27 +1094,26 @@ def _claim_deleted_tombstone_verification(
     expected_checked_at: str,
 ) -> bool:
     """Claim one delayed verification across worker processes."""
-    conn = get_conn()
     timestamp = utc_now_iso_compact()
-    claimed = conn.execute(
-        """
-        UPDATE memory_vector_tombstones
-        SET checked_at=?,updated_at=?
-        WHERE provider=? AND collection_name=? AND vector_id=? AND status='deleted'
-          AND COALESCE(checked_at,updated_at)=?
-          AND julianday(COALESCE(checked_at,updated_at))<=julianday('now', ?)
-        """,
-        (
-            timestamp,
-            timestamp,
-            PROVIDER,
-            collection_name,
-            vector_id,
-            expected_checked_at,
-            f"-{DELETE_VERIFICATION_DELAY_SECONDS} seconds",
-        ),
-    )
-    conn.commit()
+    with transaction() as conn:
+        claimed = conn.execute(
+            """
+            UPDATE memory_vector_tombstones
+            SET checked_at=?,updated_at=?
+            WHERE provider=? AND collection_name=? AND vector_id=? AND status='deleted'
+              AND COALESCE(checked_at,updated_at)=?
+              AND julianday(COALESCE(checked_at,updated_at))<=julianday('now', ?)
+            """,
+            (
+                timestamp,
+                timestamp,
+                PROVIDER,
+                collection_name,
+                vector_id,
+                expected_checked_at,
+                f"-{DELETE_VERIFICATION_DELAY_SECONDS} seconds",
+            ),
+        )
     return claimed.rowcount == 1
 
 

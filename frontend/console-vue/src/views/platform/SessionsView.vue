@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { apiDel, apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiDel, apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
@@ -55,6 +55,8 @@ function numOr(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 function errText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
   return e instanceof Error ? e.message : String(e)
 }
 function normSession(raw: unknown, index: number): SessionItem {
@@ -76,7 +78,8 @@ function normPhrase(raw: unknown, index: number): Phrase {
   return {
     id: String(o.id ?? o.phrase_id ?? `p-${index}`),
     text: String(o.text ?? o.phrase ?? o.content ?? ''),
-    uses: numOr(o.uses ?? o.use_count ?? o.count ?? o.used) ?? 0,
+    // 后端字段为 usage_count（memory_center.py），其余为兼容候选（08-#28）
+    uses: numOr(o.uses ?? o.usage_count ?? o.use_count ?? o.count ?? o.used) ?? 0,
   }
 }
 function fmtTime(raw: string): string {
@@ -125,21 +128,32 @@ async function loadAll(): Promise<void> {
   ])
   const [sess, phr] = results
   const failedAll = results.every((r) => r.status === 'rejected')
-  offline.value = failedAll
+  const allNetwork = results.every(
+    (r) => r.status === 'rejected' && isNetworkError(r.reason),
+  )
+  const firstFailure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  offline.value = allNetwork
 
   if (sess.status === 'fulfilled') {
     sessions.value = asList(sess.value, ['items', 'sessions', 'list', 'data']).map(normSession)
-  } else if (failedAll) {
+  } else if (allNetwork) {
     sessions.value = FALLBACK_SESSIONS.map((s) => ({ ...s }))
+  } else {
+    // 鉴权/服务端错误不得沿用先前离线示例，避免把示例误当真实会话。
+    sessions.value = []
   }
 
   if (phr.status === 'fulfilled') {
     phrases.value = asList(phr.value, ['items', 'phrases', 'list', 'data']).map(normPhrase).filter((p) => p.text)
-  } else if (failedAll) {
+  } else if (allNetwork) {
     phrases.value = FALLBACK_PHRASES.map((p) => ({ ...p }))
+  } else {
+    phrases.value = []
   }
 
-  if (!failedAll && results.some((r) => r.status === 'rejected')) {
+  if (failedAll && firstFailure && !allNetwork) {
+    error.value = errText(firstFailure.reason)
+  } else if (!failedAll && firstFailure) {
     error.value = '部分数据加载失败，已展示可用内容'
   }
   loading.value = false
@@ -174,9 +188,12 @@ async function archive(s: SessionItem): Promise<void> {
   busyId.value = s.id
   error.value = ''
   try {
-    await apiPost<unknown>(`/memory/sessions/${encodeURIComponent(s.id)}/archive`, {})
-    s.archived = true
-    s.pinned = false
+    const res = await apiPost<unknown>(`/memory/sessions/${encodeURIComponent(s.id)}/archive`, {})
+    // 以后端返回的会话为准（08-#29）：后端归档不清置顶，
+    // 前端不再本地强置 pinned=false，避免与刷新后的真实状态漂移。
+    const sess = asRecord(asRecord(res).session ?? res)
+    s.archived = typeof sess.archived === 'boolean' ? sess.archived : true
+    if (typeof sess.pinned === 'boolean') s.pinned = sess.pinned
   } catch (e) {
     error.value = `归档失败：${errText(e)}`
   } finally {
@@ -189,8 +206,10 @@ async function unarchive(s: SessionItem): Promise<void> {
   busyId.value = s.id
   error.value = ''
   try {
-    await apiPut<unknown>(`/memory/sessions/${encodeURIComponent(s.id)}`, { archived: false })
-    s.archived = false
+    const res = await apiPost<unknown>(`/memory/sessions/${encodeURIComponent(s.id)}/unarchive`, {})
+    const sess = asRecord(asRecord(res).session ?? res)
+    s.archived = typeof sess.archived === 'boolean' ? sess.archived : false
+    if (typeof sess.pinned === 'boolean') s.pinned = sess.pinned
   } catch (e) {
     error.value = `恢复失败：${errText(e)}`
   } finally {
@@ -210,7 +229,7 @@ async function addPhrase(): Promise<void> {
     phrases.value.push({
       id: String(item.id ?? `p-${Date.now()}`),
       text: String(item.text ?? text),
-      uses: numOr(item.uses ?? item.use_count ?? item.count) ?? 0,
+      uses: numOr(item.uses ?? item.usage_count ?? item.use_count ?? item.count) ?? 0,
     })
     newPhrase.value = ''
   } catch (e) {
@@ -258,6 +277,24 @@ async function copyPhrase(p: Phrase): Promise<void> {
     }, 1600)
   } catch {
     error.value = '复制失败，请手动选择文本复制'
+    return
+  }
+  void bumpPhraseUsage(p)
+}
+
+/* 复制成功后上报使用计数（08-#28）：本地先 +1 乐观展示，
+   再以 POST /phrases/{pid}/use 的响应校准；上报失败静默，
+   下次刷新以服务端计数为准。 */
+async function bumpPhraseUsage(p: Phrase): Promise<void> {
+  p.uses += 1
+  if (offline.value) return
+  try {
+    const res = await apiPost<unknown>(`/memory/phrases/${encodeURIComponent(p.id)}/use`, {})
+    const item = asRecord(asRecord(res).item ?? res)
+    const serverCount = numOr(item.usage_count ?? item.uses ?? item.use_count)
+    if (serverCount !== null) p.uses = serverCount
+  } catch {
+    // 计数上报失败不打断复制流程
   }
 }
 
@@ -274,7 +311,7 @@ onMounted(loadAll)
     />
 
     <div v-if="offline" class="notice warn" role="status">
-      <span class="notice-text">未连上后端，当前展示离线示例数据；操作将在连接恢复后生效。</span>
+      <span class="notice-text">未连上后端，当前展示离线示例数据；编辑与计数暂不会保存，连接恢复后请重试。</span>
       <GfButton variant="ghost" small @click="loadAll">重试连接</GfButton>
     </div>
     <div v-else-if="error" class="notice error" role="alert" aria-live="polite">
@@ -371,7 +408,7 @@ onMounted(loadAll)
           <input
             v-model.trim="newPhrase"
             class="phrase-input"
-            maxlength="100"
+            maxlength="200"
             placeholder="新增常用语，例如：帮我写个周报"
             :disabled="phraseBusy"
           />

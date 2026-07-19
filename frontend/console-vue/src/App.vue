@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { setApiKey } from '@/api/client'
+import { setPlatformApiKey } from '@/api/platform'
 import { useHealth } from '@/composables/useHealth'
 import PetalFall from '@/components/gf/PetalFall.vue'
 import ScrollProgress from '@/components/gf/ScrollProgress.vue'
@@ -10,7 +11,11 @@ import { getPetalsEnabled, setPetalsEnabled } from '@/components/gf/shared'
 
 const { online, version } = useHealth()
 const apiKey = ref('')
-function updateApiKey() { setApiKey(apiKey.value) }
+function updateApiKey() {
+  const value = apiKey.value
+  setApiKey(value)
+  setPlatformApiKey(value)
+}
 
 const route = useRoute()
 const pageSeal = computed(() => (route.meta.seal as string) || '枢')
@@ -53,6 +58,15 @@ const navGroups = [
     ],
   },
   {
+    title: '枢忆运维',
+    items: [
+      { to: '/capsules', seal: '忆', name: '枢忆核', en: 'Capsules' },
+      { to: '/command', seal: '契', name: '司契指挥', en: 'Command' },
+      { to: '/reflection', seal: '鉴', name: '兰台复盘', en: 'Reflection' },
+      { to: '/audit', seal: '台', name: '审计流水', en: 'Audit' },
+    ],
+  },
+  {
     title: '万枢协作',
     items: [
       { to: '/platform/workbench', seal: '枢', name: '万枢工作台', en: 'Workbench' },
@@ -65,6 +79,7 @@ const navGroups = [
       { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
       { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
       { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
+      { to: '/mobile', seal: '伴', name: '手机伴侣', en: 'Mobile' },
     ],
   },
 ]

@@ -1,3 +1,4 @@
+# 麒麟 V11 QEMU 虚拟机管理（Windows）：install 模式创建虚拟机并挂载 ISO 安装，boot 模式日常启动。
 [CmdletBinding()]
 param(
     [ValidateSet('install', 'boot')]

@@ -1,5 +1,7 @@
+import logging
 import os
 import uuid,json
+import sqlite3
 import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -7,6 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Res
 from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
+from .security import encryption
 from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
 from .security.headers import SecurityHeadersMiddleware
 from .security.rate_limit import RateLimitMiddleware
@@ -17,7 +20,7 @@ from .schemas import (
     CommandLoopIn, ReflectionIn, SoulConnectIn, SoulChatIn,
     SoulPersonaUpdateIn, SoulDreamIn,
 )
-from .db import close_all, get_conn
+from .db import close_all, get_conn, transaction
 from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record, record_in_transaction
 from .retrieval.service import search as do_search
@@ -41,6 +44,7 @@ from .export_center.service import list_packages
 from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
 from .utils.datetime_utils import utc_now_iso
 from .soul import create_persona, get_persona, update_persona, get_soul_state, route_chat
+from .soul.persona import PersonaStoreError
 from .affect import AffectState, load_affect, save_affect, transition, tune_response_style
 from .affect.decay_daemon import run_decay_daemon
 from .perception import intake_perception
@@ -98,6 +102,8 @@ from .reproduction.service import (
     workbench as reproduction_workbench,
 )
 
+logger = logging.getLogger(__name__)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .init_db import main as init_db
@@ -106,6 +112,7 @@ async def lifespan(app: FastAPI):
 
     if is_production_mode():
         get_api_key()
+        encryption.startup_check()
     init_db()
     init_workflow_persistence()
 
@@ -139,6 +146,12 @@ async def lifespan(app: FastAPI):
         daemon=True,
     )
     dream_scheduler_thread.start()
+
+    # -- P2: resume agent runs interrupted by backend restart --
+    # 03-#13: 统一相对导入（此前 from app.platform_api... 绝对导入会让
+    # backend.app.* 与 app.* 两份模块身份并存，连接缓存/状态分裂）
+    from .platform_api.agents import resume_runs
+    resume_runs()
 
     try:
         yield
@@ -192,6 +205,8 @@ def health_live():
 
 @app.get('/health/ready')
 def health_ready():
+    # 03-#19: readiness_report 内部已直接消费 failed_modules()，
+    # 无需 main.py 再后处理。
     report = readiness_report((_vue_dist / 'index.html', _legacy_console / 'index.html'))
     return JSONResponse(report, status_code=200 if report['status'] == 'ready' else 503)
 
@@ -503,8 +518,12 @@ def add_event(event:MemoryEventIn):
     # allow / redact: redact content before storing
     from .security.redaction import redact_sensitive_text
     stored_text = redact_sensitive_text(text) if policy == 'redact' else text
-    conn=get_conn(); conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,stored_text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,stored_text))
-    capsule_id='cap_'+uuid.uuid4().hex[:12]; conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',stored_text,'active',guard['trust_score'],utc_now_iso())); conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id)); conn.commit()
+    capsule_id='cap_'+uuid.uuid4().hex[:12]
+    with transaction() as conn:
+        conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,stored_text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso()))
+        conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,stored_text))
+        conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',stored_text,'active',guard['trust_score'],utc_now_iso()))
+        conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
@@ -701,6 +720,59 @@ def _native_delete_states(result: dict) -> dict[int, int]:
     return states
 
 
+def _legacy_capsule_links(conn, event_ids: list[str]) -> dict[str, str]:
+    """从 memory_event_capsules 读取 event→capsule 持久链接（只读）。"""
+    if not event_ids:
+        return {}
+    placeholders = ','.join('?' for _ in event_ids)
+    return {
+        row['event_id']: row['capsule_id']
+        for row in conn.execute(
+            f"SELECT event_id,capsule_id FROM memory_event_capsules WHERE event_id IN ({placeholders})",
+            event_ids,
+        ).fetchall()
+    }
+
+
+def _audit_legacy_capsule_links(conn, event_ids: list[str], known: set[str]) -> dict[str, str]:
+    """从 audit_logs 回捞缺失的 legacy event→capsule 链接（只读物化）。
+
+    03-#7: 原实现在 BEGIN IMMEDIATE 写事务内无 LIMIT 全表扫 audit_logs 并逐行
+    json.loads，事务窗口随审计表增长无限拉大。现改为：
+      - 调用方在进入写事务前物化（本函数只读，不占写锁）；
+      - json_extract 在 SQL 层预过滤候选行，仅对命中的少数行 json.loads；
+      - JSON1 不可用的旧 SQLite 构建回退原全表扫（兼容兜底，仍在事务外）。
+    语义保持：按 created_at DESC 遍历，每个 event 取最新一条有效链接。
+    """
+    missing = [e for e in event_ids if e not in known]
+    if not missing:
+        return {}
+    placeholders = ','.join('?' for _ in missing)
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM audit_logs WHERE event_type='memory_write' "
+            f"AND json_extract(payload,'$.event_id') IN ({placeholders}) "
+            "ORDER BY created_at DESC",
+            missing,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            "SELECT payload FROM audit_logs WHERE event_type='memory_write' ORDER BY created_at DESC"
+        ).fetchall()
+    found: dict[str, str] = {}
+    for row in rows:
+        try:
+            audit_payload = json.loads(row['payload'])
+        except (TypeError, ValueError):
+            # 个别历史坏行不再拖垮整个 forget 流程
+            continue
+        event_id = audit_payload.get('event_id')
+        capsule_id = audit_payload.get('capsule_id')
+        if event_id in missing and event_id not in found and capsule_id:
+            found[event_id] = capsule_id
+    return found
+
+
 @app.post('/memory/forget/confirm')
 def forget_confirm(req:ForgetConfirmIn):
     conn=get_conn()
@@ -774,6 +846,24 @@ def forget_confirm(req:ForgetConfirmIn):
         return _replay_completed_forget(
             conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
         )
+    # 03-#7: legacy event→capsule 链接在进入写事务前物化（只读）——原先在
+    # BEGIN IMMEDIATE 内全表扫 audit_logs + 逐行 json.loads，写事务窗口随
+    # 审计表增长无限拉大。缺失链接的 409 判定也随之前置，事务内只剩幂等
+    # 回填与删除。
+    legacy_capsule_ids = _legacy_capsule_links(conn, event_ids)
+    audit_discovered_links: dict[str, str] = {}
+    if len(legacy_capsule_ids) != len(event_ids):
+        audit_discovered_links = _audit_legacy_capsule_links(conn, event_ids, set(legacy_capsule_ids))
+        legacy_capsule_ids.update(audit_discovered_links)
+    missing_legacy_links = sorted(set(event_ids) - set(legacy_capsule_ids))
+    if missing_legacy_links:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                'error': 'legacy_capsule_link_missing',
+                'event_ids': missing_legacy_links,
+            },
+        )
     try:
         conn.execute('BEGIN IMMEDIATE')
         claimed = conn.execute(
@@ -794,30 +884,9 @@ def forget_confirm(req:ForgetConfirmIn):
                     conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
                 )
             raise HTTPException(status_code=409, detail='forget_request_in_progress')
-        legacy_capsule_ids = {
-            row['event_id']: row['capsule_id']
-            for row in conn.execute(
-                f"SELECT event_id,capsule_id FROM memory_event_capsules WHERE event_id IN ({','.join('?' for _ in event_ids)})",
-                event_ids,
-            ).fetchall()
-        } if event_ids else {}
-        if len(legacy_capsule_ids) != len(event_ids):
-            for row in conn.execute("SELECT payload FROM audit_logs WHERE event_type='memory_write' ORDER BY created_at DESC"):
-                audit_payload = json.loads(row['payload'])
-                event_id = audit_payload.get('event_id')
-                capsule_id = audit_payload.get('capsule_id')
-                if event_id in event_ids and event_id not in legacy_capsule_ids and capsule_id:
-                    legacy_capsule_ids[event_id] = capsule_id
-                    conn.execute('INSERT OR IGNORE INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
-        missing_legacy_links = sorted(set(event_ids) - set(legacy_capsule_ids))
-        if missing_legacy_links:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    'error': 'legacy_capsule_link_missing',
-                    'event_ids': missing_legacy_links,
-                },
-            )
+        # 事务内仅幂等回填物化结果（不再扫描 audit_logs）
+        for event_id, capsule_id in audit_discovered_links.items():
+            conn.execute('INSERT OR IGNORE INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
         for event_id in event_ids:
             legacy_capsule_id = legacy_capsule_ids.get(event_id)
             if legacy_capsule_id and req.mode == 'hard_delete':
@@ -874,16 +943,21 @@ def forget_confirm(req:ForgetConfirmIn):
 # ---------------------------------------------------------------------------
 
 def _ensure_dream_lock(soul_id: str) -> None:
-    """Idempotently seed a dream_lock row for the soul."""
+    """Idempotently seed a dream_lock row for the soul.
+
+    03-#10 兼容：FOREIGN KEY 已启用，soul_persona 不存在的幽灵 soul 不再
+    播种 dream_lock 孤儿行（WHERE EXISTS 守卫），调用方语义不变。
+    """
     conn = get_conn()
     ts = utc_now_iso()
     conn.execute(
         """
         INSERT INTO dream_lock(soul_id, pid, started_at, last_dream_at, last_dream_duration_ms, last_dream_summary)
-        VALUES (?, NULL, NULL, NULL, 0, NULL)
+        SELECT ?, NULL, NULL, NULL, 0, NULL
+        WHERE EXISTS (SELECT 1 FROM soul_persona WHERE soul_id=?)
         ON CONFLICT(soul_id) DO NOTHING
         """,
-        (soul_id,),
+        (soul_id, soul_id),
     )
     conn.commit()
 
@@ -891,7 +965,14 @@ def _ensure_dream_lock(soul_id: str) -> None:
 @app.post('/soul/connect')
 def soul_connect(req: SoulConnectIn):
     """Soul injection handshake — returns soul_id + injection_prompt."""
-    soul_id = req.soul_id or create_persona()
+    try:
+        soul_id = req.soul_id or create_persona()
+    except PersonaStoreError as exc:
+        # 03-#6: 建 persona 失败不再假成功返回 sid，显式 500
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'persona_create_failed', 'soul_id': req.soul_id},
+        ) from exc
     _ensure_dream_lock(soul_id)
     injection = build_injection_prompt(soul_id)
     return {
@@ -910,7 +991,14 @@ def soul_state(soul_id: str):
 @app.put('/soul/persona/{soul_id}')
 def soul_persona_update(soul_id: str, req: SoulPersonaUpdateIn):
     """Update persona fields (name, core_traits, voice, soul_values, self_narrative)."""
-    update_persona(soul_id, **req.model_dump(exclude_unset=True))
+    try:
+        update_persona(soul_id, **req.model_dump(exclude_unset=True))
+    except PersonaStoreError as exc:
+        # 03-#6: 写库失败不再 HTTP 200 返回旧值假成功，显式 500
+        raise HTTPException(
+            status_code=500,
+            detail={'error': 'persona_update_failed', 'soul_id': soul_id},
+        ) from exc
     return get_persona(soul_id)
 
 
@@ -963,29 +1051,29 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
     """Lightweight chat completion via the configured model gateway.
 
     P1: tries openai_compatible first, falls back to local_mock.
+    03-#14: env 解析、allowlist 解析与超时常量统一走 model_gateway.service
+    的单源访问函数，不再在本函数内各自重读/重解析。
+    03-#18 如实标注：真实调用在 FastAPI 同步线程池内最长阻塞
+    OPENAI_COMPATIBLE_TIMEOUT_S（90s）一个 worker；慢端点并发可耗尽默认
+    约 40 线程的池。本版本不重构池化方案。
     """
-    import os
+    import time
     import httpx
 
-    from .model_gateway.service import _get_config, _openai_compatible_smoke
     from .security.ssrf import validate_external_url
+    from .model_gateway.service import (
+        OPENAI_COMPATIBLE_TIMEOUT_S,
+        local_llama_allowlist,
+        local_llama_settings,
+    )
 
-    api_base = os.getenv('WANWEI_OPENAI_COMPATIBLE_BASE', '').strip()
-    api_model = os.getenv('WANWEI_OPENAI_COMPATIBLE_MODEL', '').strip() if model == 'default' else model
+    api_base, env_model, _configured = local_llama_settings()
+    api_model = env_model if model == 'default' else model
 
     if api_base and api_model:
         try:
-            allowlist_env = os.getenv('WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST')
-            allowlist = [h.strip() for h in allowlist_env.split(',') if h.strip()] if allowlist_env else None
-            validate_external_url(api_base, allowlist=allowlist)
-            status, latency_ms, text = _openai_compatible_smoke(
-                api_base,
-                '',
-                api_model,
-                '',
-                512,
-            )
-            # Re-run with actual messages payload
+            validate_external_url(api_base, allowlist=local_llama_allowlist())
+            # B3: 单次真实调用（删 smoke 预调，避免双发）
             payload = {
                 'model': api_model,
                 'messages': messages,
@@ -994,10 +1082,12 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
                 'stream': False,
             }
             headers = {'Content-Type': 'application/json'}
-            with httpx.Client(timeout=90, follow_redirects=False) as client:
+            t0 = time.time()
+            with httpx.Client(timeout=OPENAI_COMPATIBLE_TIMEOUT_S, follow_redirects=False) as client:
                 response = client.post(api_base.rstrip('/') + '/chat/completions', json=payload, headers=headers)
                 response.raise_for_status()
                 data = response.json()
+            latency_ms = int((time.time() - t0) * 1000)
             choices = data.get('choices') or []
             content = choices[0].get('message', {}).get('content', '') if choices else ''
             return {
@@ -1007,10 +1097,24 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
                 'latency_ms': latency_ms,
                 'status': 'ok',
             }
-        except Exception:
-            pass
+        except Exception as exc:
+            # B3: 失败如实返回 provider_error，不静默回退 mock
+            logger.warning(
+                'OpenAI-compatible provider request failed: model=%s error_type=%s',
+                api_model,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return {
+                'provider': 'openai_compatible',
+                'model': api_model,
+                'content': '',
+                'latency_ms': 0,
+                'status': 'provider_error',
+                'error': 'provider_unavailable',
+            }
 
-    # Fallback: local_mock deterministic response
+    # Fallback: local_mock（仅当未配置 API 时，而非 API 调用失败时）
     return {
         'provider': 'local_mock',
         'model': 'memoryops-local-mock',
@@ -1037,10 +1141,12 @@ def soul_chat(req: SoulChatIn):
     routed = route_chat(soul_id, req.messages)
     injected_messages = routed['injected_messages']
 
-    # 2. Perception: intake user messages
+    # 2. Perception: intake 当轮新增的 user 消息（最后一条，避免历史重复摄入）
+    # OpenAI 风格客户端每轮重发完整历史，若逐条 intake 会导致记忆 O(N²) 膨胀
+    # 和情绪重复累积；只取最后一条（当轮新增）即可。
     user_contents = [m['content'] for m in req.messages if m.get('role') == 'user']
-    for content in user_contents:
-        intake_perception(soul_id, role='user', content=content)
+    if user_contents:
+        intake_perception(soul_id, role='user', content=user_contents[-1])
 
     # 3. Call model gateway
     completion = _chat_complete(injected_messages, model=req.model)
@@ -1096,6 +1202,7 @@ def audit_logs(limit:int=50,trace_id:str|None=None):
     return {'items':list_logs(limit,trace_id)}
 
 # 万枢协作平台聚合路由：platform_api 包自动发现子模块 router，
-# 单个子模块导入失败仅告警跳过，不影响整体启动。
-from app.platform_api import api_router as platform_api_router
+# 单个子模块导入失败记 error 日志并跳过，不影响整体启动（03-#19）。
+# 03-#13: 统一相对导入。
+from .platform_api import api_router as platform_api_router
 app.include_router(platform_api_router, prefix='/platform')

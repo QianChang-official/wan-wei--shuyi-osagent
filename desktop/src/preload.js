@@ -6,13 +6,22 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+/** 来源校验：仅控制台自身（本机回环 http 页面）允许写 localStorage，
+ *  防止窗口被导航到外站后把 API Key 写进外站 origin 的存储 */
+function isConsoleOrigin() {
+  try {
+    const u = new URL(window.location.href);
+    return u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  } catch { return false; }
+}
+
 // 注入桌面运行标识 + API Key（Web 端 client.ts 已有桌面适配钩子：
 // 读 localStorage 'wanwei-desktop-api-key'，若存在则跳过登录门）
 contextBridge.exposeInMainWorld('wanweiDesktop', {
   isDesktop: true,
   platform: process.platform,
 
-  /** 桌面通知 */
+  /** 桌面通知（主进程侧有节流：10s 内最多 5 条，被丢弃时 resolve false） */
   notify: (title, body) => ipcRenderer.invoke('desktop:notify', { title, body }),
 
   /** 本地文件访问（主进程弹出系统对话框） */
@@ -39,8 +48,10 @@ contextBridge.exposeInMainWorld('wanweiDesktop', {
   floatingWorkspace: (show) => ipcRenderer.invoke('desktop:floating-workspace', { show }),
 });
 
-// DOM 就绪后注入 API Key 与系统深色主题（键名与 Web 端约定一致）
+// DOM 就绪后注入 API Key 与系统深色主题（键名与 Web 端约定一致）；
+// 仅控制台自身 origin 允许写入（外站页面即使意外加载本 preload 也拿不到钥匙）
 window.addEventListener('DOMContentLoaded', () => {
+  if (!isConsoleOrigin()) return;
   try {
     const key = process.env.WANWEI_DESKTOP_API_KEY;
     if (key) localStorage.setItem('wanwei-desktop-api-key', key);
@@ -48,9 +59,15 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 ipcRenderer.on('desktop:theme-changed', (_e, dark) => {
+  if (!isConsoleOrigin()) return;
   try {
     // 键名与 Web 端 gf 组件库约定一致（shared.ts: GF_THEME_KEY = 'gf-theme'）
     localStorage.setItem('gf-theme', dark ? 'night' : 'day');
     document.documentElement.dataset.theme = dark ? 'night' : 'day';
   } catch { /* ignore */ }
 });
+
+// 仅供自检脚本使用（WANWEI_DESKTOP_TEST_EXPORTS=1），正常 Electron 运行无任何导出
+if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+  module.exports = { isConsoleOrigin };
+}

@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 查看麒麟 V11 虚拟机重构建日志 build2.log 尾部。
 import sys
 import time
 

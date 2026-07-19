@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "test:security": "node --test tests/api-key-security.test.mjs",
+    "test:contracts": "node --test tests/fix-W10-workbench-providers.test.mjs tests/fix-w11-contracts.test.mjs tests/w12-session-arch.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

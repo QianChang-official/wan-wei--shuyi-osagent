@@ -2,7 +2,7 @@
 # guest_setup.sh — 麒麟 guest 环境准备：node、npm、rsync、必要库
 set -e
 export DEBIAN_FRONTEND=noninteractive
-PW='@Qwe123asdf'
+PW="${WANWEI_VM_PASSWORD:?必须先设置环境变量 WANWEI_VM_PASSWORD（guest 内 wanwei 用户的 sudo 密码），不再硬编码}"
 SUDO() { echo "$PW" | sudo -S "$@" 2>/dev/null; }
 
 echo "== os =="; cat /etc/os-release | head -3

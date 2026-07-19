@@ -51,7 +51,29 @@ jobs:
         run: npm ci
       - working-directory: frontend/console-vue
         run: npm run build
-      - run: git diff --exit-code -- frontend/console-vue/dist
+      - name: Verify dist artifact is real
+        working-directory: frontend/console-vue
+        shell: bash
+        run: |
+          test -d dist || { echo "dist/ missing after build"; exit 1; }
+          test -n "$(find dist -type f -print -quit)" || { echo "dist/ is empty after build"; exit 1; }
+          test -f dist/index.html || { echo "dist/index.html missing"; exit 1; }
+          grep -q 'id="app"' dist/index.html || { echo "dist/index.html lacks the #app mount point"; exit 1; }
+          grep -q '宛委·枢忆' dist/index.html || { echo "dist/index.html lacks the expected title marker"; exit 1; }
+          test -n "$(find dist/assets -type f -name '*.js' -print -quit)" || { echo "dist/assets has no JS bundle"; exit 1; }
+      - name: Upload console artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-vue-dist
+          path: frontend/console-vue/dist
+          if-no-files-found: error
+          retention-days: 1
+      - working-directory: frontend/console-vue
+        run: npm run test:security
+      - working-directory: frontend/console-vue
+        run: npm run test:contracts
+      - working-directory: desktop
+        run: npm test
 
   integration:
     name: HTTP integration smoke
@@ -67,10 +89,16 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
       - run: python -m pip install -r backend/requirements-dev.txt
+      - name: Download console artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: console-vue-dist
+          path: frontend/console-vue/dist
       - name: Start application
         shell: bash
         env:
           WANWEI_API_KEY: ci-integration-key-with-32-characters
+          WANWEI_ENCRYPTION_KEY: IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90=
           WANWEI_MEMORY_DB: ${{ runner.temp }}/wanwei-integration.db
           WANWEI_PRODUCTION: "1"
         run: |
@@ -121,6 +149,7 @@ jobs:
             --tmpfs /data:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
             --cap-drop ALL --security-opt no-new-privileges \
             -e WANWEI_API_KEY=ci-container-key-with-32-characters \
+            -e WANWEI_ENCRYPTION_KEY=IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90= \
             -p 127.0.0.1:8010:8010 wanwei-shuyi:ci
           for _ in {1..60}; do
             if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=2).read()"; then

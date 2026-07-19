@@ -1,3 +1,4 @@
+# 本地开发启动（Windows）：以 backend\.venv 运行 uvicorn，默认 127.0.0.1:8010；venv 缺失时明确提示先跑 setup.ps1。
 [CmdletBinding()]
 param(
     [int]$Port = 8010,

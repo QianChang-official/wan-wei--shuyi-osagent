@@ -1,3 +1,11 @@
+"""跨平台 HTTP 交付冒烟脚本。
+
+覆盖范围（如实标注）：/health/live、/health/ready、/console/ 页面可达、
+/audit/logs 与 /metrics 的 API Key 鉴权（缺失时 401）、/memory/v2 胶囊写入与检索、
+/workflow/runs dry-run、/metrics 指标文本。
+不覆盖 /platform/* 端点；platform 冒烟由后端 pytest（backend/app/tests/test_platform_api_smoke.py）承担。
+"""
+
 from __future__ import annotations
 
 import argparse

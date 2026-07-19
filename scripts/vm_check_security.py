@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 检查麒麟 V11 虚拟机内 linux-unpacked 可执行文件的 kysec 安全属性与 dmesg。
 import sys
 import time
 

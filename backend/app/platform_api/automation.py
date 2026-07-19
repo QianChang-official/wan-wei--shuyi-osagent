@@ -3,9 +3,15 @@
 职责：
 - 工作流 CRUD（JsonStore('flows')）；
 - AI 编辑：规则式中文解析器把自然语言指令转成完整流程定义 diff
-  （engine='mock'，未接入真实大模型，诚实标注为模拟引擎）；
+  （engine='mock'，未接入真实大模型，诚实标注为模拟引擎）。语义为
+  「全量重建」：proposed_flow 每次都是按整段指令重建的完整流程定义，
+  步骤序列整体替换，不是对现有步骤的增量调整（edit_mode='full_rebuild'）；
 - 运行模拟（JsonStore('flow_runs')）：asyncio 后台逐步执行；shell/http/
   agent/memory 步骤一律不真实执行，仅返回 would_run 说明；
+- 定时调度：router lifespan 内启 asyncio 后台任务，周期扫描 enabled 且
+  trigger='schedule' 的流程，按 cron 五段式（本地时区 aware datetime）
+  判到期触发，运行语义复用 _simulate_run（模拟执行，run 记录如实标注
+  simulated/triggered_by）。进程宕机期间错过的触发不补跑；
 - 定时总览：标准库解析 cron 五段式粗算下次触发时间，算不准的标注
   approximate=true。
 
@@ -15,15 +21,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel, Field, field_validator
 
+from app.platform_api.guards import audit_safe
 from app.platform_api.store import JsonStore
 
 router = APIRouter(prefix='/automation', tags=['platform-automation'])
@@ -74,11 +83,14 @@ def _normalize_flow(pf: dict, fid: str, existing: Optional[dict]) -> dict:
     trigger = pf.get('trigger') if pf.get('trigger') in TRIGGERS else existing.get('trigger', 'manual')
     cron = pf.get('cron')
     cron = cron.strip() if isinstance(cron, str) and cron.strip() else None
-    if trigger != 'schedule':
-        cron = cron  # 非定时流也允许保留 cron 草稿，前端自行忽略
-    steps_in = pf.get('steps') if isinstance(pf.get('steps'), list) else []
+    # 非定时流同样允许保留 cron 草稿，前端自行忽略。
+    # steps 语义：list（含 []）→ 按载荷归一（[] 即显式清空）；
+    # None / 缺失 / 非 list → 保持 existing 原值（新建时为空列表）。
+    raw_steps = pf.get('steps')
+    if not isinstance(raw_steps, list):
+        raw_steps = existing.get('steps') if isinstance(existing.get('steps'), list) else []
     steps: list[dict] = []
-    for i, s in enumerate(steps_in, 1):
+    for i, s in enumerate(raw_steps, 1):
         if not isinstance(s, dict):
             continue
         stype = s.get('type') if s.get('type') in STEP_TYPES else 'agent'
@@ -140,8 +152,26 @@ def _parse_cron_field(field: str, lo: int, hi: int) -> set[int]:
     return values
 
 
-def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple[Optional[str], bool]:
-    """返回 (下次触发本地时间 ISO, approximate)。解析失败/400 天内无触发 → (None, True)。"""
+def _validate_cron_expr(cron: str) -> None:
+    """校验 5 段 cron（分 时 日 月 周）的格式与取值范围，非法抛 ValueError。"""
+    parts = cron.split()
+    if len(parts) != 5:
+        raise ValueError('cron 须为 5 段：分 时 日 月 周（如 "0 7 * * *"）')
+    for part, (lo, hi) in zip(parts, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))):
+        try:
+            _parse_cron_field(part, lo, hi)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(f'cron 字段非法：{part!r}（{exc}）') from exc
+
+
+def _next_cron_dt(cron: Optional[str], now: Optional[datetime] = None) -> tuple[Optional[datetime], bool]:
+    """返回 (下次触发的本地 aware datetime, approximate)。
+
+    显式本地时区（datetime.now().astimezone() 的固定偏移），与全模块
+    _now_iso 的本地 aware 口径一致；naive 入参按本地时间解释并显式化。
+    解析失败 / 400 天内无触发 → (None, True)。固定偏移不处理 DST 跳变，
+    与 approximate 语义一致（部署目标时区无夏令时）。
+    """
     parts = (cron or '').split()
     if len(parts) != 5:
         return None, True
@@ -158,7 +188,9 @@ def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple
     dow_any = parts[4] in ('*', '?')
     # dom 与 dow 同时受限时 cron 语义为「或」，粗算结果标注 approximate
     approximate = not dom_any and not dow_any
-    now = now or datetime.now()
+    now = now or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()  # naive 按本地时间解释，输出始终 aware
     start = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
     sorted_hours = sorted(hours)
     sorted_minutes = sorted(minutes)
@@ -179,10 +211,16 @@ def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple
             continue
         for h in sorted_hours:
             for m in sorted_minutes:
-                cand = datetime(day.year, day.month, day.day, h, m)
+                cand = datetime(day.year, day.month, day.day, h, m, tzinfo=start.tzinfo)
                 if cand >= start:
-                    return cand.isoformat(timespec='seconds'), approximate
+                    return cand, approximate
     return None, True
+
+
+def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple[Optional[str], bool]:
+    """返回 (下次触发本地时间 ISO8601 带时区偏移, approximate)。"""
+    nxt, approximate = _next_cron_dt(cron, now)
+    return (nxt.isoformat(timespec='seconds') if nxt is not None else None), approximate
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +229,21 @@ def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple
 
 _WEEKDAY_MAP = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0}
 
-_CLAUSE_SPLIT_RE = re.compile(r'[，。；;！!？?\n]|(?:然后|接着|接下来|随后|之后|最后|并且?)')
-_CONNECTOR_RE = re.compile(r'^(?:首先|先|再|并|且|第[一二三四五六七八九十\d]+步)[，,：:、\s]*')
+# 裸「并」可作连词分句，但须排除复合词：「合并/归并」等 X+并 用后顾排除，
+# 「并发/并行/并入」等 并+X 用前瞻排除；「并发送」仍按连词切分（发(?!送)
+# 区分「并发」与「并+发送」）。
+_CLAUSE_SPLIT_RE = re.compile(
+    r'[，。；;！!？?\n]'
+    r'|(?:然后|接着|接下来|随后|之后|最后'
+    r'|(?<!合)(?<!归)(?<!裁)(?<!吞)并且'
+    r'|(?<!合)(?<!归)(?<!裁)(?<!吞)并(?!行|入|购|排|联|存|举|重|网|肩|茂|轨|发(?!送))'
+    r'|(?<!不|一|再)再(?!次|也|见|来|者|三))'
+)
+# 句首连接词剥离：裸「并」同样须避开「并发/并行」等复合词（与分句正则同策）。
+_CONNECTOR_RE = re.compile(
+    r'^(?:首先|先|再|且|第[一二三四五六七八九十\d]+步'
+    r'|并(?!发(?!送)|行|入|购|排|联|存|举|重|网|肩|茂|轨))[，,：:、\s]*'
+)
 _SCHED_PREFIX_RE = re.compile(
     r'^\s*每(?:天|日|\d+\s*个?\s*小时|\d+\s*分钟|小时|分钟'
     r'|(?:周|星期)\s*[一二三四五六日天\d]|月\s*\d{1,2}\s*[号日])\s*'
@@ -411,7 +462,10 @@ def _understood(base: Optional[dict], trigger: str, cron: Optional[str], steps: 
     t = TRIGGER_LABELS.get(trigger, trigger)
     if trigger == 'schedule' and cron:
         t += f'（cron {cron}）'
-    who = f'在现有流程「{base["name"]}」基础上调整' if base else '创建新流程'
+    who = (
+        f'按指令全量重建流程定义（将整体替换现有流程「{base["name"]}」的步骤与触发方式）'
+        if base else '创建新流程'
+    )
     return f'{who}：{t}，共 {len(steps)} 个步骤，顺序为 {seq}。'
 
 
@@ -460,42 +514,258 @@ def _simulate_step(step: dict, index: int) -> dict:
     return st
 
 
+def _persist_run(run_id: str, run: dict) -> bool:
+    """写回运行记录。记录已被清理（如流程删除级联清理 runs）时返回
+    False，调用方据此静默终止，避免把孤儿记录重新写回。"""
+    with _runs._lock:  # noqa: SLF001 —— 「存在才写」需与删除互斥
+        data = _runs._read()  # noqa: SLF001
+        if run_id not in data:
+            return False
+        data[run_id] = run
+        _runs._write(data)  # noqa: SLF001
+    return True
+
+
 async def _simulate_run(run_id: str, flow: dict) -> None:
-    run = _runs.get(run_id) or {}
+    """逐步模拟执行。全程兜底：任何异常都把运行终结为 failed + error
+    字段，绝不留 running 假死；done 在终态一律置 True。"""
+    run = _runs.get(run_id)
+    if run is None:
+        return
     steps = flow.get('steps') or []
     results: list[dict] = []
     status = 'done'
-    for i, step in enumerate(steps):
-        st = _simulate_step(step, i)
-        await asyncio.sleep(0.05)  # 模拟耗时，让运行过程可观察
-        st['finished_at'] = _now_iso()
-        results.append(st)
-        run['step_results'] = results
-        _runs.set(run_id, run)
-        if st['status'] == 'failed' and (step.get('on_error') or 'stop') == 'stop':
-            status = 'failed'
-            for j, rest in enumerate(steps[i + 1:], i + 1):
-                results.append({
-                    'step_id': str(rest.get('id') or f'st{j + 1}'),
-                    'name': str(rest.get('name') or f'步骤{j + 1}'),
-                    'type': rest.get('type') or 'agent',
-                    'status': 'skipped',
-                    'detail': '前序步骤失败，on_error=stop，本步骤跳过',
-                    'would_run': '',
-                    'started_at': None,
-                    'finished_at': None,
-                })
+    try:
+        for i, step in enumerate(steps):
+            st = _simulate_step(step, i)
+            await asyncio.sleep(0.05)  # 模拟耗时，让运行过程可观察
+            st['finished_at'] = _now_iso()
+            results.append(st)
             run['step_results'] = results
-            _runs.set(run_id, run)
-            break
+            if not _persist_run(run_id, run):
+                return
+            if st['status'] == 'failed' and (step.get('on_error') or 'stop') == 'stop':
+                status = 'failed'
+                for j, rest in enumerate(steps[i + 1:], i + 1):
+                    results.append({
+                        'step_id': str(rest.get('id') or f'st{j + 1}'),
+                        'name': str(rest.get('name') or f'步骤{j + 1}'),
+                        'type': rest.get('type') or 'agent',
+                        'status': 'skipped',
+                        'detail': '前序步骤失败，on_error=stop，本步骤跳过',
+                        'would_run': '',
+                        'started_at': None,
+                        'finished_at': None,
+                    })
+                run['step_results'] = results
+                if not _persist_run(run_id, run):
+                    return
+                break
+    except Exception as exc:  # noqa: BLE001 —— 兜底：运行绝不留 running 假死
+        status = 'failed'
+        run['error'] = f'运行模拟内部异常：{exc!r}'
     run['status'] = status
+    run['done'] = True
     run['finished_at'] = _now_iso()
-    _runs.set(run_id, run)
+    _persist_run(run_id, run)
+
+
+def _try_create_run(flow: dict, *, triggered_by: str) -> Optional[dict]:
+    """创建 running 记录；同流程已有 running 时返回 None（重入拒绝）。
+
+    重入检查与创建写入在同一 store 锁内完成，避免并发双开。
+    """
+    fid = str(flow.get('id') or '')
+    rid = _new_id('run')
+    run = {
+        'id': rid,
+        'flow_id': fid,
+        'flow_name': flow.get('name') or '',
+        'status': 'running',
+        'done': False,
+        'step_results': [],
+        'started_at': _now_iso(),
+        'finished_at': None,
+        'simulated': True,
+        'triggered_by': triggered_by,
+    }
+    if not flow.get('enabled', True):
+        run['note'] = '流程处于停用状态，本次为手动强制执行'
+    with _runs._lock:  # noqa: SLF001 —— 重入检查与创建需原子
+        data = _runs._read()  # noqa: SLF001
+        for existing in data.values():
+            if isinstance(existing, dict) and existing.get('flow_id') == fid \
+                    and existing.get('status') == 'running':
+                return None
+        data[rid] = run
+        _runs._write(data)  # noqa: SLF001
+    return run
+
+
+def _launch_run(run_id: str, flow: dict) -> None:
+    """独立线程里跑 asyncio 事件循环执行模拟：不依赖请求处理所在 loop 的
+    生命周期（TestClient/部分中间件下 create_task 的任务可能不再推进），
+    对 uvicorn 等常驻 loop 同样安全；JsonStore 自带线程锁。"""
+    threading.Thread(
+        target=lambda: asyncio.run(_simulate_run(run_id, flow)),
+        name=f'flow-run-{run_id}',
+        daemon=True,
+    ).start()
+
+
+# ---------------------------------------------------------------------------
+# 定时调度：router lifespan 内的最小 cron 调度循环
+# ---------------------------------------------------------------------------
+
+_SCHEDULER_INTERVAL_ENV = 'WANWEI_FLOW_SCHEDULER_INTERVAL_SECONDS'
+_DEFAULT_SCHEDULER_INTERVAL = 30.0
+
+# fid -> {'updated_at': str, 'due': Optional[datetime]}；仅调度协程读写，
+# 进程内存态：重启后按当前时间重算，宕机期间错过的触发不补跑。
+_schedule_state: dict[str, dict] = {}
+
+
+def _scheduler_interval() -> float:
+    try:
+        raw = os.environ.get(_SCHEDULER_INTERVAL_ENV, '').strip()
+        return max(0.1, float(raw)) if raw else _DEFAULT_SCHEDULER_INTERVAL
+    except ValueError:
+        return _DEFAULT_SCHEDULER_INTERVAL
+
+
+def _scheduler_tick(now: Optional[datetime] = None) -> list[str]:
+    """扫一遍 enabled 的定时流程，到期即触发一次模拟运行。
+
+    返回本轮触发的 run id 列表。同流程已有 running 时跳过本次触发
+    （不堆积），并在 audit 如实记录。
+    """
+    now = now or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    fired: list[str] = []
+    flows = _flows.all()
+    live_fids = {fid for fid, f in flows.items() if isinstance(f, dict)}
+    for stale in set(_schedule_state) - live_fids:
+        _schedule_state.pop(stale, None)
+    for fid, flow in flows.items():
+        if not isinstance(flow, dict):
+            continue
+        if flow.get('trigger') != 'schedule' or not flow.get('enabled', True) \
+                or not flow.get('cron'):
+            _schedule_state.pop(fid, None)
+            continue
+        state = _schedule_state.get(fid)
+        if state is None or state.get('updated_at') != flow.get('updated_at'):
+            due, _approx = _next_cron_dt(flow['cron'], now)
+            state = {'updated_at': flow.get('updated_at'), 'due': due}
+            _schedule_state[fid] = state
+        due = state.get('due')
+        if due is None or due > now:
+            continue
+        run = _try_create_run(flow, triggered_by='schedule')
+        if run is not None:
+            _launch_run(run['id'], flow)
+            fired.append(run['id'])
+            audit_safe('flow_run_started', {'run_id': run['id'], 'flow_id': fid, 'manual': False})
+        else:
+            audit_safe('flow_run_skipped', {'flow_id': fid, 'reason': '已有运行进行中，跳过本次定时触发'})
+        nxt, _approx = _next_cron_dt(flow['cron'], now)
+        state['due'] = nxt
+        state['updated_at'] = flow.get('updated_at')
+    return fired
+
+
+async def _scheduler_loop(stop: asyncio.Event) -> None:
+    """周期调度循环：单轮扫描失败不拖垮循环本身。"""
+    while not stop.is_set():
+        try:
+            _scheduler_tick()
+        except Exception:  # noqa: BLE001 —— 单轮失败静默，下轮继续
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_scheduler_interval())
+        except asyncio.TimeoutError:
+            pass
+
+
+def _recover_interrupted_runs() -> int:
+    """启动时回收僵尸 running：服务重启/崩溃导致的中断一律终结为
+    failed + error 说明，避免运行记录永久假死。返回回收条数。"""
+    recovered = 0
+    with _runs._lock:  # noqa: SLF001
+        data = _runs._read()  # noqa: SLF001
+        changed = False
+        for run in data.values():
+            if isinstance(run, dict) and run.get('status') == 'running':
+                run['status'] = 'failed'
+                run['done'] = True
+                run['error'] = '服务重启，本次运行被中断，已按失败终结'
+                run['finished_at'] = run.get('finished_at') or _now_iso()
+                changed = True
+                recovered += 1
+        if changed:
+            _runs._write(data)  # noqa: SLF001
+    return recovered
+
+
+async def _automation_lifespan(_app: Any) -> Any:
+    """router 级 lifespan：启动时回收僵尸 running，并启动 cron 调度协程。"""
+    _recover_interrupted_runs()
+    stop = asyncio.Event()
+    task = asyncio.create_task(_scheduler_loop(stop), name='flow-cron-scheduler')
+    try:
+        yield
+    finally:
+        stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+
+# APIRouter 构造时未传 lifespan：此处替换默认 lifespan_context，
+# platform_api 聚合 include_router 时会向上合并进应用 lifespan。
+router.lifespan_context = asynccontextmanager(_automation_lifespan)
+
+
+# ---------------------------------------------------------------------------
+# 对外视图：契约字段（flow.next_run / run.done / run.simulated）
+# ---------------------------------------------------------------------------
+
+def _flow_view(flow: dict) -> dict:
+    """flow 对外视图：补 next_run（schedule 且 enabled 时的下一次触发
+    ISO8601，否则 None）。读取时现算不落库，避免存储值过期。"""
+    view = dict(flow)
+    next_run: Optional[str] = None
+    if view.get('trigger') == 'schedule' and view.get('enabled', True):
+        next_run, _approx = _next_cron_run(view.get('cron'))
+    view['next_run'] = next_run
+    return view
+
+
+def _run_view(run: dict) -> dict:
+    """run 对外视图：补齐契约字段 done/simulated，兼容修复前的旧记录。"""
+    view = dict(run)
+    done = view.get('done')
+    view['done'] = done if isinstance(done, bool) else str(view.get('status') or '') != 'running'
+    view['simulated'] = bool(view.get('simulated', True))
+    return view
 
 
 # ---------------------------------------------------------------------------
 # 路由 —— 固定路径先于参数路径
 # ---------------------------------------------------------------------------
+
+def _check_cron_value(v: Optional[str]) -> Optional[str]:
+    """cron 写入口统一校验：5 段格式 + 取值范围，非法抛 ValueError（pydantic 转 422）。"""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    _validate_cron_expr(v)
+    return v
+
 
 class FlowIn(BaseModel):
     name: str = Field(min_length=1)
@@ -505,6 +775,11 @@ class FlowIn(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     enabled: bool = True
 
+    @field_validator('cron')
+    @classmethod
+    def _cron_valid(cls, v: Optional[str]) -> Optional[str]:
+        return _check_cron_value(v)
+
 
 class FlowPatch(BaseModel):
     name: Optional[str] = None
@@ -513,6 +788,11 @@ class FlowPatch(BaseModel):
     cron: Optional[str] = None
     steps: Optional[list[dict]] = None
     enabled: Optional[bool] = None
+
+    @field_validator('cron')
+    @classmethod
+    def _cron_valid(cls, v: Optional[str]) -> Optional[str]:
+        return _check_cron_value(v)
 
 
 class AiEditIn(BaseModel):
@@ -528,7 +808,7 @@ class AiApplyIn(BaseModel):
 def list_flows() -> list[dict]:
     items = [f for f in _flows.all().values() if isinstance(f, dict)]
     items.sort(key=lambda f: str(f.get('updated_at') or ''), reverse=True)
-    return items
+    return [_flow_view(f) for f in items]
 
 
 @router.post('/flows', status_code=201)
@@ -536,11 +816,18 @@ def create_flow(payload: FlowIn) -> dict:
     fid = _new_id('flow')
     flow = _normalize_flow(payload.model_dump(), fid=fid, existing=None)
     _flows.set(fid, flow)
-    return flow
+    audit_safe('flow_created', {'flow_id': fid, 'name': flow.get('name')})
+    return _flow_view(flow)
 
 
 @router.post('/flows/ai-edit')
 def ai_edit_flow(payload: AiEditIn) -> dict:
+    """规则式中文解析（engine='mock'，未接入真实大模型）。
+
+    语义为「全量重建」（edit_mode='full_rebuild'）：proposed_flow 每次都
+    按整段指令重建完整流程定义，步骤序列整体替换，不是对现有步骤的增量
+    调整；changes 如实列出重建后与现状的差异。
+    """
     instruction = payload.instruction.strip()
     if not instruction:
         raise HTTPException(400, 'instruction 不能为空')
@@ -579,6 +866,7 @@ def ai_edit_flow(payload: AiEditIn) -> dict:
         'proposed_flow': proposed,
         'changes': changes,
         'engine': 'mock',
+        'edit_mode': 'full_rebuild',
     }
 
 
@@ -608,7 +896,7 @@ def get_flow(fid: str) -> dict:
     flow = _flows.get(fid)
     if flow is None:
         raise HTTPException(404, f'流程不存在：{fid}')
-    return flow
+    return _flow_view(flow)
 
 
 @router.put('/flows/{fid}')
@@ -620,22 +908,49 @@ def update_flow(fid: str, payload: FlowPatch) -> dict:
     merged.update(payload.model_dump(exclude_unset=True))
     flow = _normalize_flow(merged, fid=fid, existing=existing)
     _flows.set(fid, flow)
-    return flow
+    return _flow_view(flow)
+
+
+def _delete_runs_of_flow(fid: str) -> int:
+    """级联清理某流程的全部运行记录，返回清理条数。"""
+    with _runs._lock:  # noqa: SLF001 —— 共享工具缺批量删除的务实兜底
+        data = _runs._read()  # noqa: SLF001
+        victims = [k for k, r in data.items() if isinstance(r, dict) and r.get('flow_id') == fid]
+        for k in victims:
+            data.pop(k, None)
+        if victims:
+            _runs._write(data)  # noqa: SLF001
+    return len(victims)
 
 
 @router.delete('/flows/{fid}')
 def delete_flow(fid: str) -> dict:
     if not _store_delete(_flows, fid):
         raise HTTPException(404, f'流程不存在：{fid}')
-    return {'deleted': True, 'id': fid}
+    runs_deleted = _delete_runs_of_flow(fid)
+    audit_safe('flow_deleted', {'flow_id': fid, 'runs_deleted': runs_deleted})
+    return {'deleted': True, 'id': fid, 'runs_deleted': runs_deleted}
 
 
 @router.post('/flows/{fid}/ai-apply')
-def ai_apply_flow(fid: str, payload: AiApplyIn) -> dict:
+def ai_apply_flow(fid: str, payload: AiApplyIn, response: Response, create: bool = False) -> dict:
+    """应用 AI 提案。flow_id 不存在时 404；仅显式 create=true 才允许按
+    提案新建（此前会静默创建，与写路径语义不一致）。"""
     existing = _flows.get(fid)
+    if existing is None and not create:
+        raise HTTPException(404, f'流程不存在：{fid}；如需按提案新建请显式传 create=true')
+    cron = payload.proposed_flow.get('cron') if isinstance(payload.proposed_flow, dict) else None
+    if isinstance(cron, str) and cron.strip():
+        try:
+            _validate_cron_expr(cron.strip())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     flow = _normalize_flow(payload.proposed_flow, fid=fid, existing=existing)
     _flows.set(fid, flow)
-    return flow
+    if existing is None:
+        response.status_code = 201
+        audit_safe('flow_created', {'flow_id': fid, 'name': flow.get('name'), 'via': 'ai-apply'})
+    return _flow_view(flow)
 
 
 @router.post('/flows/{fid}/run', status_code=202)
@@ -643,28 +958,11 @@ async def run_flow(fid: str) -> dict:
     flow = _flows.get(fid)
     if flow is None:
         raise HTTPException(404, f'流程不存在：{fid}')
-    rid = _new_id('run')
-    run = {
-        'id': rid,
-        'flow_id': fid,
-        'flow_name': flow.get('name') or '',
-        'status': 'running',
-        'step_results': [],
-        'started_at': _now_iso(),
-        'finished_at': None,
-        'simulated': True,
-    }
-    if not flow.get('enabled', True):
-        run['note'] = '流程处于停用状态，本次为手动强制执行'
-    _runs.set(rid, run)
-    # 独立线程里跑 asyncio 事件循环执行模拟：不依赖请求处理所在 loop 的
-    # 生命周期（TestClient/部分中间件下 create_task 的任务可能不再推进），
-    # 对 uvicorn 等常驻 loop 同样安全；JsonStore 自带线程锁。
-    threading.Thread(
-        target=lambda: asyncio.run(_simulate_run(rid, flow)),
-        name=f'flow-run-{rid}',
-        daemon=True,
-    ).start()
+    run = _try_create_run(flow, triggered_by='manual')
+    if run is None:
+        raise HTTPException(409, '该流程已有运行进行中，拒绝并发重入')
+    _launch_run(run['id'], flow)
+    audit_safe('flow_run_started', {'run_id': run['id'], 'flow_id': fid, 'manual': True})
     return run
 
 
@@ -675,7 +973,7 @@ def list_runs(flow_id: Optional[str] = None, limit: int = 200) -> list[dict]:
     if flow_id:
         items = [r for r in items if r.get('flow_id') == flow_id]
     items.sort(key=lambda r: str(r.get('started_at') or ''), reverse=True)
-    return items[:limit]
+    return [_run_view(r) for r in items[:limit]]
 
 
 @router.get('/runs/{rid}')
@@ -683,4 +981,4 @@ def get_run(rid: str) -> dict:
     run = _runs.get(rid)
     if run is None:
         raise HTTPException(404, f'运行记录不存在：{rid}')
-    return run
+    return _run_view(run)

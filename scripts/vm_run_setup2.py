@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机拉取并执行 guest_setup2.sh 用户态环境准备。
 import sys
 import time
 

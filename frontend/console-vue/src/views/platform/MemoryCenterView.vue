@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
@@ -61,6 +61,8 @@ function numOr(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 function errText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
   return e instanceof Error ? e.message : String(e)
 }
 function linesOf(text: string): string[] {
@@ -160,25 +162,37 @@ async function loadAll(): Promise<void> {
   ])
   const [ins, drm, sch] = results
   const failedAll = results.every((r) => r.status === 'rejected')
-  offline.value = failedAll
+  const allNetwork = results.every(
+    (r) => r.status === 'rejected' && isNetworkError(r.reason),
+  )
+  const firstFailure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  offline.value = allNetwork
 
   if (ins.status === 'fulfilled') {
     instructionsText.value = extractLines(ins.value).join('\n')
     savedText.value = instructionsText.value
-  } else if (failedAll) {
+  } else if (allNetwork) {
     instructionsText.value = FALLBACK_LINES.join('\n')
     savedText.value = instructionsText.value
+  } else {
+    // 鉴权/服务端错误不得沿用先前离线示例，避免把示例误当真实记忆。
+    instructionsText.value = ''
+    savedText.value = ''
   }
 
   if (drm.status === 'fulfilled') {
     dreams.value = asList(drm.value, ['items', 'dreams', 'nights', 'list', 'data']).map(normDream)
-  } else if (failedAll) {
+  } else if (allNetwork) {
     dreams.value = FALLBACK_DREAMS.map((d) => ({ ...d }))
+  } else {
+    dreams.value = []
   }
 
   if (sch.status === 'fulfilled') normSchedule(sch.value)
 
-  if (!failedAll && results.some((r) => r.status === 'rejected')) {
+  if (failedAll && firstFailure && !allNetwork) {
+    error.value = errText(firstFailure.reason)
+  } else if (!failedAll && firstFailure) {
     error.value = '部分数据加载失败，已展示可用内容'
   }
   loading.value = false

@@ -265,6 +265,52 @@ def main():
     conn.commit(); print('initialized')
 
 
+def _cleanup_orphan_soul_rows(conn) -> None:
+    """一次性清理：删除 soul_persona 中不存在的 soul_id 遗留行。
+
+    03-#10 启用 ``PRAGMA foreign_keys=ON`` 后新写入已无法产生孤儿行，
+    但历史存量仍可能违反 FK。本函数幂等执行，通过先 DELETE 再 COUNT
+    的方式把可能涉及的表全部扫一遍；清理量在每个表少量行时开销可忽略。
+    """
+    CLEANUP_NAME = "cleanup_orphan_soul_rows_v1"
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    if conn.execute(
+        "SELECT 1 FROM memory_schema_migrations WHERE name=?", (CLEANUP_NAME,)
+    ).fetchone():
+        return
+
+    orphan_tables = [
+        "affect_state",
+        "affect_events",
+        "dream_lock",
+        "dream_artifacts",
+        "reflection_log",
+        "conversation_turns",
+    ]
+    total = 0
+    for table in orphan_tables:
+        # 表可能尚未创建（极老版本），用 IF EXISTS 风格避免报错
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if not exists:
+            continue
+        cur = conn.execute(
+            f"DELETE FROM {table} WHERE soul_id NOT IN (SELECT soul_id FROM soul_persona)"
+        )
+        total += cur.rowcount
+
+    conn.execute(
+        "INSERT INTO memory_schema_migrations(name, applied_at) VALUES (?,?)",
+        (CLEANUP_NAME, utc_now_iso_compact()),
+    )
+    conn.commit()
+    if total:
+        print(f"cleaned {total} orphan soul rows")
+
+
 def _migrate_soul_awakening(conn) -> None:
     """Idempotent migration for v0.11 Soul Awakening schema changes."""
     MIGRATION_NAME = "soul_awakening_v11"
@@ -297,6 +343,9 @@ def _migrate_soul_awakening(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_reflection_log_soul_created ON reflection_log(soul_id, created_at)"
     )
 
+    # C5：在 FK ON 生效前已存在的历史孤儿行一次性清理（仅 soul 相关表）
+    _cleanup_orphan_soul_rows(conn)
+
     # Seed default soul persona if none exists
     if not conn.execute("SELECT 1 FROM soul_persona LIMIT 1").fetchone():
         ts = utc_now_iso_compact()
@@ -327,6 +376,10 @@ def _migrate_soul_awakening(conn) -> None:
         (MIGRATION_NAME, utc_now_iso_compact()),
     )
     conn.commit()
+
+    # B5 知识舱 schema（支持 FTS5 缺失时降级 LIKE）
+    from .platform_api.knowledge import init_knowledge_schema
+    init_knowledge_schema(conn)
 
 
 if __name__ == '__main__':

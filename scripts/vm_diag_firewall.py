@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 诊断麒麟 V11 虚拟机监听端口与 iptables 防火墙状态。
 import sys
 import time
 

@@ -11,6 +11,10 @@ Boundaries / honest scope:
   requests (POST/PUT/PATCH/DELETE) get a conservative default per-IP budget, and
   protected read paths get a separate default. Public health checks stay
   unlimited.
+- The protected-read surface is SINGLE-SOURCED from security.auth: any GET
+  that APIKeyMiddleware treats as non-public (i.e. requires an API key) also
+  gets the default protected-read budget here. There is no second hand-kept
+  list to drift out of sync.
 
 Token bucket model:
 - capacity C  -> maximum burst size
@@ -24,11 +28,13 @@ import time
 import ipaddress
 import os
 from collections import OrderedDict
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 
 from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+
+from .auth import is_public_path
 
 # Per-endpoint limits, requests per minute. Chosen by cost/risk:
 # - model-gateway/test is external + expensive  -> tightest
@@ -50,6 +56,8 @@ _LIMITS_PER_MIN: dict[str, int] = {
     "/memory/v2/search": 60,
     "/memory/v2/capsules": 60,
     "/memory/search": 60,
+    "/platform/mcp/servers": 30,
+    "/platform/mcp/overview": 30,
 }
 
 # Burst capacity per endpoint == its per-minute limit (allows a short burst up to
@@ -58,25 +66,6 @@ _DEFAULT_WRITE_LIMIT_PER_MIN = 120
 _PROTECTED_READ_LIMIT_PER_MIN = 120
 _MAX_TRACKED_IPS = 10_000  # LRU cap: bounds limiter memory footprint.
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-# Mirrors APIKeyMiddleware's protected GET surface without importing it here.
-_PROTECTED_GET_PATHS = frozenset(
-    {
-        "/audit/logs",
-        "/memory/v2/capsules",
-        "/memory/v2/search",
-        "/memory/events",
-        "/memory/search",
-        "/kylin/sdk/status",
-        "/metrics",
-        "/workflow/stats",
-    }
-)
-_PROTECTED_GET_PREFIXES = (
-    "/memory/v2/capsules",
-    "/workflow/runs",
-    "/console-legacy",
-)
 
 
 class _Bucket:
@@ -100,6 +89,7 @@ class RateLimiter:
         protected_get_paths: Collection[str] | None = None,
         protected_get_prefixes: tuple[str, ...] = (),
         write_methods: Collection[str] = _WRITE_METHODS,
+        public_path_checker: Callable[[str], bool] | None = None,
     ) -> None:
         self._limits = dict(limits_per_min)
         self._max_ips = max_ips
@@ -108,6 +98,9 @@ class RateLimiter:
         self._protected_get_paths = frozenset(protected_get_paths or ())
         self._protected_get_prefixes = tuple(protected_get_prefixes)
         self._write_methods = frozenset(method.upper() for method in write_methods)
+        # 判定「公开路径」的外部来源（默认接线到 security.auth.is_public_path），
+        # 使保护性 GET 限流面与鉴权面同源，不再手工维护第二份清单。
+        self._public_path_checker = public_path_checker
         self._lock = threading.Lock()
         # key: (ip, policy_key) -> _Bucket ; OrderedDict gives us cheap LRU eviction.
         self._buckets: "OrderedDict[tuple[str, str], _Bucket]" = OrderedDict()
@@ -129,6 +122,10 @@ class RateLimiter:
             protected_prefix = self._protected_prefix_for(path)
             if protected_prefix is not None:
                 return f"{protected_prefix}/*", self._protected_get_limit_per_min
+            if self._public_path_checker is not None and not self._public_path_checker(path):
+                # 与 APIKeyMiddleware 同源：所有需鉴权的 GET（含 /platform/* 等
+                # 未单独列名的保护性读取）共享默认保护性读额度。
+                return path, self._protected_get_limit_per_min
 
         if normalized_method in self._write_methods and self._default_write_limit_per_min is not None:
             return f"__write_default__:{normalized_method}:*", self._default_write_limit_per_min
@@ -180,8 +177,7 @@ def build_default_rate_limiter() -> RateLimiter:
         _LIMITS_PER_MIN,
         default_write_limit_per_min=_DEFAULT_WRITE_LIMIT_PER_MIN,
         protected_get_limit_per_min=_PROTECTED_READ_LIMIT_PER_MIN,
-        protected_get_paths=_PROTECTED_GET_PATHS,
-        protected_get_prefixes=_PROTECTED_GET_PREFIXES,
+        public_path_checker=is_public_path,
     )
 
 

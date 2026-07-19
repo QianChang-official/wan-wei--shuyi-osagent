@@ -1,11 +1,43 @@
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
 from typing import Any
 
 from ..db import get_conn
 from .capsule_store import get_capsules_batch, allowed_for_context, bump_usage_batch, now
 from .vector_index import PROVIDER, native_candidates
+
+logger = logging.getLogger(__name__)
+
+# 03-#15 搜索读路径写放大降频：
+# usage_count / last_accessed_at 是统计性元数据。此前每次 search 都对全部命中
+# 批量 UPDATE 一次并写一条聚合审计行，前端轮询/重试同一查询会造成 O(搜索次数)
+# 的写放大与审计噪音。现按 capsule 做时间窗合并：同一 capsule 在窗口内的重复
+# 命中只在首次落库，窗口外的命中再次落库。语义注释：
+#   - 使用统计「最终一致」——窗口内被合并的访问不重复计数（这本身是期望语义：
+#     短时间反复读到同一条记忆，按一次使用计）。
+#   - _recent_usage_bumps 只保存「最近落库时间」的内存标记，不含未落盘数据，
+#     进程退出不会有缓冲丢失；重启后窗口自然失效，下一次命中照常落库。
+_USAGE_BUMP_MIN_INTERVAL_SECONDS = 60.0
+_USAGE_BUMP_CACHE_MAX = 10000
+_recent_usage_bumps: dict[str, float] = {}
+_recent_usage_bumps_lock = threading.Lock()
+
+
+def _usage_bump_due(capsule_id: str) -> bool:
+    """判断并标记该 capsule 的 usage 落库是否到达时间窗（线程安全）。"""
+    now_mono = time.monotonic()
+    with _recent_usage_bumps_lock:
+        if len(_recent_usage_bumps) >= _USAGE_BUMP_CACHE_MAX:
+            _recent_usage_bumps.clear()
+        last = _recent_usage_bumps.get(capsule_id)
+        if last is not None and now_mono - last < _USAGE_BUMP_MIN_INTERVAL_SECONDS:
+            return False
+        _recent_usage_bumps[capsule_id] = now_mono
+        return True
 
 
 def _has_cjk(text: str) -> bool:
@@ -60,7 +92,10 @@ def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None)
             """,
             params,
         ).fetchall()
-    except Exception:
+    except Exception as exc:
+        # 03-#16: 降级但不静默——FTS 出错（如 MATCH 语法/缺表）记 warning，
+        # 返回空后由 substring/原生通道兜底。
+        logger.warning("FTS 检索失败，降级为空结果（substring/native 通道仍可命中）: %s", exc)
         return []
 
 
@@ -154,9 +189,12 @@ def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = Fal
             cap["retrieval_fallback_reason"] = "native_index_failed_capsule"
         elif status.get("fallback_reason") and status["backend"] == "fts_fallback":
             cap["retrieval_fallback_reason"] = status["fallback_reason"]
-        state["usage_count"] = int(state.get("usage_count") or 0) + 1
-        state["last_accessed_at"] = accessed_at
-        updates.append((capsule_id, state))
+        # 03-#15: 时间窗内重复命中的 capsule 跳过落库（内存计数同步跳过，
+        # 保持响应与库内一致）；窗口外命中照常累计并批量落库。
+        if _usage_bump_due(capsule_id):
+            state["usage_count"] = int(state.get("usage_count") or 0) + 1
+            state["last_accessed_at"] = accessed_at
+            updates.append((capsule_id, state))
         out.append(cap)
         if len(out) >= top_k:
             break

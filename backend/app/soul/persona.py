@@ -1,11 +1,17 @@
 """Persona CRUD for soul_persona and affect_state."""
 
 import json
+import sqlite3
 import uuid
 from typing import Any
 
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..utils.datetime_utils import utc_now_iso_compact
+
+
+class PersonaStoreError(RuntimeError):
+    """persona 写库失败。03-#6：不再把异常吞掉后返回旧值/sid 假成功，
+    由调用方（API 层）转换为显式错误响应。"""
 
 
 def _loads(text: str | None, default: Any = None) -> Any:
@@ -52,9 +58,10 @@ def get_persona(soul_id: str) -> dict | None:
         "voice": row["voice"],
         "soul_values": _loads(row["soul_values"], []),
         "self_narrative": row["self_narrative"],
-        "baseline_pleasure": _clamp01(row["baseline_pleasure"] or 0.5),
-        "baseline_arousal": _clamp01(row["baseline_arousal"] or 0.5),
-        "baseline_dominance": _clamp01(row["baseline_dominance"] or 0.5),
+        # 03-#11: 0.0 是合法 baseline，只有 NULL 才回退默认值
+        "baseline_pleasure": _clamp01(row["baseline_pleasure"] if row["baseline_pleasure"] is not None else 0.5),
+        "baseline_arousal": _clamp01(row["baseline_arousal"] if row["baseline_arousal"] is not None else 0.5),
+        "baseline_dominance": _clamp01(row["baseline_dominance"] if row["baseline_dominance"] is not None else 0.5),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -85,12 +92,15 @@ def update_persona(soul_id: str, **fields) -> dict:
     values = list(updates.values()) + [soul_id]
 
     try:
-        get_conn().execute(
-            f"UPDATE soul_persona SET {cols} WHERE soul_id=?",
-            values,
-        ).connection.commit()
-    except Exception:
-        return get_persona(soul_id) or {}
+        with transaction() as conn:
+            conn.execute(
+                f"UPDATE soul_persona SET {cols} WHERE soul_id=?",
+                values,
+            )
+    except Exception as exc:
+        # transaction() 已 rollback。03-#6：不再返回旧值假成功，显式抛错由
+        # API 层转成 5xx，调用方能感知写入真实失败。
+        raise PersonaStoreError(f"update_persona failed for soul_id={soul_id!r}") from exc
 
     return get_persona(soul_id) or {}
 
@@ -113,29 +123,34 @@ def create_persona(soul_id: str | None = None) -> str:
     }
 
     try:
-        conn = get_conn()
-        conn.execute(
-            """INSERT INTO soul_persona(
-                soul_id, name, core_traits, voice, soul_values,
-                self_narrative, baseline_pleasure, baseline_arousal,
-                baseline_dominance, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                sid, defaults["name"], defaults["core_traits"], defaults["voice"],
-                defaults["soul_values"], defaults["self_narrative"],
-                defaults["baseline_pleasure"], defaults["baseline_arousal"],
-                defaults["baseline_dominance"], ts, ts,
-            ),
-        )
-        conn.execute(
-            """INSERT INTO affect_state(
-                soul_id, pleasure, arousal, dominance, current_mood, mood_intensity, updated_at
-            ) VALUES (?,?,?,?,?,?,?)""",
-            (sid, 0.5, 0.4, 0.5, "calm", 0.3, ts),
-        )
-        conn.commit()
-    except Exception:
-        # Idempotent: if row exists, return existing id
-        return sid
+        with transaction() as conn:
+            conn.execute(
+                """INSERT INTO soul_persona(
+                    soul_id, name, core_traits, voice, soul_values,
+                    self_narrative, baseline_pleasure, baseline_arousal,
+                    baseline_dominance, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    sid, defaults["name"], defaults["core_traits"], defaults["voice"],
+                    defaults["soul_values"], defaults["self_narrative"],
+                    defaults["baseline_pleasure"], defaults["baseline_arousal"],
+                    defaults["baseline_dominance"], ts, ts,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO affect_state(
+                    soul_id, pleasure, arousal, dominance, current_mood, mood_intensity, updated_at
+                ) VALUES (?,?,?,?,?,?,?)""",
+                (sid, 0.5, 0.4, 0.5, "calm", 0.3, ts),
+            )
+    except sqlite3.IntegrityError as exc:
+        # transaction() 已 rollback。幂等语义仅限「soul_id 确实已存在」：
+        # 核验持久化行仍在才返回 sid；否则属于真实冲突/坏数据，显式抛错。
+        if get_persona(sid) is not None:
+            return sid
+        raise PersonaStoreError(f"create_persona conflict for soul_id={sid!r}") from exc
+    except Exception as exc:
+        # 03-#6：不再一律返回 sid 假成功（行可能并未落库），显式抛错。
+        raise PersonaStoreError(f"create_persona failed for soul_id={sid!r}") from exc
 
     return sid

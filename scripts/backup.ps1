@@ -1,3 +1,4 @@
+# 数据备份入口（Windows）：调用 backend app.operations.backup（create/verify/restore）。
 [CmdletBinding()]
 param(
     [ValidateSet('create', 'verify', 'restore')]

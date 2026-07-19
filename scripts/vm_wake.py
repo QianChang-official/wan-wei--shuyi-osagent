@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 发送 ctrl 键唤醒麒麟 V11 虚拟机屏幕。
 import sys
 import time
 

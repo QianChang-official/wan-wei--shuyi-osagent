@@ -1,3 +1,4 @@
+# Production MemoryArena-Lite 评测入口（Windows）：运行 memory_arena runner 并输出 reports/ 指标。
 [CmdletBinding()]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]

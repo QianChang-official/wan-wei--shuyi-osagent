@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 交付冒烟入口：调用 scripts/smoke.py 对运行中的服务做 HTTP 冒烟（覆盖范围见 smoke.py 头部注释）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

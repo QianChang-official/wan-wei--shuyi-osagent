@@ -5,13 +5,19 @@
  * 后端契约：/platform/spaces/*；缺字段容错 + 离线兜底示例数据。
  */
 import { computed, onMounted, ref, shallowRef } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
 import GfButton from '@/components/gf/GfButton.vue'
 import GfEmpty from '@/components/gf/GfEmpty.vue'
 import InkDivider from '@/components/gf/InkDivider.vue'
+
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
 
 /* ── 类型（全部字段可选，前端容错） ── */
 interface SpaceProject {
@@ -28,14 +34,21 @@ interface BranchState {
   ahead?: number
   behind?: number
   dirty?: boolean
+  dirtyCount?: number
   last_commit?: string
+}
+interface BranchEntry extends BranchState {
+  role?: string
+  exists?: boolean
+  active?: boolean
 }
 interface SpaceTree {
   source?: string
-  branches?: BranchState[] | Record<string, BranchState>
-  main?: BranchState
-  tree?: BranchState
-  perch?: BranchState
+  branches?: BranchEntry[] | Record<string, BranchEntry>
+  active?: string
+  dirty?: number
+  ahead_behind?: Record<string, { ahead?: number; behind?: number }>
+  note?: string
 }
 interface CommitTemplate {
   template?: string
@@ -44,12 +57,18 @@ interface CommitTemplate {
   source?: string
 }
 interface CommitResult {
+  ok?: boolean
   dry_run?: boolean
   commands?: string[]
   message?: string
   branch?: string
   simulated?: boolean
   source?: string
+  gear?: string
+  gear_label?: string
+  error?: string
+  note?: string
+  commit_id?: string | null
 }
 interface Integration {
   kind?: string
@@ -60,6 +79,13 @@ interface Integration {
 }
 type SpaceKind = 'project' | 'task'
 
+function toBackendKind(k: SpaceKind): string {
+  return k === 'task' ? 'task_space' : 'project_space'
+}
+function toFrontendKind(k: string | undefined): SpaceKind {
+  return k === 'task_space' ? 'task' : 'project'
+}
+
 /* ── 离线兜底示例数据 ── */
 const SAMPLE_PROJECTS: SpaceProject[] = [
   { id: 'sample-os', name: '宛委·万枢桌面端', kind: 'project', desc: '麒麟 Linux 桌面协作平台主体工程', root_path: '/srv/wanwei/osagent', archived: false, source: 'sample' },
@@ -68,16 +94,23 @@ const SAMPLE_PROJECTS: SpaceProject[] = [
   { id: 'sample-task-a', name: '分支泳道联调', kind: 'task', desc: 'tree/main/perch 三态合流验证', root_path: '/srv/wanwei/osagent', archived: false, source: 'sample' },
   { id: 'sample-task-b', name: '提交模板梳理', kind: 'task', desc: '自定义 git 提交规范落地', root_path: '/srv/wanwei/osagent', archived: false, source: 'sample' },
 ]
+/* 与后端 /spaces/{pid}/tree 真实 payload 同构（branches 数组 + ahead_behind 字典 + 顶层 dirty 计数） */
 const SAMPLE_TREE: SpaceTree = {
   source: 'simulated',
-  branches: {
-    main: { name: 'main', ahead: 0, behind: 0, dirty: false, last_commit: 'chore: 主干受保护' },
-    tree: { name: 'tree', ahead: 3, behind: 1, dirty: false, last_commit: 'feat(spaces): 集成树合入' },
-    perch: { name: 'perch', ahead: 7, behind: 2, dirty: true, last_commit: 'wip: 栖枝实验进行中' },
+  branches: [
+    { name: 'main', role: '主干 受保护' },
+    { name: 'tree', role: '集成树 AI合并暂存' },
+    { name: 'perch', role: '栖枝 实验/草稿' },
+  ],
+  active: 'main',
+  dirty: 3,
+  ahead_behind: {
+    tree: { ahead: 3, behind: 1 },
+    perch: { ahead: 7, behind: 2 },
   },
 }
 const SAMPLE_TEMPLATE: CommitTemplate = {
-  template: '{type}({scope}): {summary}',
+  template: '<type>(<scope>): <subject>',
   types: ['feat', 'fix', 'docs', 'refactor', 'test', 'chore'],
   require_scope: true,
   source: 'sample',
@@ -92,7 +125,6 @@ const activeTab = shallowRef<SpaceKind>('project')
 const projects = shallowRef<SpaceProject[]>([])
 const loading = shallowRef(true)
 const offline = shallowRef(false)
-const error = shallowRef('')
 
 const filteredProjects = computed(() =>
   projects.value.filter((p) => (p.kind ?? 'project') === activeTab.value),
@@ -106,16 +138,16 @@ function asList<T>(data: unknown): T[] {
 
 async function loadProjects() {
   loading.value = true
-  error.value = ''
   try {
     const data = await apiGet<unknown>('/spaces/projects')
+    // 空列表是合法状态（全新部署），不当作离线；仅请求失败才落兜底
     const list = asList<SpaceProject>(data)
-    if (!list.length) throw new Error('empty')
-    projects.value = list
+    projects.value = list.map((p) => ({ ...p, kind: toFrontendKind(p.kind) }))
     offline.value = list.some((p) => p.source === 'simulated' || p.source === 'sample')
-  } catch {
-    projects.value = SAMPLE_PROJECTS
-    offline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    projects.value = network ? SAMPLE_PROJECTS : []
+    offline.value = network
   } finally {
     loading.value = false
   }
@@ -138,11 +170,11 @@ async function submitCreate() {
   creating.value = true
   createError.value = ''
   try {
-    await apiPost('/spaces/projects', { ...createForm.value })
+    await apiPost('/spaces/projects', { ...createForm.value, kind: toBackendKind(createForm.value.kind) })
     showCreate.value = false
     await loadProjects()
   } catch (e) {
-    createError.value = e instanceof Error ? e.message : String(e)
+    createError.value = platformErrText(e)
   } finally {
     creating.value = false
   }
@@ -160,36 +192,53 @@ const laneDefs = [
   { key: 'perch', label: 'perch · 栖枝', desc: '实验分支', tone: 'rouge' as const },
 ]
 
-const lanes = computed(() =>
-  laneDefs.map((def) => {
-    const t = drawerTree.value
-    let state: BranchState = {}
-    const raw = t?.branches
-    if (raw && !Array.isArray(raw) && raw[def.key]) {
-      state = raw[def.key]
-    } else if (Array.isArray(raw)) {
-      state = raw.find((b) => b?.name === def.key) ?? {}
-    } else {
-      state = (t as Record<string, BranchState> | null)?.[def.key] ?? {}
+const lanes = computed(() => {
+  const t = drawerTree.value
+  const raw = t?.branches
+  // 后端真实形态为数组（元素仅含 name/role/exists/active）；兼容旧的按名字典形态
+  const list: BranchEntry[] = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object'
+      ? Object.entries(raw).map(([name, b]) => ({ name, ...(b as BranchEntry) }))
+      : []
+  const ab = (t?.ahead_behind && typeof t.ahead_behind === 'object' ? t.ahead_behind : {}) as Record<string, { ahead?: number; behind?: number }>
+  const dirtyCount = typeof t?.dirty === 'number' ? t.dirty : 0
+  return laneDefs.map((def) => {
+    // main 泳道按主干角色（或首个分支）匹配，不硬编码分支名；tree/perch 按名称或角色关键词
+    const entry = def.key === 'main'
+      ? list.find((b) => (b.role ?? '').includes('主干')) ?? list[0]
+      : list.find((b) => b.name === def.key || (b.role ?? '').includes(def.key === 'tree' ? '集成树' : '栖枝'))
+    // ahead/behind 优先消费后端 ahead_behind 字典；旧形态回退读分支对象自带字段
+    const counts = ab[def.key] ?? (entry?.name ? ab[entry.name] : undefined)
+    const isActive = entry?.active === true || (t?.active != null && entry?.name === t.active)
+    const state: BranchState = {
+      name: entry?.name ?? def.key,
+      ahead: counts?.ahead ?? entry?.ahead ?? 0,
+      behind: counts?.behind ?? entry?.behind ?? 0,
+      dirty: entry?.dirty === true || (isActive && dirtyCount > 0),
+      dirtyCount: isActive ? dirtyCount : 0,
+      last_commit: entry?.last_commit ?? '',
     }
     return { ...def, state }
-  }),
-)
+  })
+})
 
 async function openDrawer(project: SpaceProject) {
   activeProject.value = project
   drawerTree.value = null
   commitResult.value = null
   commitError.value = ''
+  commitForm.value.message = ''
   if (!project.id) return
   treeLoading.value = true
   try {
     const data = await apiGet<SpaceTree>(`/spaces/${project.id}/tree`)
     drawerTree.value = data && typeof data === 'object' ? data : SAMPLE_TREE
     treeOffline.value = data?.source === 'simulated'
-  } catch {
-    drawerTree.value = SAMPLE_TREE
-    treeOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    drawerTree.value = network ? SAMPLE_TREE : null
+    treeOffline.value = network
   } finally {
     treeLoading.value = false
   }
@@ -217,9 +266,15 @@ async function loadTemplate(id: string) {
       types: Array.isArray(data?.types) ? [...data.types] : [],
       require_scope: !!data?.require_scope,
     }
-  } catch {
-    templateForm.value = { ...SAMPLE_TEMPLATE, types: [...(SAMPLE_TEMPLATE.types ?? [])] }
-    templateMsg.value = '离线示例模板（保存需后端在线）'
+  } catch (e) {
+    if (isNetworkError(e)) {
+      templateForm.value = { ...SAMPLE_TEMPLATE, types: [...(SAMPLE_TEMPLATE.types ?? [])] }
+      templateMsg.value = '离线示例模板（保存需后端在线）'
+    } else if (isAuthError(e)) {
+      templateMsg.value = `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+    } else {
+      templateMsg.value = `加载失败：${e instanceof Error ? e.message : String(e)}`
+    }
   } finally {
     templateLoading.value = false
   }
@@ -249,32 +304,65 @@ async function saveTemplate() {
     })
     templateMsg.value = '模板已保存'
   } catch (e) {
-    templateMsg.value = `保存失败：${e instanceof Error ? e.message : String(e)}`
+    templateMsg.value = `保存失败：${platformErrText(e)}`
   } finally {
     templateSaving.value = false
   }
 }
 
 /* ── 提交区 ── */
-const commitForm = ref({ branch: 'tree', message: '', dry_run: true })
+const COMMIT_GEARS = [
+  { value: 'human_review', label: '人工审查', hint: '人工审查档仅允许 dry_run 预演；真实提交请切换沙盒工作档。' },
+  { value: 'sandbox', label: '沙盒工作', hint: '沙盒工作档允许真实提交，全程审计。' },
+  { value: 'device', label: '整台设备', hint: '整台设备档默认禁用，需后端显式授权（WANWEI_DEVICE_GEAR_ENABLED）。' },
+] as const
+type CommitGear = (typeof COMMIT_GEARS)[number]['value']
+const commitForm = ref({ branch: 'tree', message: '', dry_run: true, gear: 'human_review' as CommitGear })
 const committing = shallowRef(false)
 const commitError = shallowRef('')
 const commitResult = shallowRef<CommitResult | null>(null)
 
+const commitGearHint = computed(() => COMMIT_GEARS.find((g) => g.value === commitForm.value.gear)?.hint ?? '')
+
+function buildTemplateRegex(template: string, types: string[], requireScope: boolean): RegExp | null {
+  if (!types.length || !template.includes('<type>')) return null
+  // 与后端 _compile_template_pattern 一致：先把完整的 (<scope>) 片段抽成哨兵，
+  // 再转义模板字面量。否则外层括号和 <scope> 自带的括号会叠成双括号。
+  const scopeToken = '\uE000'
+  let pattern = template
+    .replace(/\(<scope>\)/g, scopeToken)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  pattern = pattern
+    .replace(/<type>/g, `(${types.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`)
+    .replace(/<subject>/g, '[\\s\\S]+')
+    .replace(/<scope>/g, '[^)]*')
+  const scopeSeg = requireScope
+    ? '\\((?=[^)]*\\S[^)]*\\))[^)]*\\)'
+    : '(?:\\([^)]*\\))?'
+  pattern = pattern.replace(new RegExp(scopeToken, 'g'), scopeSeg)
+  try {
+    return new RegExp(`^\\s*${pattern}\\s*$`)
+  } catch {
+    return null
+  }
+}
+
 const commitHint = computed(() => {
   const types = templateForm.value.types ?? []
-  if (!types.length) return ''
-  const scope = templateForm.value.require_scope ? '(scope)' : '(scope，可省)'
-  return `按模板校验：${types.join('/')}${scope}: 摘要`
+  const tpl = (templateForm.value.template ?? '').trim()
+  if (!types.length || !tpl) return ''
+  return `按模板校验：${tpl.replace('<type>', types.join('/')).replace('<scope>', templateForm.value.require_scope ? '(scope)' : '(scope，可省)').replace('<subject>', '摘要')}`
 })
 
 const commitValid = computed(() => {
   const msg = commitForm.value.message.trim()
   if (!msg) return false
-  const types = templateForm.value.types ?? []
-  if (!types.length) return true
-  const scopePart = templateForm.value.require_scope ? '\\([^()\\s]+\\)' : '(\\([^()\\s]+\\))?'
-  const re = new RegExp(`^(${types.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})${scopePart}: .+`)
+  const re = buildTemplateRegex(
+    templateForm.value.template ?? '',
+    templateForm.value.types ?? [],
+    !!templateForm.value.require_scope,
+  )
+  if (!re) return true
   return re.test(msg)
 })
 
@@ -287,10 +375,17 @@ async function submitCommit() {
       branch: commitForm.value.branch,
       message: commitForm.value.message.trim(),
       dry_run: commitForm.value.dry_run,
+      gear: commitForm.value.gear,
     })
+    // 后端校验失败/档位拒绝时返回 HTTP 200 + ok:false，须如实报错而非当成功展示
+    if (data && typeof data === 'object' && data.ok === false) {
+      commitError.value = data.note || data.error || '提交未通过'
+      commitResult.value = null
+      return
+    }
     commitResult.value = data && typeof data === 'object' ? data : { commands: [], dry_run: commitForm.value.dry_run }
   } catch (e) {
-    commitError.value = e instanceof Error ? e.message : String(e)
+    commitError.value = platformErrText(e)
     commitResult.value = null
   } finally {
     committing.value = false
@@ -316,21 +411,23 @@ const integrationCards = computed(() => {
 async function loadIntegrations() {
   try {
     const data = await apiGet<unknown>('/spaces/integrations')
+    // 空列表是合法状态（尚未绑定任何账号），不当作离线
     const list = asList<Integration>(data)
-    if (!list.length) throw new Error('empty')
     integrations.value = list
     intgOffline.value = list.some((i) => i.source === 'simulated' || i.source === 'sample')
-  } catch {
-    integrations.value = SAMPLE_INTEGRATIONS
-    intgOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    integrations.value = network ? SAMPLE_INTEGRATIONS : []
+    intgOffline.value = network
   }
 }
 
 async function bindIntegration(kind: string) {
+  if (intgBusy.value) return
   const token = (tokenInput.value[kind] ?? '').trim()
-  if (!token || intgBusy.value) {
-    intgMsg.value = { ...intgMsg.value, [kind]: token ? '' : '请先填写 token' }
-    if (!token) return
+  if (!token) {
+    intgMsg.value = { ...intgMsg.value, [kind]: '请先填写 token' }
+    return
   }
   intgBusy.value = kind
   intgMsg.value = { ...intgMsg.value, [kind]: '' }
@@ -340,7 +437,7 @@ async function bindIntegration(kind: string) {
     intgMsg.value = { ...intgMsg.value, [kind]: '绑定成功' }
     await loadIntegrations()
   } catch (e) {
-    intgMsg.value = { ...intgMsg.value, [kind]: `绑定失败：${e instanceof Error ? e.message : String(e)}` }
+    intgMsg.value = { ...intgMsg.value, [kind]: `绑定失败：${platformErrText(e)}` }
   } finally {
     intgBusy.value = ''
   }
@@ -355,7 +452,7 @@ async function unbindIntegration(kind: string) {
     intgMsg.value = { ...intgMsg.value, [kind]: '已解绑' }
     await loadIntegrations()
   } catch (e) {
-    intgMsg.value = { ...intgMsg.value, [kind]: `解绑失败：${e instanceof Error ? e.message : String(e)}` }
+    intgMsg.value = { ...intgMsg.value, [kind]: `解绑失败：${platformErrText(e)}` }
   } finally {
     intgBusy.value = ''
   }
@@ -369,7 +466,7 @@ async function testIntegration(kind: string) {
     const data = await apiPost<{ ok?: boolean; message?: string }>(`/spaces/integrations/${kind}/test`, {})
     intgMsg.value = { ...intgMsg.value, [kind]: data?.message ?? (data?.ok ? '连通正常' : '测试未通过') }
   } catch (e) {
-    intgMsg.value = { ...intgMsg.value, [kind]: `测试失败：${e instanceof Error ? e.message : String(e)}` }
+    intgMsg.value = { ...intgMsg.value, [kind]: `测试失败：${platformErrText(e)}` }
   } finally {
     intgBusy.value = ''
   }
@@ -527,9 +624,9 @@ onMounted(() => {
               <div class="lane-head">
                 <GfTag :tone="lane.tone">{{ lane.label }}</GfTag>
                 <GfTag v-if="lane.key === 'main'" tone="ink">受保护</GfTag>
-                <GfTag v-if="lane.state.dirty" tone="rouge">dirty</GfTag>
+                <GfTag v-if="lane.state.dirty" tone="rouge">dirty{{ (lane.state.dirtyCount ?? 0) > 1 ? ` ×${lane.state.dirtyCount}` : '' }}</GfTag>
               </div>
-              <p class="lane-desc">{{ lane.desc }}</p>
+              <p class="lane-desc">{{ lane.desc }}<template v-if="lane.state.name && lane.state.name !== lane.key"> · {{ lane.state.name }}</template></p>
               <div class="lane-nums">
                 <span class="lane-num">领先 <b>+{{ lane.state.ahead ?? 0 }}</b></span>
                 <span class="lane-num">落后 <b>−{{ lane.state.behind ?? 0 }}</b></span>
@@ -546,7 +643,7 @@ onMounted(() => {
           <template v-else>
             <label class="tpl-field">
               <span>模板字符串</span>
-              <input v-model.trim="templateForm.template" :disabled="templateSaving" placeholder="{type}({scope}): {summary}" autocomplete="off" />
+              <input v-model.trim="templateForm.template" :disabled="templateSaving" placeholder="<type>(<scope>): <subject>" autocomplete="off" />
             </label>
             <div class="tpl-types">
               <GfTag v-for="t in templateForm.types ?? []" :key="t" tone="dai" class="tpl-type">
@@ -581,11 +678,18 @@ onMounted(() => {
                 <option value="perch">perch · 栖枝</option>
               </select>
             </label>
+            <label class="commit-field">
+              <span>工作档位</span>
+              <select v-model="commitForm.gear" :disabled="committing">
+                <option v-for="g in COMMIT_GEARS" :key="g.value" :value="g.value">{{ g.label }}</option>
+              </select>
+            </label>
             <label class="commit-field commit-field--wide">
               <span>提交信息</span>
               <input v-model="commitForm.message" :disabled="committing" autocomplete="off" placeholder="feat(spaces): 示例提交" />
             </label>
           </div>
+          <p class="commit-hint">{{ commitGearHint }}</p>
           <p v-if="commitHint" class="commit-hint" :class="{ bad: commitForm.message.trim() && !commitValid }">
             {{ commitForm.message.trim() && !commitValid ? '格式不符：' : '' }}{{ commitHint }}
           </p>
@@ -603,8 +707,10 @@ onMounted(() => {
             <div class="sec-title">
               <span>{{ commitResult.dry_run !== false ? '将执行的命令' : '执行结果' }}</span>
               <GfTag v-if="commitResult.simulated || commitResult.source === 'simulated'" tone="gold">simulated</GfTag>
+              <GfTag v-if="commitResult.gear_label" tone="ink">{{ commitResult.gear_label }}</GfTag>
             </div>
             <pre>{{ (commitResult.commands ?? []).length ? commitResult.commands!.join('\n') : '（后端未返回命令列表）' }}</pre>
+            <p v-if="commitResult.commit_id" class="commit-id">已生成提交：<code>{{ commitResult.commit_id }}</code></p>
           </div>
         </section>
       </aside>
@@ -768,6 +874,7 @@ input:disabled, select:disabled { opacity: .55; }
   line-height: 1.7;
   min-height: 48px;
 }
+.commit-id { margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
 
 @media (max-width: 980px) {
   .proj-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

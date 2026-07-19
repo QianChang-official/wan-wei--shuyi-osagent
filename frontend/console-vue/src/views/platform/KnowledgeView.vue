@@ -11,7 +11,7 @@
  * 全部字段容错（可选链 + 默认值），后端未连通时展示离线示例并诚实标注。
  */
 import { computed, onMounted, ref, shallowRef } from 'vue'
-import { apiDel, apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiDel, apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
@@ -31,6 +31,8 @@ interface KnowledgeDoc {
   source: SourceType
   pinned: boolean
   updatedAt: string
+  /** 列表接口 body 默认仅 200 字预览（后端 06-#10），true 表示未返回全文 */
+  bodyTruncated: boolean
 }
 
 interface SearchHit {
@@ -75,6 +77,12 @@ const SOURCE_TONES: Record<SourceType, TagTone> = {
   file: 'bamboo',
 }
 
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
+
 /* ── 离线兜底示例数据 ── */
 const SAMPLE_DOCS: KnowledgeDoc[] = [
   {
@@ -85,6 +93,7 @@ const SAMPLE_DOCS: KnowledgeDoc[] = [
     source: 'manual',
     pinned: true,
     updatedAt: '今日 09:12',
+    bodyTruncated: false,
   },
   {
     id: 'doc-2',
@@ -94,6 +103,7 @@ const SAMPLE_DOCS: KnowledgeDoc[] = [
     source: 'chat',
     pinned: false,
     updatedAt: '昨日 17:40',
+    bodyTruncated: false,
   },
   {
     id: 'doc-3',
@@ -103,6 +113,7 @@ const SAMPLE_DOCS: KnowledgeDoc[] = [
     source: 'web',
     pinned: false,
     updatedAt: '昨日 11:05',
+    bodyTruncated: false,
   },
   {
     id: 'doc-4',
@@ -112,6 +123,7 @@ const SAMPLE_DOCS: KnowledgeDoc[] = [
     source: 'file',
     pinned: false,
     updatedAt: '三日前',
+    bodyTruncated: false,
   },
 ]
 
@@ -162,6 +174,7 @@ function normDoc(raw: Record<string, unknown>): KnowledgeDoc {
     source: normSource(raw.source),
     pinned: raw.pinned === true || raw.pinned === 1,
     updatedAt: fmtTime(raw.updated_at ?? raw.created_at),
+    bodyTruncated: raw.body_truncated === true || raw.body_truncated === 1,
   }
 }
 
@@ -203,6 +216,21 @@ function escapeHtml(s: string): string {
     const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
     return map[c] ?? c
   })
+}
+
+// PUA 占位符：与 backend/knowledge.py 保持一致，先抽离 <b> 高亮标签、
+// 再转义其余 HTML，最后还原高亮，防止存储型 XSS 通过 snippet 注入。
+const HL_START = '\uE000'
+const HL_END = '\uE001'
+
+function safeSnippet(snip: string): string {
+  if (!snip) return '（无摘要）'
+  const tmp = snip
+    .replace(/<b>/gi, HL_START)
+    .replace(/<\/b>/gi, HL_END)
+  return escapeHtml(tmp)
+    .replace(new RegExp(HL_START, 'g'), '<b>')
+    .replace(new RegExp(HL_END, 'g'), '</b>')
 }
 
 /* ── 状态 ── */
@@ -274,14 +302,25 @@ async function load(): Promise<void> {
   ])
 
   const docsFailed = docsRes.status !== 'fulfilled'
+  const docsNetwork = docsRes.status === 'rejected' && isNetworkError(docsRes.reason)
+  const docsAuth = docsRes.status === 'rejected' && isAuthError(docsRes.reason)
+
   docs.value = docsRes.status === 'fulfilled'
     ? pickArray(docsRes.value, ['items', 'docs', 'data']).map(normDoc).filter((d) => d.id)
-    : SAMPLE_DOCS
-  stats.value = statsRes.status === 'fulfilled' ? normStats(statsRes.value) : SAMPLE_STATS
+    : docsNetwork
+      ? SAMPLE_DOCS
+      : []
+  stats.value = statsRes.status === 'fulfilled'
+    ? normStats(statsRes.value)
+    : statsRes.status === 'rejected' && isNetworkError(statsRes.reason)
+      ? SAMPLE_STATS
+      : { total: 0, recent7d: 0, sources: {} }
 
-  offline.value = docsFailed
-  if (docsFailed) {
+  offline.value = docsNetwork
+  if (docsNetwork) {
     setNotice('后端未连通，当前展示离线示例数据；一切变更仅在本地生效，不会持久化。', 'offline')
+  } else if (docsAuth) {
+    setNotice(`鉴权失败：${(docsRes.reason as Error).message}（请检查左侧 API 密钥）`, 'error')
   }
   loading.value = false
 }
@@ -316,7 +355,7 @@ async function doSearch(): Promise<void> {
       setNotice('离线模式：搜索仅在本页示例数据上进行。', 'offline')
     }
   } catch (e) {
-    setNotice(`搜索失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`搜索失败：${platformErrText(e)}`, 'error')
   } finally {
     searching.value = false
   }
@@ -335,9 +374,21 @@ function openCreate(): void {
   showEditor.value = true
 }
 
-function openEdit(doc: KnowledgeDoc): void {
+async function openEdit(doc: KnowledgeDoc): Promise<void> {
   editingDoc.value = doc
-  docForm.value = { title: doc.title, body: doc.body, tags: doc.tags.join('，') }
+  let body = doc.body
+  // 列表 body 默认仅 200 字预览（后端 06-#10）：截断文档先拉单篇全文再预填，
+  // 否则直接保存会把正文截断为预览内容（数据丢失）。
+  if (doc.bodyTruncated && !offline.value) {
+    try {
+      const raw = await apiGet<Record<string, unknown>>(`/knowledge/docs/${encodeURIComponent(doc.id)}`)
+      const full = normDoc(raw)
+      if (full.body) body = full.body
+    } catch {
+      setNotice('全文拉取失败：当前编辑的是预览内容，直接保存会截断正文。', 'error')
+    }
+  }
+  docForm.value = { title: doc.title, body, tags: doc.tags.join('，') }
   showEditor.value = true
 }
 
@@ -375,7 +426,7 @@ async function saveDoc(): Promise<void> {
       if (target) {
         docs.value = docs.value.map((d) =>
           d.id === target.id
-            ? { ...d, title: payload.title, body: payload.body, tags: payload.tags, updatedAt: fmtTime(new Date().toISOString()) }
+            ? { ...d, title: payload.title, body: payload.body, tags: payload.tags, updatedAt: fmtTime(new Date().toISOString()), bodyTruncated: false }
             : d,
         )
       } else {
@@ -387,6 +438,7 @@ async function saveDoc(): Promise<void> {
           source: 'manual',
           pinned: false,
           updatedAt: fmtTime(new Date().toISOString()),
+          bodyTruncated: false,
         }
         docs.value = [local, ...docs.value]
       }
@@ -395,7 +447,7 @@ async function saveDoc(): Promise<void> {
       setNotice('离线模式：变更仅存在于本页内存。', 'offline')
     }
   } catch (e) {
-    setNotice(`保存失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`保存失败：${platformErrText(e)}`, 'error')
   } finally {
     saving.value = false
   }
@@ -414,7 +466,7 @@ async function togglePin(doc: KnowledgeDoc): Promise<void> {
     }
     docs.value = docs.value.map((d) => (d.id === doc.id ? { ...d, pinned: next } : d))
   } catch (e) {
-    setNotice(`置顶操作失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`置顶操作失败：${platformErrText(e)}`, 'error')
   } finally {
     pinningId.value = ''
   }
@@ -439,7 +491,7 @@ async function confirmDelete(): Promise<void> {
     docs.value = docs.value.filter((d) => d.id !== doc.id)
     deletingDoc.value = null
   } catch (e) {
-    setNotice(`删除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`删除失败：${platformErrText(e)}`, 'error')
   } finally {
     deleteBusy.value = false
   }
@@ -526,8 +578,8 @@ onMounted(load)
             <GfTag :tone="SOURCE_TONES[hit.source]">{{ SOURCE_LABELS[hit.source] }}</GfTag>
             <span v-if="hit.score !== null" class="hit-score">相关度 {{ hit.score.toFixed(2) }}</span>
           </div>
-          <!-- 后端返回的 snippet 内含 <b> 高亮标记 -->
-          <p class="hit-snippet" v-html="hit.snippet || '（无摘要）'"></p>
+          <!-- 后端返回的 snippet 内含 <b> 高亮标记；前端再次消毒，防御存储型 XSS -->
+          <p class="hit-snippet" v-html="safeSnippet(hit.snippet)"></p>
         </article>
       </div>
       <GfEmpty v-else text="未寻得匹配典藏。换个关键词试试。" />
@@ -560,7 +612,7 @@ onMounted(load)
               <h3 class="doc-title">{{ doc.title }}</h3>
               <GfTag :tone="SOURCE_TONES[doc.source]">{{ SOURCE_LABELS[doc.source] }}</GfTag>
             </div>
-            <p v-if="doc.body" class="doc-body">{{ doc.body }}</p>
+            <p v-if="doc.body" class="doc-body">{{ doc.body }}{{ doc.bodyTruncated ? '…' : '' }}</p>
             <div v-if="doc.tags.length" class="doc-tags">
               <GfTag v-for="t in doc.tags" :key="t" tone="ink">{{ t }}</GfTag>
             </div>

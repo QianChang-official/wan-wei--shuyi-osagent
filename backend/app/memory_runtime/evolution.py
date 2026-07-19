@@ -1,6 +1,6 @@
 import uuid
 from typing import Any
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..audit.service import record
 from .capsule_store import get_capsule, update_capsule, write_capsule, dumps, now
 
@@ -49,8 +49,7 @@ def reflect_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         actions.append({"action": "promote", "capsule_id": res["capsule_id"], "memory_class": "risk"})
     reflection_id = "refl_" + uuid.uuid4().hex[:12]
     full = {**payload, "evolution_actions": actions}
-    conn = get_conn()
-    conn.execute("INSERT INTO memory_reflections VALUES (?,?,?,?)", (reflection_id, task_id, dumps(full), now()))
-    conn.commit()
+    with transaction() as conn:
+        conn.execute("INSERT INTO memory_reflections VALUES (?,?,?,?)", (reflection_id, task_id, dumps(full), now()))
     audit_id = record("task_reflection", {"reflection_id": reflection_id, "task_id": task_id, "actions": actions})
     return {"reflection_id": reflection_id, "task_id": task_id, "evolution_actions": actions, "audit_id": audit_id}

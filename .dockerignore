@@ -10,6 +10,7 @@
 **/node_modules
 backend/app/tests
 data/runtime
+data/platform
 secrets
 tmp
 *.db
@@ -18,3 +19,7 @@ tmp
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+# 镜像只烘入运行时所需的两个 Arena 产物，排除其余历史报告与构建日志（运行时读取见 backend/app/main.py 的 /arena/metrics）
+reports/*
+!reports/production_memory_eval_metrics.json
+!reports/production_memory_eval_report.md

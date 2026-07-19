@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 排查麒麟 V11 虚拟机内 http.server 进程与日志，并重启 9000 端口服务。
 import sys
 import time
 
