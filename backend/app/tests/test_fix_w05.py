@@ -76,7 +76,7 @@ def test_stdio_command_allowlist_rejects_interpreters_and_client_paths(mcp_store
     for command in ('python', 'python.exe', 'powershell.exe', 'cmd.exe', r'C:\\tools\\npx.cmd', '/usr/bin/uvx'):
         with pytest.raises(ValueError):
             mcp_hub._validate_stdio_command(command)
-    monkeypatch.setattr(mcp_hub.shutil, 'which', lambda value: f'C:\\trusted\\{value}')
+    monkeypatch.setattr(mcp_hub.shutil, 'which', lambda value: str(PROJECT_ROOT / 'tools' / value))
     assert mcp_hub._validate_stdio_command('npx.cmd').lower().endswith('npx.cmd')
 
     trusted = str((PROJECT_ROOT / 'tools' / 'trusted-mcp').resolve())

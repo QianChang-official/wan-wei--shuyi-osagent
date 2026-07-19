@@ -26,7 +26,7 @@ import subprocess
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -272,7 +272,9 @@ def _normalize_voice_record(record: dict) -> dict:
     """读取兼容：旧记录的 saved_path 可能是绝对/项目相对路径，统一归一为
     ``voice/<文件名>`` 相对路径，绝不对外泄露宿主机绝对路径与存储布局。"""
     out = dict(record)
-    name = Path(str(out.get('saved_path') or '')).name
+    # PureWindowsPath 在所有宿主系统上都识别 ``\`` 与 ``/``，可安全读取
+    # 由旧 Windows 版本写入、后来迁移到 Linux 的绝对路径记录。
+    name = PureWindowsPath(str(out.get('saved_path') or '')).name
     out['saved_path'] = f'voice/{name}' if name else None
     return out
 
@@ -340,7 +342,7 @@ def voice_delete(voice_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f'录音不存在：{voice_id}')
 
     file_deleted = False
-    name = Path(str(record.get('saved_path') or '')).name
+    name = PureWindowsPath(str(record.get('saved_path') or '')).name
     if name:
         voice_dir = _voice_dir().resolve()
         candidate = (voice_dir / name).resolve()

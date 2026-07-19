@@ -463,8 +463,9 @@ def test_validate_root_path_default_whitelist_and_sensitive(tmp_path):
     assert guards.validate_root_path(project_root / "data") == (project_root / "data").resolve()
 
     # 白名单外目录拒绝
+    outside_root = project_root.parent / "wanwei-root-whitelist-outside"
     with pytest.raises(ValueError, match="白名单"):
-        guards.validate_root_path(tmp_path)
+        guards.validate_root_path(outside_root)
 
     # 系统敏感目录即使配进白名单也拒绝
     sensitive = "C:\\Windows" if os.name == "nt" else "/etc"
