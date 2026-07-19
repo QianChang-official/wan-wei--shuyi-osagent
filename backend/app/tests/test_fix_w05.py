@@ -79,6 +79,10 @@ def test_stdio_command_allowlist_rejects_interpreters_and_client_paths(mcp_store
     monkeypatch.setattr(mcp_hub.shutil, 'which', lambda value: str(PROJECT_ROOT / 'tools' / value))
     assert mcp_hub._validate_stdio_command('npx.cmd').lower().endswith('npx.cmd')
 
+    monkeypatch.setenv('WANWEI_MCP_STDIO_COMMANDS', 'npx')
+    monkeypatch.setattr(mcp_hub.shutil, 'which', lambda value: str(PROJECT_ROOT / 'tools' / f'{value}.cmd'))
+    assert mcp_hub._validate_stdio_command('npx').lower().endswith('npx.cmd')
+
     trusted = str((PROJECT_ROOT / 'tools' / 'trusted-mcp').resolve())
     monkeypatch.setenv('WANWEI_MCP_STDIO_COMMANDS', trusted)
     assert os.path.normcase(mcp_hub._validate_stdio_command(trusted)) == os.path.normcase(trusted)

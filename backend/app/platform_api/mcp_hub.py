@@ -409,8 +409,9 @@ def _validate_stdio_command(command: str) -> str:
         return candidate
     resolved = shutil.which(value) or value
     basename = os.path.basename(resolved).lower()
+    requested_name = os.path.basename(value).lower()
     allowed_names = {item.lower() for item in allowed if '/' not in item and '\\' not in item}
-    if basename not in allowed_names:
+    if requested_name not in allowed_names and basename not in allowed_names:
         raise ValueError(
             f'MCP stdio command「{basename or value}」不在允许列表；'
             f'请通过 {_STDIO_COMMANDS_ENV} 显式配置受信任的 MCP 启动器'
