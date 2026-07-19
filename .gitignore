@@ -24,6 +24,7 @@ tmp/
 .DS_Store
 Thumbs.db
 data/runtime/
+data/platform/
 desktop/release/
 dl/
 /shot*.png

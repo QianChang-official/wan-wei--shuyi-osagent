@@ -10,6 +10,7 @@
   "homepage": "https://document.kylinos.cn/document/center",
   "scripts": {
     "start": "electron .",
+    "test": "node --test tests/test_fix_w13_desktop.cjs",
     "pack:dir": "electron-builder --dir",
     "pack:deb": "bash scripts/build-linux.sh deb",
     "pack:rpm": "bash scripts/build-linux.sh rpm",
@@ -39,7 +40,7 @@
       ],
       "category": "Utility",
       "icon": "build/icons",
-      "maintainer": "WanWei Shuyi Team <dev@wanwei.example.cn>",
+      "maintainer": "WanWei Shuyi Team",
       "vendor": "WanWei Shuyi Team",
       "synopsis": "枢忆·花朝 秘府控制台",
       "description": "宛委·枢忆 MemoryOps Autopilot Platform 的麒麟桌面客户端。内嵌 FastAPI 后端与 Vue3 控制台，与 Web 端共享同一套业务代码。",

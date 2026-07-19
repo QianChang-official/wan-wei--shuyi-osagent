@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 拉取 guest_build.sh 并在麒麟 V11 虚拟机后台启动桌面端构建。
 import sys
 import time
 

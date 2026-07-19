@@ -10,13 +10,13 @@ import { getPetalsEnabled, setPetalsEnabled } from '@/components/gf/shared'
 
 declare global {
   interface Window {
-    desktopAPI?: {
-      setAutostart?: (enable: boolean) => unknown
-      setPreventSleep?: (enable: boolean) => unknown
-    }
     wanweiDesktop?: {
       getAutostart?: () => Promise<boolean>
       setAutostart?: (enable: boolean) => unknown
+      setPreventSleep?: (enable: boolean) => unknown
+      getPreventSleep?: () => Promise<{ enabled?: boolean; mode?: string }>
+      lanEnable?: (token?: string) => Promise<{ enabled?: boolean; lan_url?: string; host?: string; port?: number }>
+      lanDisable?: () => Promise<{ enabled?: boolean; lan_url?: string | null; host?: string; port?: number }>
     }
   }
 }
@@ -26,17 +26,22 @@ type LangChoice = 'zh' | 'en'
 
 interface SystemSettings {
   theme?: string
-  lang?: string
+  language?: string
   petals?: boolean
   background_image?: string
   autostart?: boolean
+}
+
+interface PowerState {
   prevent_sleep?: boolean
+  mode?: string
 }
 
 interface LanStatus {
   enabled?: boolean
   lan_url?: string
   qr_payload?: string
+  token?: string
   message?: string
   simulated?: boolean
 }
@@ -56,6 +61,11 @@ const LANG_KEY = 'gf-lang'
 const BG_KEY = 'gf-bg'
 const BG_STYLE_ID = 'gf-bg-veil'
 
+/* 背景图校验上限：原图超过 12MB 直接拒绝（FileReader 全量读入内存的前置防护）；
+ * 压缩后 dataURL 超过约 2MB 字符同样拒绝（避免数 MB 字符串落 localStorage/后端 JsonStore） */
+const BG_MAX_SOURCE_BYTES = 12 * 1024 * 1024
+const BG_MAX_STORE_CHARS = 2 * 1024 * 1024
+
 const themeOptions: { value: ThemeChoice; label: string; hint: string }[] = [
   { value: 'day', label: '宣纸白昼', hint: '明亮宣纸底色，宜日间伏案' },
   { value: 'night', label: '靛夜灯影', hint: '靛青夜色，宜灯下长耕' },
@@ -65,6 +75,11 @@ const langOptions: { value: LangChoice; label: string }[] = [
   { value: 'zh', label: '中文' },
   { value: 'en', label: 'English' },
 ]
+
+/* ── 桌面桥（preload 暴露的 window.wanweiDesktop；浏览器环境为 undefined） ── */
+const desktop = window.wanweiDesktop
+/** 桌面端具备 lanEnable/lanDisable 才能真实切换 0.0.0.0 监听 */
+const canDriveLan = !!(desktop?.lanEnable && desktop?.lanDisable)
 
 /* ── 基础状态 ── */
 const theme = ref<ThemeChoice>(readTheme())
@@ -123,7 +138,7 @@ function onSystemThemeChange() {
 function selectTheme(choice: ThemeChoice) {
   theme.value = choice
   applyThemeChoice(choice)
-  persistSettings({ theme: choice })
+  persistSettings({ theme: choice === 'system' ? 'auto' : choice })
 }
 
 function readLang(): LangChoice {
@@ -139,7 +154,7 @@ function applyLang(choice: LangChoice) {
 function selectLang(choice: LangChoice) {
   lang.value = choice
   applyLang(choice)
-  persistSettings({ lang: choice })
+  persistSettings({ language: choice === 'zh' ? 'zh-CN' : 'en-US' })
 }
 
 function togglePetals() {
@@ -212,9 +227,14 @@ async function onBackgroundFile(e: Event) {
   input.value = ''
   if (!file) return
   if (!file.type.startsWith('image/')) { error.value = '请选择图片文件。'; return }
+  if (file.size > BG_MAX_SOURCE_BYTES) { error.value = '图片超过 12MB，请先压缩后再选择。'; return }
   error.value = ''
   try {
     const dataUrl = await downscaleImage(file, 1600)
+    if (dataUrl.length > BG_MAX_STORE_CHARS) {
+      error.value = '图片压缩后体积仍然过大，请换一张分辨率更小的图片。'
+      return
+    }
     bgDataUrl.value = dataUrl
     applyBodyBackground(dataUrl)
     try {
@@ -241,7 +261,6 @@ async function resetBackground() {
 async function toggleAutostart() {
   const next = !autostart.value
   autostart.value = next
-  try { window.desktopAPI?.setAutostart?.(next) } catch { /* ignore */ }
   try { window.wanweiDesktop?.setAutostart?.(next) } catch { /* ignore */ }
   await persistSettings({ autostart: next })
 }
@@ -249,7 +268,7 @@ async function toggleAutostart() {
 async function togglePreventSleep() {
   const next = !preventSleep.value
   preventSleep.value = next
-  try { window.desktopAPI?.setPreventSleep?.(next) } catch { /* ignore */ }
+  try { window.wanweiDesktop?.setPreventSleep?.(next) } catch { /* ignore */ }
   try {
     await apiPut('/system/power', { prevent_sleep: next })
     settingsOffline.value = false
@@ -271,16 +290,19 @@ async function loadLanStatus() {
 }
 
 async function enableLan() {
-  if (lanBusy.value) return
+  if (lanBusy.value || !canDriveLan) return
   lanBusy.value = true
   try {
+    // 1) 后端生成配对 token 并记录状态；2) 桌面端以同一把 token 重启后端绑 0.0.0.0
     const res = await apiPost<LanStatus>('/system/lan/enable')
-    lanStatus.value = { ...res, enabled: res.enabled ?? true }
+    const dres = await desktop!.lanEnable!(res.token ?? '')
+    // 桌面端返回的 lan_url 为真实网卡 IP + 实际端口 + 同一把 token，以其为准
+    lanStatus.value = { ...res, ...dres, enabled: true, qr_payload: dres.lan_url ?? res.qr_payload }
     lanOffline.value = false
     notice.value = '局域网访问已开启，手机浏览器打开下方地址即可。'
   } catch {
-    lanOffline.value = true
-    notice.value = '局域网服务开启失败：后端暂不可达或未配置。'
+    notice.value = '局域网服务开启失败：后端暂不可达，或桌面端切换监听地址失败。'
+    await loadLanStatus()   // 以后端真实状态为准刷新
   } finally {
     lanBusy.value = false
   }
@@ -291,8 +313,16 @@ async function disableLan() {
   lanBusy.value = true
   try {
     await apiPost('/system/lan/disable')
-    lanStatus.value = { enabled: false }
     lanOffline.value = false
+    let rebound = true
+    if (desktop?.lanDisable) {
+      // 同步回收桌面端 0.0.0.0 监听，避免「以为关了、端口还开着」
+      try { await desktop.lanDisable() } catch { rebound = false }
+    }
+    lanStatus.value = { enabled: false }
+    notice.value = rebound
+      ? '局域网访问已关闭。'
+      : '配对已关闭；桌面端监听回收失败，请重启桌面客户端确认。'
   } catch {
     lanOffline.value = true
     notice.value = '局域网服务关闭失败：后端暂不可达。'
@@ -363,25 +393,48 @@ async function loadSettings() {
   try {
     const s = await apiGet<SystemSettings>('/system/settings')
     settingsOffline.value = false
-    if (s.theme === 'day' || s.theme === 'night' || s.theme === 'system') {
-      theme.value = s.theme
-      applyThemeChoice(s.theme)
+    const backendTheme = s.theme
+    if (backendTheme === 'day' || backendTheme === 'night' || backendTheme === 'auto') {
+      const choice = backendTheme === 'auto' ? 'system' : backendTheme
+      theme.value = choice
+      applyThemeChoice(choice)
     }
-    if (s.lang === 'zh' || s.lang === 'en') {
-      lang.value = s.lang
-      applyLang(s.lang)
+    const backendLang = s.language
+    if (backendLang === 'zh-CN' || backendLang === 'en-US') {
+      const choice = backendLang === 'zh-CN' ? 'zh' : 'en'
+      lang.value = choice
+      applyLang(choice)
     }
     if (typeof s.petals === 'boolean' && s.petals !== petalsOn.value) {
       petalsOn.value = s.petals
       setPetalsEnabled(s.petals)
     }
     if (typeof s.autostart === 'boolean') autostart.value = s.autostart
-    if (typeof s.prevent_sleep === 'boolean') preventSleep.value = s.prevent_sleep
-    if (typeof s.background_image === 'string' && s.background_image && !bgDataUrl.value) {
+    // 背景以后端为准、localStorage 仅作缓存：后端为空串（他端已清除）时同步清缓存，
+    // 避免旧背景被 localStorage「复活」；null（从未设置）才保留本机缓存。
+    if (typeof s.background_image === 'string') {
       bgDataUrl.value = s.background_image
+      try {
+        if (s.background_image) localStorage.setItem(BG_KEY, s.background_image)
+        else localStorage.removeItem(BG_KEY)
+      } catch { /* ignore */ }
     }
   } catch {
     settingsOffline.value = true
+  }
+}
+
+/** 防睡眠状态源：GET /system/power（后端 JsonStore），桌面端再以 IPC 实际状态校准 */
+async function syncPreventSleep() {
+  try {
+    const p = await apiGet<PowerState>('/system/power')
+    if (typeof p.prevent_sleep === 'boolean') preventSleep.value = p.prevent_sleep
+  } catch { /* 电源偏好读取失败时保持本机默认，不打断设置页 */ }
+  if (desktop?.getPreventSleep) {
+    try {
+      const v = await desktop.getPreventSleep()
+      if (v && typeof v.enabled === 'boolean') preventSleep.value = v.enabled
+    } catch { /* 桌面端不可达时忽略 */ }
   }
 }
 
@@ -396,9 +449,9 @@ onMounted(() => {
   loadSettings().finally(() => {
     if (bgDataUrl.value) applyBodyBackground(bgDataUrl.value)
   })
+  syncPreventSleep()
   loadLanStatus()
   loadDownloads()
-  const desktop = window.wanweiDesktop
   if (desktop?.getAutostart) {
     desktop.getAutostart()
       .then((v) => { if (typeof v === 'boolean') autostart.value = v })
@@ -478,8 +531,8 @@ onUnmounted(() => {
       </GfCard>
 
       <!-- ══ 背景 ══ -->
-      <GfCard title="软件背景" seal="景">
-        <p class="hint">选择一张图片作为软件背景，将自动缩放至宽度不超过 1600 像素后保存。</p>
+      <GfCard title="设置页背景" seal="景">
+        <p class="hint">选择一张图片作为设置页背景（仅本页生效，离开后自动卸下），将自动缩放至宽度不超过 1600 像素后保存；原图不超过 12MB。</p>
         <div class="bg-actions">
           <GfButton small :disabled="!!savingKey" @click="pickBackground">选择图片…</GfButton>
           <GfButton v-if="bgDataUrl" variant="ghost" small :disabled="!!savingKey" @click="resetBackground">恢复默认</GfButton>
@@ -530,10 +583,16 @@ onUnmounted(() => {
           <GfTag :tone="lanStatus?.enabled ? 'bamboo' : 'ink'">{{ lanStatus?.enabled ? '已开启' : '已关闭' }}</GfTag>
         </div>
         <div class="bg-actions">
-          <GfButton small :disabled="lanBusy || !!lanStatus?.enabled" @click="enableLan">{{ lanBusy ? '处理中…' : '开启' }}</GfButton>
+          <GfButton
+            small
+            :disabled="lanBusy || !!lanStatus?.enabled || !canDriveLan"
+            :title="canDriveLan ? '开启局域网手机控制' : '浏览器环境无法切换后端监听地址，请在桌面客户端中操作'"
+            @click="enableLan"
+          >{{ lanBusy ? '处理中…' : '开启' }}</GfButton>
           <GfButton variant="ghost" small :disabled="lanBusy || !lanStatus?.enabled" @click="disableLan">关闭</GfButton>
           <GfTag v-if="lanOffline || lanStatus?.simulated" tone="gold">离线占位</GfTag>
         </div>
+        <p v-if="!canDriveLan" class="hint">当前为浏览器访问：可查看配对状态，但切换监听地址（0.0.0.0 重绑）需「枢忆·花朝」桌面客户端，请在其中开启。</p>
 
         <div v-if="lanStatus?.enabled && (lanStatus.lan_url || lanStatus.qr_payload)" class="lan-panel">
           <div class="qr-box" aria-hidden="true">

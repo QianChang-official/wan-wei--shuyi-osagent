@@ -12,13 +12,20 @@
  *   GET  /agents/context-size                           上下文体量（弹层）
  * 所有响应均做可选链容错；接口不可达时运行列表回退为「离线示例数据」。
  */
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
+import { runStatusGroup, runStatusLabel } from '@/utils/platformEnums'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
 import GfButton from '@/components/gf/GfButton.vue'
 import GfEmpty from '@/components/gf/GfEmpty.vue'
+
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
 
 /* ── 类型 ── */
 type Phase = 'verifying' | 'paired' | 'failed'
@@ -50,11 +57,23 @@ interface CtxInfo {
 
 /* ── 配对态 ── */
 const TOKEN_KEY = 'wanwei-mobile-token'
+const PAIRED_KEY = 'wanwei-mobile-paired'
 const route = useRoute()
+const router = useRouter()
 const phase = ref<Phase>('verifying')
 const failReason = ref('')
 const deviceName = ref('')
 const verifying = ref(false)
+const manualToken = ref('')
+
+/** 浮动小窗模式：桌面端浮动工作区以 /console/#/mobile?floating=1 加载（08-#37）。
+ *  现状：桌面 main.js 加载该 URL 时未附带 token，小窗首启必落在配对门禁；
+ *  前端侧不改后端 URL 契约，提供手动粘贴令牌入口作为诚实补救。 */
+const isFloating = computed(() => {
+  const f = route.query.floating
+  const v = Array.isArray(f) ? f[0] : f
+  return v === '1' || v === 'true'
+})
 
 /* ── 任务监视 ── */
 const runs = ref<RunItem[]>([])
@@ -109,8 +128,21 @@ function pickNum(obj: Record<string, unknown>, keys: string[]): number {
 }
 
 /* ── 配对 ── */
+/** 令牌脱敏：任何进入页面可见区域的文本都不得携带原始 token（08-#37） */
+function maskToken(text: string, token: string): string {
+  return token && text.includes(token) ? text.split(token).join('····') : text
+}
+
+/** 配对成功后抹掉地址栏 hash 中的 token，避免滞留可见 URL 与浏览历史 */
+function stripTokenFromUrl(): void {
+  if (route.query.token === undefined) return
+  const rest = { ...route.query }
+  delete rest.token
+  void router.replace({ query: rest })
+}
+
 async function verify(candidate: string, fromCache: boolean) {
-  if (verifying.value) return
+  if (verifying.value || phase.value === 'paired') return
   verifying.value = true
   phase.value = 'verifying'
   failReason.value = ''
@@ -121,15 +153,24 @@ async function verify(candidate: string, fromCache: boolean) {
     if (rejected) throw new Error(pickStr(r, ['message', 'detail', 'error']) || '令牌未通过校验')
     deviceName.value = r ? pickStr(r, ['device_name', 'device', 'name']) : ''
     localStorage.setItem(TOKEN_KEY, candidate)
+    localStorage.setItem(PAIRED_KEY, '1')
     phase.value = 'paired'
+    if (!fromCache) stripTokenFromUrl()
     startMain()
   } catch (e) {
     if (fromCache) localStorage.removeItem(TOKEN_KEY)
     phase.value = 'failed'
-    failReason.value = e instanceof Error ? e.message : String(e)
+    failReason.value = maskToken(platformErrText(e), candidate)
   } finally {
     verifying.value = false
   }
+}
+
+function submitManualToken() {
+  const candidate = manualToken.value.trim()
+  if (!candidate || verifying.value) return
+  manualToken.value = ''
+  void verify(candidate, false)
 }
 
 function retryPair() {
@@ -147,38 +188,15 @@ function retryPair() {
 
 function unpair() {
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(PAIRED_KEY)
   stopPolling()
   phase.value = 'failed'
   failReason.value = '已解除本机配对。请从桌面端重新获取配对链接。'
 }
 
 /* ── 任务监视 ── */
-const STATUS_LABELS: Record<string, string> = {
-  running: '运行中',
-  pending: '等待中',
-  queued: '排队中',
-  awaiting_review: '待审查',
-  review: '待审查',
-  completed: '已完成',
-  done: '已完成',
-  succeeded: '已成功',
-  success: '已成功',
-  failed: '已失败',
-  error: '已出错',
-  cancelled: '已取消',
-  canceled: '已取消',
-  paused: '已暂停',
-}
-function statusLabel(s: string): string {
-  return STATUS_LABELS[s] ?? (s && s !== 'unknown' ? s : '未知')
-}
-function statusClass(s: string): string {
-  if (s === 'awaiting_review' || s === 'review') return 'review'
-  if (['completed', 'done', 'succeeded', 'success'].includes(s)) return 'ok'
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(s)) return 'bad'
-  if (['running', 'pending', 'queued'].includes(s)) return 'run'
-  return 'idle'
-}
+/* 状态标签/分组统一取自共享枚举模块 @/utils/platformEnums（09-#11/#12），
+   本地不再维护私有映射，避免跨视图漂移。 */
 function fmtTime(s: string): string {
   if (!s) return ''
   const d = new Date(s)
@@ -216,9 +234,10 @@ async function loadRuns() {
     const res = await apiGet<unknown>('/agents/runs')
     runs.value = normalizeRuns(res)
     runsOffline.value = false
-  } catch {
-    runs.value = SAMPLE_RUNS
-    runsOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    runs.value = network ? SAMPLE_RUNS : []
+    runsOffline.value = network
   } finally {
     runsLoading.value = false
   }
@@ -232,11 +251,18 @@ async function decide(run: RunItem, approved: boolean) {
   }
   deciding.value = run.id
   try {
-    await apiPost<unknown>(`/agents/runs/${run.id}/approve`, { approved })
-    showToast(approved ? `已批准「${run.title}」` : `已拒绝「${run.title}」`)
+    const result = await apiPost<{ status?: string }>(`/agents/runs/${run.id}/approve`, { approved })
+    const actual = result.status
+    if (actual === 'rejected') {
+      showToast(`已拒绝「${run.title}」`)
+    } else if (actual === 'cancelled') {
+      showToast(`已取消「${run.title}」`)
+    } else {
+      showToast(approved ? `已批准「${run.title}」` : `已拒绝「${run.title}」`)
+    }
     await loadRuns()
   } catch (e) {
-    showToast(`操作失败：${e instanceof Error ? e.message : String(e)}`)
+    showToast(`操作失败：${platformErrText(e)}`)
   } finally {
     deciding.value = ''
   }
@@ -275,7 +301,7 @@ async function sendChat() {
     const reply = extractReply(res)
     pushMsg('agent', reply || '口信已送达，智能体思索中，进展见上方任务列表。')
   } catch (e) {
-    pushMsg('sys', `发送失败：${e instanceof Error ? e.message : String(e)}`)
+    pushMsg('sys', `发送失败：${platformErrText(e)}`)
   } finally {
     sending.value = false
   }
@@ -293,7 +319,7 @@ async function archiveDreams() {
     const base = Number.isFinite(n) ? `已归档 ${n} 段梦境` : '梦境整理请求已送达'
     showToast(simulated ? `${base}（模拟）` : base)
   } catch (e) {
-    showToast(`整理失败：${e instanceof Error ? e.message : String(e)}`)
+    showToast(`整理失败：${platformErrText(e)}`)
   } finally {
     archiving.value = false
   }
@@ -333,7 +359,7 @@ async function togglePower() {
     powerKnown.value = true
     showToast(preventSleep.value ? '防睡眠已开启，设备将保持清醒' : '防睡眠已关闭')
   } catch (e) {
-    showToast(`切换失败：${e instanceof Error ? e.message : String(e)}`)
+    showToast(`切换失败：${platformErrText(e)}`)
     await loadPower()
   } finally {
     powerBusy.value = false
@@ -370,7 +396,7 @@ async function openContext() {
     ctxInfo.value = normalizeCtx(res)
     if (!ctxInfo.value) ctxError.value = '后端已响应，但未返回可识别的上下文体量字段。'
   } catch (e) {
-    ctxError.value = e instanceof Error ? e.message : String(e)
+    ctxError.value = platformErrText(e)
   } finally {
     ctxLoading.value = false
   }
@@ -398,6 +424,12 @@ function startMain() {
 }
 
 onMounted(() => {
+  // 已配对状态作为终态：避免一次性 token 被重复 verify 触发「已使用」
+  if (localStorage.getItem(PAIRED_KEY) === '1') {
+    phase.value = 'paired'
+    startMain()
+    return
+  }
   const raw = route.query.token
   const fromQuery = Array.isArray(raw) ? raw[0] : raw
   const queryToken = typeof fromQuery === 'string' ? fromQuery.trim() : ''
@@ -433,6 +465,20 @@ onBeforeUnmount(() => {
           <div class="gate-actions">
             <GfButton :disabled="verifying" @click="retryPair">{{ verifying ? '验印中…' : '重新验印' }}</GfButton>
           </div>
+          <form class="gate-manual" @submit.prevent="submitManualToken">
+            <input
+              v-model="manualToken"
+              class="gate-manual-input"
+              type="password"
+              autocomplete="off"
+              placeholder="或手动粘贴配对令牌…"
+              :disabled="verifying"
+            />
+            <GfButton small :disabled="verifying || !manualToken.trim()" @click="submitManualToken">验印</GfButton>
+          </form>
+          <p v-if="isFloating" class="gate-hint">
+            浮动小窗当前不自动携带配对令牌（桌面端注入尚未接入）：请从桌面端「手机伴侣」面板复制令牌后在此粘贴，配对成功后小窗即可使用。
+          </p>
           <p class="gate-hint">配对链接形如 <code>/console/#/mobile?token=····</code>，由桌面端「手机伴侣」面板生成。</p>
         </template>
       </div>
@@ -462,7 +508,7 @@ onBeforeUnmount(() => {
         <ul v-else class="run-list">
           <li v-for="run in runs" :key="run.id" class="run-card" :class="{ 'run-card--review': run.status === 'awaiting_review' || run.status === 'review' }">
             <div class="run-row">
-              <span class="run-status" :data-st="statusClass(run.status)">{{ statusLabel(run.status) }}</span>
+              <span class="run-status" :data-st="runStatusGroup(run.status)">{{ runStatusLabel(run.status) }}</span>
               <div class="run-main">
                 <div class="run-title">{{ run.title }}</div>
                 <div class="run-meta">
@@ -622,6 +668,32 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 .gate-actions { margin-top: 4px; }
+.gate-manual {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  max-width: 320px;
+}
+.gate-manual-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card-solid);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+.gate-manual-input:focus {
+  outline: none;
+  border-color: var(--cinnabar);
+  box-shadow: 0 0 0 3px var(--rouge-glow);
+}
+.gate-manual-input:disabled { opacity: .55; }
 .gate-hint {
   font-size: 11px;
   line-height: 1.8;

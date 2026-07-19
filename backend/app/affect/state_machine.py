@@ -9,7 +9,7 @@ import json
 import uuid
 from dataclasses import dataclass, asdict
 
-from ..db import get_conn
+from ..db import transaction
 from ..utils.datetime_utils import utc_now_iso_compact
 
 
@@ -65,9 +65,13 @@ def _resolve_mood(trigger: str, pleasure: float, arousal: float, dominance: floa
     return "neutral"
 
 
-def load_affect(soul_id: str) -> AffectState:
-    """Load the current affect state for a soul.  If absent, seed defaults."""
-    conn = get_conn()
+def _load_affect(conn, soul_id: str) -> AffectState:
+    """Load the current affect state on *conn*; seed defaults if absent.
+
+    03-#10 兼容：种子 INSERT 加 WHERE EXISTS 守卫——soul_persona 不存在的
+    幽灵 soul 不再产生 affect_state 孤儿行（FOREIGN KEY 已启用），仅返回
+    内存默认值。
+    """
     row = conn.execute(
         "SELECT pleasure, arousal, dominance, current_mood, mood_intensity "
         "FROM affect_state WHERE soul_id=?",
@@ -89,17 +93,22 @@ def load_affect(soul_id: str) -> AffectState:
     default = AffectState()
     conn.execute(
         "INSERT OR IGNORE INTO affect_state(soul_id, pleasure, arousal, dominance, "
-        "current_mood, mood_intensity, updated_at) VALUES (?,?,?,?,?,?,?)",
+        "current_mood, mood_intensity, updated_at) "
+        "SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM soul_persona WHERE soul_id=?)",
         (soul_id, default.pleasure, default.arousal, default.dominance,
-         default.current_mood, default.mood_intensity, ts),
+         default.current_mood, default.mood_intensity, ts, soul_id),
     )
-    conn.commit()
     return default
 
 
-def save_affect(soul_id: str, state: AffectState) -> None:
-    """Persist an AffectState to the affect_state table."""
-    conn = get_conn()
+def load_affect(soul_id: str) -> AffectState:
+    """Load the current affect state for a soul.  If absent, seed defaults."""
+    with transaction() as conn:
+        return _load_affect(conn, soul_id)
+
+
+def _save_affect(conn, soul_id: str, state: AffectState) -> None:
+    """Persist an AffectState on the caller's connection/transaction."""
     ts = utc_now_iso_compact()
     conn.execute(
         """
@@ -117,7 +126,12 @@ def save_affect(soul_id: str, state: AffectState) -> None:
         (soul_id, _clamp(state.pleasure), _clamp(state.arousal), _clamp(state.dominance),
          state.current_mood, _clamp(state.mood_intensity), ts),
     )
-    conn.commit()
+
+
+def save_affect(soul_id: str, state: AffectState) -> None:
+    """Persist an AffectState to the affect_state table."""
+    with transaction() as conn:
+        _save_affect(conn, soul_id, state)
 
 
 def _log_event(
@@ -127,32 +141,38 @@ def _log_event(
     intensity: float,
     trigger: str | None = None,
     bound_capsule_ids: list[str] | None = None,
+    conn=None,
 ) -> None:
-    """Write a row to affect_events."""
-    conn = get_conn()
+    """Write a row to affect_events.
+
+    ``conn`` 传入时在调用方事务内写入（03-#17：transition 的 load→save→log
+    收进单个事务）；缺省自建事务，保持既有独立调用语义。
+    """
     event_id = "aevt_" + uuid.uuid4().hex[:12]
     ts = utc_now_iso_compact()
-    conn.execute(
-        """
+    sql = """
         INSERT INTO affect_events(
             event_id, soul_id, emotion, pleasure, arousal, dominance,
             intensity, trigger, bound_capsule_ids, created_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            event_id,
-            soul_id,
-            emotion,
-            _clamp(state.pleasure),
-            _clamp(state.arousal),
-            _clamp(state.dominance),
-            _clamp(intensity),
-            trigger,
-            json.dumps(bound_capsule_ids or []),
-            ts,
-        ),
+        """
+    params = (
+        event_id,
+        soul_id,
+        emotion,
+        _clamp(state.pleasure),
+        _clamp(state.arousal),
+        _clamp(state.dominance),
+        _clamp(intensity),
+        trigger,
+        json.dumps(bound_capsule_ids or []),
+        ts,
     )
-    conn.commit()
+    if conn is not None:
+        conn.execute(sql, params)
+        return
+    with transaction() as wconn:
+        wconn.execute(sql, params)
 
 
 def transition(soul_id: str, trigger: str, intensity: float = 1.0) -> AffectState:
@@ -162,27 +182,32 @@ def transition(soul_id: str, trigger: str, intensity: float = 1.0) -> AffectStat
     Rules are hard-coded in _TRIGGER_MAP.  Unknown triggers leave the state
     unchanged but still log a zero-delta event.  All PAD values are clamped
     to [0, 1].
+
+    03-#17: load→save→log 收进单个 transaction()。此前三步独立事务，任何
+    一步失败都会留下半提交状态（如 state 已改但事件缺失），且并发请求间
+    的读-改-写互相覆盖；现在同一连接同一事务内完成，整体提交或整体回滚。
     """
-    state = load_affect(soul_id)
-    rule = _TRIGGER_MAP.get(trigger)
+    with transaction() as conn:
+        state = _load_affect(conn, soul_id)
+        rule = _TRIGGER_MAP.get(trigger)
 
-    if rule is None:
-        _log_event(soul_id, state.current_mood, state, 0.0, trigger=trigger)
+        if rule is None:
+            _log_event(soul_id, state.current_mood, state, 0.0, trigger=trigger, conn=conn)
+            return state
+
+        dP, dA, dD, forced_mood = rule
+        state.pleasure = _clamp(state.pleasure + dP * intensity)
+        state.arousal = _clamp(state.arousal + dA * intensity)
+        state.dominance = _clamp(state.dominance + dD * intensity)
+
+        # Mood resolution
+        if forced_mood is not None:
+            state.current_mood = forced_mood
+        else:
+            state.current_mood = _resolve_mood(trigger, state.pleasure, state.arousal, state.dominance)
+
+        state.mood_intensity = _clamp(state.mood_intensity + 0.1 * intensity)
+
+        _save_affect(conn, soul_id, state)
+        _log_event(soul_id, state.current_mood, state, intensity, trigger=trigger, conn=conn)
         return state
-
-    dP, dA, dD, forced_mood = rule
-    state.pleasure = _clamp(state.pleasure + dP * intensity)
-    state.arousal = _clamp(state.arousal + dA * intensity)
-    state.dominance = _clamp(state.dominance + dD * intensity)
-
-    # Mood resolution
-    if forced_mood is not None:
-        state.current_mood = forced_mood
-    else:
-        state.current_mood = _resolve_mood(trigger, state.pleasure, state.arousal, state.dominance)
-
-    state.mood_intensity = _clamp(state.mood_intensity + 0.1 * intensity)
-
-    save_affect(soul_id, state)
-    _log_event(soul_id, state.current_mood, state, intensity, trigger=trigger)
-    return state

@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 检查麒麟 V11 虚拟机内 linux-unpacked 桌面端产物目录结构。
 import sys
 import time
 

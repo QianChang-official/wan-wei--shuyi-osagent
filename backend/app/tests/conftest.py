@@ -7,6 +7,7 @@
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -61,5 +62,12 @@ def isolated_db():
         os.environ.pop("WANWEI_MEMORY_DB", None)
     else:
         os.environ["WANWEI_MEMORY_DB"] = prev
-    if Path(db_path).exists():
-        Path(db_path).unlink()
+    # D6: Windows 下句柄释放有延迟，重试几次；仍失败则忽略
+    # （临时文件，OS 最终会清理，不阻断测试结果）
+    for attempt in range(5):
+        try:
+            Path(db_path).unlink(missing_ok=True)
+            break
+        except PermissionError:
+            if attempt < 4:
+                time.sleep(0.1)

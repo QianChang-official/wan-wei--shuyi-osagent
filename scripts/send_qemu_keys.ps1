@@ -1,3 +1,4 @@
+# 一次性 QA 工具（Windows）：经 QEMU QMP 向麒麟 V11 虚拟机发送按键/文本（send-key）。
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Text')]

@@ -1,3 +1,5 @@
+"""打印目录树的确定性 SHA-256 摘要，用于交付物/产物一致性校验。"""
+
 from __future__ import annotations
 
 import argparse

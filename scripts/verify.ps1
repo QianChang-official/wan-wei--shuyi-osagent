@@ -1,3 +1,4 @@
+# 交付验收（Windows）：运行后端 compileall+pytest、前端构建与可复现性校验；venv 缺失时明确提示先跑 setup.ps1。
 [CmdletBinding()]
 param(
     [switch]$SkipInstall,

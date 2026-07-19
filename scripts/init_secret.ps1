@@ -1,3 +1,4 @@
+# 生成 API key 密钥文件（secrets\wanwei_api_key.txt）并写入 .env 引用；已存在时拒绝覆盖，除非 -Force。
 [CmdletBinding()]
 param(
     [string]$Path,

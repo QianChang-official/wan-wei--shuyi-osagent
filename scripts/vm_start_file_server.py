@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机后台起绑定 10.0.2.15:9000 的只读文件服务器供宿主机下载。
 import sys
 import time
 

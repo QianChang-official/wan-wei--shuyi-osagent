@@ -4,28 +4,75 @@
 ``/memory`` 开头：
 
 - 记忆指令（「记住」）：``/memory/instructions*``、``/memory/remember``
-- 梦境记忆：``/memory/dreams*``（每夜整理，alpha 单节点为手动/启动时补跑）
+- 梦境记忆：``/memory/dreams*``（每夜整理为手动触发，当前无后台调度，
+  调度状态以 ``/memory/dreams/schedule`` 如实返回为准）
 - 常用语：``/memory/phrases*``
 - 会话管理：``/memory/sessions*``
 
-持久化全部走共享 ``JsonStore``（JSON 落盘，线程锁）：
+持久化全部走共享 ``JsonStore``（JSON 落盘，模块级共享锁 + ``mutate`` 原子原语）：
 ``memory_instructions`` / ``phrases`` / ``sessions`` / ``dream_archive``。
 
 路由顺序注意：``/memory/instructions/prompt`` 等固定路径必须先于
 ``/memory/instructions/{index}`` 这类参数路径定义，避免被参数路径吞掉。
+
+双轨现状（审计 06-#11 诚实标注，不做合并重构）：
+本模块是 platform 版记忆体系（JSON 影子存储），与老 ``app.memory_runtime``
+体系（sqlite 胶囊 / FTS 检索 / evolution）双轨并行、零数据互通。
+唯一复用点是写入前的 ``memory_runtime.policy_gate.evaluate_policy`` 安全闸门；
+记忆指令、常用语、梦境归档均不进入老体系的胶囊/检索链路，反之亦然。
+- sessions：``JsonStore('sessions')`` 无真实生产者（无创建接口、未对接
+  sqlite ``conversation_turns`` 表），列表接口已在响应中如实标注来源；
+- dream_archive：与 ``app/dream/scheduler.py``（sqlite ``dream_lock``
+  占位引擎）无关；无真实会话数据时归档走示例会话并标注 ``source='sample'``。
+
+时间基准（审计 06-#12 统一）：全模块 UTC aware datetime，
+ISO8601 秒级带 ``Z`` 序列化（与 knowledge.py 同一口径）。
 """
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.platform_api.guards import audit_safe
 from app.platform_api.store import JsonStore
+from app.memory_runtime.policy_gate import evaluate_policy
+from app.utils.datetime_utils import utc_now, utc_now_iso_compact
 
 router = APIRouter(prefix='/memory', tags=['memory-center'])
+
+
+def _enforce_memory_policy(text: str) -> None:
+    """写入前 Policy Gate 校验：reject/quarantine → 422。
+
+    remember / instructions / phrases 三个写入入口统一调用，防止密码、
+    密钥、身份证号、记忆投毒等敏感内容被持久化为指令/常用语。
+    """
+    guard = evaluate_policy(
+        text=text,
+        source_type="user_input",
+        write_intent="explicit",
+        affects_future_behavior=True,
+    )
+    policy = guard.get("policy_result")
+    if policy in ("reject", "quarantine"):
+        audit_safe('policy_blocked', {
+            'endpoint': 'memory_write',
+            'policy_result': policy,
+            'risk_tags': guard.get('risk_tags', []),
+            'sensitivity_level': guard.get('sensitivity_level'),
+        })
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "记忆内容触发安全策略拦截",
+                "policy_result": policy,
+                "risk_tags": guard.get("risk_tags", []),
+                "sensitivity_level": guard.get("sensitivity_level"),
+            },
+        )
 
 # ---------------------------------------------------------------------------
 # 存储与常量
@@ -66,11 +113,13 @@ _SAMPLE_SESSIONS: list[dict[str, Any]] = [
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec='seconds')
+    """UTC aware 当前时间 → ISO8601 秒级带 Z（与 knowledge.py 统一基准）。"""
+    return utc_now_iso_compact()
 
 
 def _today() -> str:
-    return datetime.now().strftime('%Y-%m-%d')
+    """当前 UTC 日期：梦境「夜」的切分基准，与全模块 UTC 口径一致。"""
+    return utc_now().strftime('%Y-%m-%d')
 
 
 def _short_id(prefix: str) -> str:
@@ -93,6 +142,26 @@ def _write_lines(lines: list[str]) -> str:
     updated_at = _now_iso()
     _instructions_store.update({'lines': lines, 'updated_at': updated_at})
     return updated_at
+
+
+def _mutate_lines(fn: Any) -> Any:
+    """锁内「读-改-写」指令行：fn(lines) 原地修改，返回值透传（06-#9）。
+
+    基于 ``JsonStore.mutate`` 原子原语：读取、修改、落盘在同一把模块级
+    共享锁内一次完成，杜绝并发 /remember 相互覆盖丢更新。fn 抛异常时
+    不落盘。仅当 lines 真有变更时才刷新 ``updated_at``（保持去重等
+    无操作路径不触碰时间戳的旧行为）。
+    """
+    def _apply(data: dict) -> Any:
+        raw = data.get('lines')
+        lines = [str(line) for line in raw] if isinstance(raw, list) else []
+        before = list(lines)
+        result = fn(lines)
+        if lines != before:
+            data['lines'] = lines
+            data['updated_at'] = _now_iso()
+        return result
+    return _instructions_store.mutate(_apply)
 
 
 def _validate_lines(lines: Any) -> list[str]:
@@ -141,6 +210,8 @@ def get_instructions() -> dict:
 @router.put('/instructions')
 def put_instructions(body: InstructionsPut) -> dict:
     lines = _validate_lines(body.lines)
+    for line in lines:
+        _enforce_memory_policy(line)
     updated_at = _write_lines(lines)
     return {
         'ok': True,
@@ -168,12 +239,14 @@ def get_instructions_prompt() -> dict:
 
 @router.delete('/instructions/{index}')
 def delete_instruction(index: int) -> dict:
-    lines = _read_lines()
-    if index < 0 or index >= len(lines):
-        raise HTTPException(status_code=404, detail=f'指令行 {index} 不存在')
-    removed = lines.pop(index)
-    _write_lines(lines)
-    return {'ok': True, 'removed': removed, 'count': len(lines)}
+    def _apply(lines: list[str]) -> tuple[str, int]:
+        if index < 0 or index >= len(lines):
+            raise HTTPException(status_code=404, detail=f'指令行 {index} 不存在')
+        removed = lines.pop(index)
+        return removed, len(lines)
+
+    removed, count = _mutate_lines(_apply)
+    return {'ok': True, 'removed': removed, 'count': count}
 
 
 @router.post('/remember')
@@ -187,18 +260,23 @@ def remember(body: RememberPost) -> dict:
             status_code=400,
             detail=f'单条记忆最多 {MAX_INSTRUCTION_LINE_CHARS} 字',
         )
-    lines = _read_lines()
-    if text in lines:
-        # 自动去重：已存在的指令不重复追加
-        return {'ok': True, 'lines_count': len(lines), 'deduped': True}
-    lines.append(text)
-    evicted: str | None = None
-    if len(lines) > MAX_INSTRUCTION_LINES:
-        evicted = lines.pop(0)
-    _write_lines(lines)
-    resp: dict[str, Any] = {'ok': True, 'lines_count': len(lines)}
-    if evicted is not None:
-        resp['evicted'] = evicted
+    _enforce_memory_policy(text)
+
+    def _apply(lines: list[str]) -> dict[str, Any]:
+        if text in lines:
+            # 自动去重：已存在的指令不重复追加（无变更，不刷新 updated_at）
+            return {'deduped': True, 'lines_count': len(lines), 'evicted': None}
+        lines.append(text)
+        evicted = lines.pop(0) if len(lines) > MAX_INSTRUCTION_LINES else None
+        return {'deduped': False, 'lines_count': len(lines), 'evicted': evicted}
+
+    outcome = _mutate_lines(_apply)
+    if outcome['deduped']:
+        return {'ok': True, 'lines_count': outcome['lines_count'], 'deduped': True}
+    audit_safe('memory_remember', {'lines_count': outcome['lines_count'], 'text': text})
+    resp: dict[str, Any] = {'ok': True, 'lines_count': outcome['lines_count']}
+    if outcome['evicted'] is not None:
+        resp['evicted'] = outcome['evicted']
     return resp
 
 
@@ -231,8 +309,25 @@ def _normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _write_sessions(items: list[dict[str, Any]]) -> None:
-    _sessions_store.set('items', items)
+def _mutate_items(store: JsonStore, fn: Any) -> Any:
+    """锁内「读 items 列表 → fn(items) 原地修改 → 一次落盘」（06-#9）。
+
+    基于 ``JsonStore.mutate`` 原子原语，杜绝 use_phrase / archive 等
+    读改写路径的并发覆盖。fn 返回值透传给调用方；fn 抛异常时不落盘。
+    读取兼容 sessions 旧落盘形态（整店为 ``{sid: session}`` 映射），
+    写回统一收口为 ``{'items': [...]}``。
+    """
+    def _apply(data: dict) -> Any:
+        raw = data.get('items')
+        if isinstance(raw, list):
+            items = [x for x in raw if isinstance(x, dict)]
+        else:
+            items = [v for v in data.values() if isinstance(v, dict) and 'id' in v]
+        result = fn(items)
+        data.clear()
+        data['items'] = items
+        return result
+    return store.mutate(_apply)
 
 
 def _read_dreams() -> list[dict[str, Any]]:
@@ -253,10 +348,11 @@ def list_dreams() -> dict:
 # 固定路径先于任何可能的参数路径定义
 @router.get('/dreams/schedule')
 def dream_schedule() -> dict:
+    """梦境调度状态：如实返回，当前版本无后台调度任务。"""
     return {
-        'enabled': True,
-        'time': '03:00',
-        'note': '由后端后台任务每夜执行（单节点 alpha 为手动/启动时补跑）',
+        'enabled': False,
+        'mode': 'manual',
+        'note': '当前版本无后台调度任务；可手动调用 /dreams/archive-now 触发整理',
     }
 
 
@@ -307,16 +403,15 @@ def dream_archive_now() -> dict:
         'source': source,
     }
 
-    items = _read_dreams()
-    replaced = False
-    for i, old in enumerate(items):
-        if old.get('night') == night:
-            items[i] = entry  # 每夜至多一条：覆盖同夜旧归档
-            replaced = True
-            break
-    if not replaced:
+    def _apply(items: list[dict[str, Any]]) -> bool:
+        for i, old in enumerate(items):
+            if old.get('night') == night:
+                items[i] = entry  # 每夜至多一条：覆盖同夜旧归档
+                return True
         items.append(entry)
-    _dream_store.set('items', items)
+        return False
+
+    replaced = _mutate_items(_dream_store, _apply)
 
     return {'ok': True, 'entry': entry, 'replaced': replaced, 'source': source}
 
@@ -331,10 +426,6 @@ def _read_phrases() -> list[dict[str, Any]]:
     if not isinstance(items, list):
         return []
     return [p for p in items if isinstance(p, dict)]
-
-
-def _write_phrases(items: list[dict[str, Any]]) -> None:
-    _phrases_store.set('items', items)
 
 
 def _sorted_phrases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -363,41 +454,52 @@ def create_phrase(body: PhrasePost) -> dict:
         raise HTTPException(
             status_code=400, detail=f'常用语最多 {MAX_PHRASE_CHARS} 字'
         )
-    items = _read_phrases()
-    for p in items:
-        if p.get('text') == text:
-            return {'ok': True, 'item': p, 'deduped': True}
-    item = {
-        'id': _short_id('ph'),
-        'text': text,
-        'usage_count': 0,
-        'created_at': _now_iso(),
-    }
-    items.append(item)
-    _write_phrases(items)
-    return {'ok': True, 'item': item}
+    _enforce_memory_policy(text)
+
+    def _apply(items: list[dict[str, Any]]) -> dict[str, Any]:
+        for p in items:
+            if p.get('text') == text:
+                return {'item': p, 'deduped': True}
+        item = {
+            'id': _short_id('ph'),
+            'text': text,
+            'usage_count': 0,
+            'created_at': _now_iso(),
+        }
+        items.append(item)
+        return {'item': item, 'deduped': False}
+
+    outcome = _mutate_items(_phrases_store, _apply)
+    if outcome['deduped']:
+        return {'ok': True, 'item': outcome['item'], 'deduped': True}
+    audit_safe('phrase_created', {'phrase_id': outcome['item']['id'], 'text': text})
+    return {'ok': True, 'item': outcome['item']}
 
 
 @router.delete('/phrases/{pid}')
 def delete_phrase(pid: str) -> dict:
-    items = _read_phrases()
-    for i, p in enumerate(items):
-        if p.get('id') == pid:
-            removed = items.pop(i)
-            _write_phrases(items)
-            return {'ok': True, 'removed': removed, 'count': len(items)}
-    raise HTTPException(status_code=404, detail=f'常用语 {pid} 不存在')
+    def _apply(items: list[dict[str, Any]]) -> tuple[dict[str, Any], int]:
+        for i, p in enumerate(items):
+            if p.get('id') == pid:
+                removed = items.pop(i)
+                return removed, len(items)
+        raise HTTPException(status_code=404, detail=f'常用语 {pid} 不存在')
+
+    removed, count = _mutate_items(_phrases_store, _apply)
+    return {'ok': True, 'removed': removed, 'count': count}
 
 
 @router.post('/phrases/{pid}/use')
 def use_phrase(pid: str) -> dict:
-    items = _read_phrases()
-    for p in items:
-        if p.get('id') == pid:
-            p['usage_count'] = int(p.get('usage_count', 0) or 0) + 1
-            _write_phrases(items)
-            return {'ok': True, 'item': p}
-    raise HTTPException(status_code=404, detail=f'常用语 {pid} 不存在')
+    def _apply(items: list[dict[str, Any]]) -> dict[str, Any]:
+        for p in items:
+            if p.get('id') == pid:
+                p['usage_count'] = int(p.get('usage_count', 0) or 0) + 1
+                return p
+        raise HTTPException(status_code=404, detail=f'常用语 {pid} 不存在')
+
+    item = _mutate_items(_phrases_store, _apply)
+    return {'ok': True, 'item': item}
 
 
 # ---------------------------------------------------------------------------
@@ -406,13 +508,23 @@ def use_phrase(pid: str) -> dict:
 
 
 @router.get('/sessions')
-def list_sessions() -> list[dict[str, Any]]:
-    """会话列表（空则返回 []）。置顶优先，其余按更新时间倒序。"""
+def list_sessions() -> dict[str, Any]:
+    """会话列表。
+
+    返回 ``sessions`` 数组；``source`` 与 ``note`` 诚实标注当前数据来自独立
+    JsonStore('sessions')，未与真实 conversation_turns 表对接，避免文档/接口
+    暗示存在不存在的会话数据源。
+    """
     sessions = [_normalize_session(s) for s in _read_sessions_raw()]
     # pinned 优先 + updated_at 倒序：先按 updated_at 倒序，再稳定排序 pinned
     sessions.sort(key=lambda s: str(s.get('updated_at', '')), reverse=True)
     sessions.sort(key=lambda s: not s['pinned'])
-    return sessions
+    return {
+        'sessions': sessions,
+        'count': len(sessions),
+        'source': "JsonStore('sessions')",
+        'note': '当前会话数据为独立 JSON 存储，未对接真实 conversation_turns 表；空列表表示尚无记录。',
+    }
 
 
 def _find_session(items: list[dict[str, Any]], sid: str) -> dict[str, Any] | None:
@@ -423,53 +535,65 @@ def _find_session(items: list[dict[str, Any]], sid: str) -> dict[str, Any] | Non
 
 
 class SessionPut(BaseModel):
+    # archived 为后补的可选字段（06-#6 对齐）：与 archive/unarchive 专用端点
+    # 行为一致，避免前端 PUT {archived: false} 被静默丢弃造成假成功。
     title: str | None = None
     pinned: bool | None = None
+    archived: bool | None = None
     auto_expand_refs: bool | None = None
 
 
 @router.post('/sessions/{sid}/archive')
 def archive_session(sid: str) -> dict:
-    items = _read_sessions_raw()
-    target = _find_session(items, sid)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
-    target['archived'] = True
-    _write_sessions(items)
+    def _apply(items: list[dict[str, Any]]) -> dict[str, Any]:
+        target = _find_session(items, sid)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
+        target['archived'] = True
+        return target
+
+    target = _mutate_items(_sessions_store, _apply)
     return {'ok': True, 'session': _normalize_session(target)}
 
 
 @router.post('/sessions/{sid}/unarchive')
 def unarchive_session(sid: str) -> dict:
-    items = _read_sessions_raw()
-    target = _find_session(items, sid)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
-    target['archived'] = False
-    _write_sessions(items)
+    def _apply(items: list[dict[str, Any]]) -> dict[str, Any]:
+        target = _find_session(items, sid)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
+        target['archived'] = False
+        return target
+
+    target = _mutate_items(_sessions_store, _apply)
     return {'ok': True, 'session': _normalize_session(target)}
 
 
 @router.put('/sessions/{sid}')
 def update_session(sid: str, body: SessionPut) -> dict:
-    items = _read_sessions_raw()
-    target = _find_session(items, sid)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
-    changed = False
-    if body.title is not None:
-        title = body.title.strip()
-        if not title:
-            raise HTTPException(status_code=400, detail='会话标题不能为空')
-        target['title'] = title
-        changed = True
-    if body.pinned is not None:
-        target['pinned'] = bool(body.pinned)
-        changed = True
-    if body.auto_expand_refs is not None:
-        target['auto_expand_refs'] = bool(body.auto_expand_refs)
-        changed = True
-    if changed:
-        target['updated_at'] = _now_iso()
-        _write_sessions(items)
+    def _apply(items: list[dict[str, Any]]) -> dict[str, Any]:
+        target = _find_session(items, sid)
+        if target is None:
+            raise HTTPException(status_code=404, detail=f'会话 {sid} 不存在')
+        changed = False
+        if body.title is not None:
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(status_code=400, detail='会话标题不能为空')
+            target['title'] = title
+            changed = True
+        if body.pinned is not None:
+            target['pinned'] = bool(body.pinned)
+            changed = True
+        if body.archived is not None:
+            target['archived'] = bool(body.archived)
+            changed = True
+        if body.auto_expand_refs is not None:
+            target['auto_expand_refs'] = bool(body.auto_expand_refs)
+            changed = True
+        if changed:
+            target['updated_at'] = _now_iso()
+        return target
+
+    target = _mutate_items(_sessions_store, _apply)
     return {'ok': True, 'session': _normalize_session(target)}

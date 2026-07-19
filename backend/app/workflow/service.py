@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..audit.service import record
-from ..model_gateway.service import LOCAL_LLAMA_BASE
+from ..model_gateway.service import local_llama_settings
 from ..utils.datetime_utils import utc_now_iso
 from ..version import VERSION
 from . import persistence
@@ -152,6 +152,8 @@ SCENARIOS = [
 
 
 def workflow_design() -> dict[str, Any]:
+    # 03-#14：使用运行时访问函数，避免导入期 env 快照与请求期实际配置漂移
+    local_base, local_model, local_configured = local_llama_settings()
     return {
         "version": VERSION,
         "source": "01_docs_legacy/wanwei_shuyi_osagent_plan.md",
@@ -159,8 +161,10 @@ def workflow_design() -> dict[str, Any]:
         "latency_target": "osagent_control_loop_p95_lte_500ms_without_model_generation",
         "model_gateway": {
             "provider": "openai_compatible",
-            "api_base": LOCAL_LLAMA_BASE,
-            "status": "real_smoke_available",
+            "api_base": local_base,
+            "api_model": local_model,
+            "configured": local_configured,
+            "status": "real_smoke_available" if local_configured else "configuration_required",
             "boundary": "model generation latency is reported separately from OSAgent control-loop latency",
         },
         "run_api": ["POST /workflow/runs", "GET /workflow/runs/{run_id}", "GET /workflow/runs/{run_id}/trace", "GET /workflow/runs/{run_id}/artifacts"],

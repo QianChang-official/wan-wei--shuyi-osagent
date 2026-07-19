@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机试启动 linux-unpacked 桌面端（约 12 秒后结束）。
 import sys
 import time
 

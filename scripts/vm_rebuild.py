@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机重新拉取源码包并后台重跑 guest_build.sh。
 import sys
 import time
 

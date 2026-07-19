@@ -76,10 +76,10 @@ def test_version_constant():
     assert isinstance(VERSION_HISTORY, list)
     assert len(VERSION_HISTORY) >= 3
 
-    # 最新版本应该是当前交付硬化版本
+    # 最新版本应该是当前已发布版本（v0.11.0-wanshu 已 released）
     latest = VERSION_HISTORY[0]
     assert latest['version'] == "v0.11.0-wanshu"
-    assert latest['status'] == "in_progress"
+    assert latest['status'] == "released"
 
 
 def test_datetime_utils_no_deprecation_warning():

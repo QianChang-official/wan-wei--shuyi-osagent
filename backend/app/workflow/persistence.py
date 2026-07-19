@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..utils.datetime_utils import utc_now, utc_now_iso
 
 
@@ -88,37 +88,33 @@ def save_run(run_id: str, run_data: dict[str, Any]) -> None:
         run_id: 运行 ID
         run_data: 完整的 run 数据字典
     """
-    conn = get_conn()
-    cursor = conn.cursor()
-
     summary = run_data.get('summary', {})
 
-    cursor.execute('''
-        INSERT OR REPLACE INTO workflow_runs (
-            run_id, trace_id, scenario, user_goal, status, dry_run,
-            created_at, completed_at, run_data, version,
-            total_stages, completed_stages, skipped_stages,
-            latency_ms, risk_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        run_id,
-        run_data.get('trace_id', ''),
-        run_data.get('scenario', ''),
-        run_data.get('user_goal', ''),
-        run_data.get('status', 'unknown'),
-        1 if run_data.get('dry_run', True) else 0,
-        run_data.get('created_at', utc_now_iso()),
-        run_data.get('completed_at'),
-        json.dumps(run_data, ensure_ascii=False),
-        run_data.get('version', ''),
-        summary.get('total_stages', 0),
-        summary.get('completed_stages', 0),
-        summary.get('skipped_stages', 0),
-        summary.get('latency_ms', 0),
-        summary.get('risk_level', 'unknown'),
-    ))
-
-    conn.commit()
+    with transaction() as conn:
+        conn.execute('''
+            INSERT OR REPLACE INTO workflow_runs (
+                run_id, trace_id, scenario, user_goal, status, dry_run,
+                created_at, completed_at, run_data, version,
+                total_stages, completed_stages, skipped_stages,
+                latency_ms, risk_level
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            run_id,
+            run_data.get('trace_id', ''),
+            run_data.get('scenario', ''),
+            run_data.get('user_goal', ''),
+            run_data.get('status', 'unknown'),
+            1 if run_data.get('dry_run', True) else 0,
+            run_data.get('created_at', utc_now_iso()),
+            run_data.get('completed_at'),
+            json.dumps(run_data, ensure_ascii=False),
+            run_data.get('version', ''),
+            summary.get('total_stages', 0),
+            summary.get('completed_stages', 0),
+            summary.get('skipped_stages', 0),
+            summary.get('latency_ms', 0),
+            summary.get('risk_level', 'unknown'),
+        ))
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
@@ -203,23 +199,19 @@ def cleanup_old_runs(ttl_days: int = DEFAULT_TTL_DAYS) -> int:
     """
     if not 1 <= ttl_days <= 3650:
         raise ValueError("ttl_days must be between 1 and 3650")
-    conn = get_conn()
-    cursor = conn.cursor()
 
     # 计算过期时间阈值
     cutoff = utc_now() - timedelta(days=ttl_days)
     cutoff_iso = cutoff.isoformat()
 
     # 删除过期记录
-    cursor.execute('''
-        DELETE FROM workflow_runs
-        WHERE created_at < ?
-    ''', (cutoff_iso,))
+    with transaction() as conn:
+        deleted = conn.execute('''
+            DELETE FROM workflow_runs
+            WHERE created_at < ?
+        ''', (cutoff_iso,))
 
-    deleted_count = cursor.rowcount
-    conn.commit()
-
-    return deleted_count
+    return deleted.rowcount
 
 
 def get_run_count() -> int:

@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 在麒麟 V11 虚拟机后台起 9000 端口 http.server 分发 linux-unpacked 产物。
 import sys
 import time
 

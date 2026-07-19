@@ -1,3 +1,4 @@
+# 交付冒烟入口（Windows）：调用 scripts\smoke.py 对运行中的服务做 HTTP 冒烟（覆盖范围见 smoke.py 头部注释）。
 [CmdletBinding()]
 param(
     [string]$BaseUrl = 'http://127.0.0.1:8010',

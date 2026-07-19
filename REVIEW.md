@@ -23,9 +23,11 @@ Chinese console views under `frontend/console-vue/src/views/platform/`, and
 desktop capabilities in `desktop/src/` (powerSaveBlocker prevent-sleep, LAN
 mobile companion with token pairing, floating workspace window). Capabilities
 that are not wired to real external systems (real model API calls, MCP stdio/SSE
-connections, git worktree binding, the `device` gear) are intentionally labeled
+connections, git worktree binding) are intentionally labeled
 stub/simulated or disabled by default; do not flag those labels as missing
 features, but do flag any change that presents them as real, working behavior.
+The `device` gear is an executable gear alongside `sandbox`; dangerous system-wide
+operations are gated by explicit module-level checks rather than a global disable.
 
 ## Review Scope and Severity
 

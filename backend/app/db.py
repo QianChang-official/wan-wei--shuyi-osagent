@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -20,6 +21,13 @@ def _default_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "wanwei-shuyi"
 
 
+# 03-#20: mkdir/exists/chmod 三个 syscall 按路径 once 化，不再随每次
+# get_conn 重复执行。就绪集合登记在 _prepared_paths，close_all() 时随连接
+# 缓存一并失效——测试在 close_all 后更换/删除 DB 文件，下一次访问会重新
+# prepare，语义与旧版「每次调用都 prepare」对齐。
+_prepared_paths: set[str] = set()
+
+
 def _db_path() -> Path:
     # Allow tests / arena runner to point at an isolated DB via env.
     env = os.environ.get("WANWEI_MEMORY_DB")
@@ -27,14 +35,20 @@ def _db_path() -> Path:
         p = Path(env)
     else:
         p = _default_data_dir() / "memory.db"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if not p.exists():
-        p.touch(mode=0o600)
-    else:
-        try:
-            p.chmod(0o600)
-        except PermissionError:
-            pass
+    key = str(p)
+    with _registry_lock:
+        prepared = key in _prepared_paths
+    if not prepared:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists():
+            p.touch(mode=0o600)
+        else:
+            try:
+                p.chmod(0o600)
+            except PermissionError:
+                pass
+        with _registry_lock:
+            _prepared_paths.add(key)
     return p
 
 
@@ -69,6 +83,9 @@ def _configure(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA synchronous=NORMAL")
     # Avoid spurious "database is locked" under threadpool concurrency.
     conn.execute("PRAGMA busy_timeout=5000")
+    # 03-#10: 启用外键约束（soul_persona → affect_state/dream_lock 等 5 处
+    # FOREIGN KEY 此前空转）。PRAGMA 为连接级设置，每个新建连接都要执行。
+    conn.execute("PRAGMA foreign_keys=ON")
 
 
 def get_conn():
@@ -91,6 +108,31 @@ def get_conn():
         return conn
 
 
+@contextmanager
+def transaction():
+    """事务上下文：成功时 commit，异常时 rollback。
+
+    线程本地连接复用场景下，所有写路径必须用此上下文包裹。否则一旦 DML 抛
+    异常，sqlite3 模块隐式开启的事务会悬挂在连接上，污染同线程后续请求——
+    下一个 commit 可能把上一个请求的部分写入提交（脏数据跨请求泄漏），或
+    后续查询读到未提交的中间状态。
+
+    用法::
+
+        with transaction() as conn:
+            conn.execute("INSERT ...", (...))
+            conn.execute("INSERT ...", (...))
+        # 正常退出自动 commit；异常自动 rollback 并向上抛出
+    """
+    conn = get_conn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def close_all() -> None:
     """Close and invalidate cached connections from every worker thread.
 
@@ -106,6 +148,9 @@ def close_all() -> None:
         _generation += 1
         _local.conns = {}
         _local.generation = _generation
+        # 路径级 prepare 缓存随连接代际一并失效：测试可能在 teardown 删除
+        # DB 文件后以相同路径重建，下一次 get_conn 必须重新 mkdir/touch。
+        _prepared_paths.clear()
 
     for conn in connections:
         try:

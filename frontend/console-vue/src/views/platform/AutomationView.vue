@@ -13,7 +13,7 @@
  * 全部字段容错（可选链 + 默认值），后端未连通时展示离线示例并诚实标注。
  */
 import { computed, onMounted, ref, shallowRef } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
@@ -29,12 +29,13 @@ interface FlowStep {
   name: string
   type: string
   on_error: string
+  config?: Record<string, unknown>
 }
 
 interface Flow {
   id: string
   name: string
-  description: string
+  desc: string
   triggerType: TriggerType
   triggerDetail: string
   enabled: boolean
@@ -48,6 +49,8 @@ interface RunRecord {
   status: string
   startedAt: string
   error: string
+  done: boolean
+  simulated: boolean
 }
 
 interface NextRun {
@@ -55,6 +58,7 @@ interface NextRun {
   flowName: string
   cron: string
   nextAt: string
+  approximate: boolean
 }
 
 interface AiChange {
@@ -91,9 +95,16 @@ function stepMeta(type: string): { char: string; tone: TagTone; label: string } 
 const TRIGGER_LABELS: Record<TriggerType, string> = { manual: '手动', schedule: '定时', event: '事件' }
 const TRIGGER_TONES: Record<TriggerType, TagTone> = { manual: 'gold', schedule: 'dai', event: 'rouge' }
 
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
+
 const RUN_META: Record<string, { label: string; tone: TagTone }> = {
   success: { label: '成功', tone: 'bamboo' },
   succeeded: { label: '成功', tone: 'bamboo' },
+  done: { label: '成功', tone: 'bamboo' },
   failed: { label: '失败', tone: 'rouge' },
   error: { label: '失败', tone: 'rouge' },
   running: { label: '运行中', tone: 'dai' },
@@ -114,7 +125,7 @@ const SAMPLE_FLOWS: Flow[] = [
   {
     id: 'sample-morning-brief',
     name: '晨间要闻汇编',
-    description: '每日 7 点抓取订阅源，AI 汇总成中文简报后沉淀至知识库。',
+    desc: '每日 7 点抓取订阅源，AI 汇总成中文简报后沉淀至知识库。',
     triggerType: 'schedule',
     triggerDetail: '0 7 * * *',
     enabled: true,
@@ -127,7 +138,7 @@ const SAMPLE_FLOWS: Flow[] = [
   {
     id: 'sample-chat-archive',
     name: '会话归档',
-    description: '会话结束时提取要点，打上标签归档，供日后检索。',
+    desc: '会话结束时提取要点，打上标签归档，供日后检索。',
     triggerType: 'event',
     triggerDetail: 'chat.finished',
     enabled: true,
@@ -140,7 +151,7 @@ const SAMPLE_FLOWS: Flow[] = [
   {
     id: 'sample-disk-cleanup',
     name: '临时文件清扫',
-    description: '手动触发，清理下载目录中超过 30 天的临时文件。',
+    desc: '手动触发，清理下载目录中超过 30 天的临时文件。',
     triggerType: 'manual',
     triggerDetail: '',
     enabled: false,
@@ -152,13 +163,13 @@ const SAMPLE_FLOWS: Flow[] = [
 ]
 
 const SAMPLE_RUNS: RunRecord[] = [
-  { id: 'run-1', flowId: 'sample-morning-brief', flowName: '晨间要闻汇编', status: 'success', startedAt: '今日 07:00', error: '' },
-  { id: 'run-2', flowId: 'sample-chat-archive', flowName: '会话归档', status: 'running', startedAt: '今日 09:42', error: '' },
-  { id: 'run-3', flowId: 'sample-disk-cleanup', flowName: '临时文件清扫', status: 'failed', startedAt: '昨日 18:20', error: '目标目录不存在（示例）' },
+  { id: 'run-1', flowId: 'sample-morning-brief', flowName: '晨间要闻汇编', status: 'success', startedAt: '今日 07:00', error: '', done: true, simulated: true },
+  { id: 'run-2', flowId: 'sample-chat-archive', flowName: '会话归档', status: 'running', startedAt: '今日 09:42', error: '', done: false, simulated: true },
+  { id: 'run-3', flowId: 'sample-disk-cleanup', flowName: '临时文件清扫', status: 'failed', startedAt: '昨日 18:20', error: '目标目录不存在（示例）', done: false, simulated: true },
 ]
 
 const SAMPLE_NEXT_RUNS: NextRun[] = [
-  { flowId: 'sample-morning-brief', flowName: '晨间要闻汇编', cron: '0 7 * * *', nextAt: '明日 07:00' },
+  { flowId: 'sample-morning-brief', flowName: '晨间要闻汇编', cron: '0 7 * * *', nextAt: '明日 07:00', approximate: true },
 ]
 
 /* ── 规范化（对后端缺字段容错） ── */
@@ -210,12 +221,14 @@ function normFlow(raw: Record<string, unknown>): Flow {
       name: String(o.name ?? o.title ?? `第 ${i + 1} 步`),
       type: String(o.type ?? 'agent'),
       on_error: String(o.on_error ?? ''),
+      // config 透传（command/url/expr 等），离线 AI 应用回写时不致丢失
+      config: o.config && typeof o.config === 'object' ? (o.config as Record<string, unknown>) : {},
     }
   })
   return {
     id: String(raw.id ?? raw.flow_id ?? ''),
     name: String(raw.name ?? '未命名工作流'),
-    description: String(raw.description ?? ''),
+    desc: String(raw.desc ?? raw.description ?? ''),
     triggerType: trig.type,
     triggerDetail: detail,
     enabled: raw.enabled !== false,
@@ -224,13 +237,17 @@ function normFlow(raw: Record<string, unknown>): Flow {
 }
 
 function normRun(raw: Record<string, unknown>, i: number): RunRecord {
+  const status = String(raw.status ?? (raw.done === true ? 'done' : 'unknown')).toLowerCase()
   return {
     id: String(raw.id ?? raw.run_id ?? `run-${i}`),
     flowId: String(raw.flow_id ?? ''),
     flowName: String(raw.flow_name ?? raw.name ?? ''),
-    status: String(raw.status ?? 'unknown').toLowerCase(),
+    status,
     startedAt: fmtTime(raw.started_at ?? raw.created_at ?? raw.time),
     error: String(raw.error ?? ''),
+    // 契约：run.done: bool / run.simulated: bool（旧数据无字段时由 status 回推）
+    done: raw.done === true || status === 'done' || status === 'success' || status === 'succeeded',
+    simulated: raw.simulated === true,
   }
 }
 
@@ -239,7 +256,9 @@ function normNextRun(raw: Record<string, unknown>, i: number): NextRun {
     flowId: String(raw.flow_id ?? raw.id ?? `nr-${i}`),
     flowName: String(raw.flow_name ?? raw.name ?? '未命名工作流'),
     cron: String(raw.cron ?? raw.schedule ?? ''),
-    nextAt: fmtTime(raw.next_at ?? raw.next_run_at ?? raw.time),
+    // 契约主字段为 next_run（ISO8601 或 null），旧候选保留兜底
+    nextAt: fmtTime(raw.next_run ?? raw.next_at ?? raw.next_run_at ?? raw.time),
+    approximate: raw.approximate === true,
   }
 }
 
@@ -267,6 +286,11 @@ const loading = shallowRef(true)
 const offline = shallowRef(false)
 const notice = shallowRef('')
 const noticeKind = shallowRef<'error' | 'offline' | 'ok'>('ok')
+
+// 各区块是否因请求失败而回落到离线示例数据（逐块标注，避免真假混排无提示）
+const flowsSample = shallowRef(false)
+const runsSample = shallowRef(false)
+const schedSample = shallowRef(false)
 
 const selectedId = shallowRef('')
 const togglingId = shallowRef('')
@@ -302,37 +326,57 @@ function onErrorLabel(v: string): string {
 async function load(): Promise<void> {
   loading.value = true
   notice.value = ''
-  let flowsFailed = false
   const [flowsRes, runsRes, schedRes] = await Promise.allSettled([
     apiGet<unknown>('/automation/flows'),
     apiGet<unknown>('/automation/runs'),
     apiGet<unknown>('/automation/flows/schedule/overview'),
   ])
 
+  const flowsFailed = flowsRes.status !== 'fulfilled'
+  const flowsNetwork = flowsRes.status === 'rejected' && isNetworkError(flowsRes.reason)
+  const flowsAuth = flowsRes.status === 'rejected' && isAuthError(flowsRes.reason)
+
+  flowsSample.value = false
+  runsSample.value = false
+  schedSample.value = false
+
   if (flowsRes.status === 'fulfilled') {
     flows.value = pickArray(flowsRes.value, ['items', 'flows', 'data']).map(normFlow).filter((f) => f.id)
-  } else {
-    flowsFailed = true
+  } else if (flowsNetwork) {
     flows.value = SAMPLE_FLOWS
+    flowsSample.value = true
+  } else {
+    flows.value = []
   }
 
-  runs.value = runsRes.status === 'fulfilled'
-    ? pickArray(runsRes.value, ['items', 'runs', 'data']).map(normRun)
-    : SAMPLE_RUNS
+  if (runsRes.status === 'fulfilled') {
+    runs.value = pickArray(runsRes.value, ['items', 'runs', 'data']).map(normRun)
+  } else if (runsRes.status === 'rejected' && isNetworkError(runsRes.reason)) {
+    runs.value = SAMPLE_RUNS
+    runsSample.value = true
+  } else {
+    runs.value = []
+  }
 
   if (schedRes.status === 'fulfilled') {
     const o = (schedRes.value && typeof schedRes.value === 'object' ? schedRes.value : {}) as Record<string, unknown>
     const upcoming = pickArray(schedRes.value, ['next_runs', 'upcoming', 'items']).map(normNextRun)
     nextRuns.value = upcoming
     scheduledCount.value = Number(o.scheduled_count ?? o.total_scheduled ?? o.count ?? upcoming.length) || upcoming.length
-  } else {
+  } else if (schedRes.status === 'rejected' && isNetworkError(schedRes.reason)) {
     nextRuns.value = SAMPLE_NEXT_RUNS
     scheduledCount.value = SAMPLE_NEXT_RUNS.length
+    schedSample.value = true
+  } else {
+    nextRuns.value = []
+    scheduledCount.value = 0
   }
 
-  offline.value = flowsFailed
-  if (flowsFailed) {
+  offline.value = flowsNetwork
+  if (flowsNetwork) {
     setNotice('后端未连通，当前展示离线示例数据；一切变更仅在本地生效，不会持久化。', 'offline')
+  } else if (flowsAuth) {
+    setNotice(`鉴权失败：${(flowsRes.reason as Error).message}（请检查左侧 API 密钥）`, 'error')
   }
   if (!selectedId.value && flows.value.length) {
     selectedId.value = flows.value[0]?.id ?? ''
@@ -358,7 +402,7 @@ async function toggleEnabled(flow: Flow): Promise<void> {
     flows.value = flows.value.map((f) => (f.id === flow.id ? { ...f, enabled: next } : f))
     if (offline.value) setNotice('离线模式：开关状态仅本地生效。', 'offline')
   } catch (e) {
-    setNotice(`切换启用状态失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`切换启用状态失败：${platformErrText(e)}`, 'error')
   } finally {
     togglingId.value = ''
   }
@@ -379,13 +423,11 @@ async function createFlow(): Promise<void> {
   if (creating.value) return
   creating.value = true
   const form = createForm.value
-  const trigger: Record<string, string> = { type: form.triggerType }
-  if (form.triggerType === 'schedule' && form.cron) trigger.cron = form.cron
-  if (form.triggerType === 'event' && form.event) trigger.event = form.event
   const payload = {
     name: form.name,
-    description: form.description,
-    trigger,
+    desc: form.description,
+    trigger: form.triggerType,
+    cron: form.triggerType === 'schedule' ? form.cron : (form.triggerType === 'event' ? form.event : undefined),
     enabled: true,
     steps: [] as unknown[],
   }
@@ -397,7 +439,7 @@ async function createFlow(): Promise<void> {
       const local: Flow = {
         id: `local-${Date.now()}`,
         name: form.name,
-        description: form.description,
+        desc: form.description,
         triggerType: form.triggerType,
         triggerDetail: form.triggerType === 'schedule' ? form.cron : form.triggerType === 'event' ? form.event : '',
         enabled: true,
@@ -409,7 +451,7 @@ async function createFlow(): Promise<void> {
     }
     showCreate.value = false
   } catch (e) {
-    setNotice(`新建工作流失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`新建工作流失败：${platformErrText(e)}`, 'error')
   } finally {
     creating.value = false
   }
@@ -433,12 +475,14 @@ async function runFlow(flow: Flow): Promise<void> {
         status: 'simulated',
         startedAt: fmtTime(new Date().toISOString()),
         error: '',
+        done: false,
+        simulated: true,
       }
       runs.value = [fake, ...runs.value]
       setNotice('离线模式：已生成一条模拟运行记录。', 'offline')
     }
   } catch (e) {
-    setNotice(`触发运行失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`触发运行失败：${platformErrText(e)}`, 'error')
   } finally {
     runningFlowId.value = ''
   }
@@ -471,7 +515,7 @@ async function aiEdit(): Promise<void> {
       }
     }
   } catch (e) {
-    setNotice(`AI 解析失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`AI 解析失败：${platformErrText(e)}`, 'error')
   } finally {
     aiBusy.value = false
   }
@@ -481,6 +525,11 @@ async function applyAi(): Promise<void> {
   const flow = selected.value
   const result = aiResult.value
   if (!flow || !result || applyingAi.value) return
+  // 后端返回体缺 proposed_flow 时如实报错，避免把 null 发回后端触发 422
+  if (!result.proposedFlow || typeof result.proposedFlow !== 'object') {
+    setNotice('AI 方案缺少 proposed_flow，无法应用；请重新解析。', 'error')
+    return
+  }
   applyingAi.value = true
   try {
     if (!offline.value) {
@@ -498,7 +547,7 @@ async function applyAi(): Promise<void> {
       setNotice('离线模式：AI 方案仅应用到本页内存。', 'offline')
     }
   } catch (e) {
-    setNotice(`应用 AI 方案失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    setNotice(`应用 AI 方案失败：${platformErrText(e)}`, 'error')
   } finally {
     applyingAi.value = false
   }
@@ -525,13 +574,14 @@ onMounted(load)
     <div class="schedule-strip">
       <span class="ss-seal">辰</span>
       <span class="ss-label">定时总览</span>
+      <GfTag v-if="schedSample" tone="ink">示例</GfTag>
       <span class="ss-count">{{ scheduledCount }} 条定时流</span>
       <div class="ss-runs">
         <template v-if="nextRuns.length">
           <span v-for="n in nextRuns.slice(0, 4)" :key="n.flowId + n.nextAt" class="ss-chip">
             <span class="ss-name">{{ n.flowName }}</span>
             <code v-if="n.cron" class="ss-cron">{{ n.cron }}</code>
-            <span class="ss-at">{{ n.nextAt || '待排期' }}</span>
+            <span class="ss-at">{{ n.approximate ? '约 ' : '' }}{{ n.nextAt || '待排期' }}</span>
           </span>
         </template>
         <span v-else class="ss-empty">暂无定时工作流排期</span>
@@ -544,7 +594,12 @@ onMounted(load)
 
     <div class="main-grid">
       <!-- ── 工作流列表 ── -->
-      <GfCard title="工作流" seal="流" class="flows-card">
+      <GfCard class="flows-card">
+        <template #header>
+          <span class="gf-card-seal">流</span>
+          <h3 class="gf-card-title">工作流</h3>
+          <GfTag v-if="flowsSample" tone="ink">示例</GfTag>
+        </template>
         <div v-if="loading" class="muted">研墨中…</div>
         <template v-else>
           <div v-if="flows.length" class="flow-list">
@@ -565,7 +620,7 @@ onMounted(load)
                   <GfTag :tone="TRIGGER_TONES[flow.triggerType]">{{ TRIGGER_LABELS[flow.triggerType] }}</GfTag>
                   <code v-if="flow.triggerDetail" class="flow-cron">{{ flow.triggerDetail }}</code>
                 </div>
-                <p v-if="flow.description" class="flow-desc">{{ flow.description }}</p>
+                <p v-if="flow.desc" class="flow-desc">{{ flow.desc }}</p>
                 <span class="flow-steps-count">{{ flow.steps.length }} 个步骤</span>
               </div>
               <button
@@ -587,10 +642,16 @@ onMounted(load)
       </GfCard>
 
       <!-- ── 运行记录侧栏 ── -->
-      <GfCard title="运行留痕" seal="痕" class="runs-card">
+      <GfCard class="runs-card">
+        <template #header>
+          <span class="gf-card-seal">痕</span>
+          <h3 class="gf-card-title">运行留痕</h3>
+          <GfTag v-if="runsSample" tone="ink">示例</GfTag>
+        </template>
         <div v-if="runs.length" class="run-list">
           <div v-for="run in runs.slice(0, 12)" :key="run.id" class="run-row">
             <GfTag :tone="runMeta(run.status).tone">{{ runMeta(run.status).label }}</GfTag>
+            <GfTag v-if="run.simulated" tone="gold">模拟</GfTag>
             <div class="run-info">
               <span class="run-name">{{ run.flowName || run.flowId || '未知工作流' }}</span>
               <span class="run-time">{{ run.startedAt || '—' }}</span>
@@ -607,7 +668,7 @@ onMounted(load)
       <div class="detail-head">
         <div class="detail-title">
           <h3>{{ selected.name }}</h3>
-          <p v-if="selected.description">{{ selected.description }}</p>
+          <p v-if="selected.desc">{{ selected.desc }}</p>
         </div>
         <GfButton :disabled="!!runningFlowId" @click="runFlow(selected)">
           {{ runningFlowId === selected.id ? '触发中…' : '立即运行' }}

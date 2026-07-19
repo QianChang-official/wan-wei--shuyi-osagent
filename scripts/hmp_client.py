@@ -1,3 +1,5 @@
+"""QEMU HMP（Human Monitor Protocol）最小 TCP 客户端：供 scripts/vm_*.py 一次性 QA 脚本驱动麒麟 V11 虚拟机。"""
+
 import json
 import re
 import socket

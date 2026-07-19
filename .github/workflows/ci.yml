@@ -51,7 +51,22 @@ jobs:
         run: npm ci
       - working-directory: frontend/console-vue
         run: npm run build
-      - run: git diff --exit-code -- frontend/console-vue/dist
+      - name: Verify dist artifact is real
+        working-directory: frontend/console-vue
+        shell: bash
+        run: |
+          test -d dist || { echo "dist/ missing after build"; exit 1; }
+          test -n "$(find dist -type f -print -quit)" || { echo "dist/ is empty after build"; exit 1; }
+          test -f dist/index.html || { echo "dist/index.html missing"; exit 1; }
+          grep -q 'id="app"' dist/index.html || { echo "dist/index.html lacks the #app mount point"; exit 1; }
+          grep -q '宛委·枢忆' dist/index.html || { echo "dist/index.html lacks the expected title marker"; exit 1; }
+          test -n "$(find dist/assets -type f -name '*.js' -print -quit)" || { echo "dist/assets has no JS bundle"; exit 1; }
+      - working-directory: frontend/console-vue
+        run: npm run test:security
+      - working-directory: frontend/console-vue
+        run: npm run test:contracts
+      - working-directory: desktop
+        run: npm test
 
   integration:
     name: HTTP integration smoke

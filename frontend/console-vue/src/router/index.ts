@@ -24,9 +24,17 @@ const routes: RouteRecordRaw[] = [
   { path: '/dream', name: 'dream', component: () => import('@/views/DreamView.vue'), meta: { title: '梦境日志', seal: '梦' } },
   // v0.12 万枢协作平台
   ...platformRoutes,
+  // 兜底：未匹配路径一律进入 404 引导页（必须位于最后）
+  { path: '/:pathMatch(.*)*', name: 'notFound', component: () => import('@/views/NotFoundView.vue'), meta: { title: '迷途', seal: '迷' } },
 ]
 
 export const router = createRouter({
   history: createWebHashHistory('/console/'),
   routes,
+})
+
+// 标题同步守卫：meta.title → document.title（09-#9 顺带补）
+router.afterEach((to) => {
+  const title = (to.meta.title as string) || ''
+  document.title = title ? `${title} · 宛委·枢忆` : '宛委·枢忆 · 花朝台'
 })

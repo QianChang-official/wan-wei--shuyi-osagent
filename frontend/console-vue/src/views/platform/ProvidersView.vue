@@ -13,8 +13,14 @@
  * 全部字段容错（可选链 + 默认值）；目录加载失败时启用内置 31 家离线兜底并标注「离线数据」。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiGet, apiPost, apiPut } from '@/api/platform'
+import { apiGet, apiPost, apiPut, isAuthError, isNetworkError, PlatformApiError } from '@/api/platform'
 import PageHero from '@/components/gf/PageHero.vue'
+
+function platformErrText(e: unknown): string {
+  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+  if (isNetworkError(e)) return '网络异常，后端未连通'
+  return e instanceof Error ? e.message : String(e)
+}
 import GfCard from '@/components/gf/GfCard.vue'
 import GfTag from '@/components/gf/GfTag.vue'
 import GfButton from '@/components/gf/GfButton.vue'
@@ -27,6 +33,7 @@ type ProviderKind = 'cloud' | 'local' | 'oauth' | 'aggregator' | 'custom'
 
 interface CatalogModel { id?: string; name?: string }
 interface ProviderCatalogItem {
+  id?: string
   pid: string
   name: string
   kind: string
@@ -37,9 +44,14 @@ interface ProviderCatalogItem {
 }
 interface ProviderConfig {
   pid: string
+  configured?: boolean
   enabled?: boolean
   model?: string
   base_url?: string
+  /* 后端 _masked_config 实际返回的脱敏字段 */
+  has_api_key?: boolean
+  api_key_tail?: string
+  /* 历史别名容错（旧字段），读取时一律以后端新字段优先 */
   key_tail?: string
   has_key?: boolean
   aux?: boolean
@@ -76,6 +88,11 @@ function modelNames(models: ProviderCatalogItem['models']): string[] {
     .filter((m): m is string => !!m)
 }
 
+function normCatalogItem(p: ProviderCatalogItem): ProviderCatalogItem {
+  if (!p.pid && p.id) p.pid = p.id
+  return p
+}
+
 function asArray<T>(raw: unknown, keys: string[] = ['items', 'providers', 'catalog', 'configs']): T[] {
   if (Array.isArray(raw)) return raw as T[]
   if (raw && typeof raw === 'object') {
@@ -95,39 +112,39 @@ function asArray<T>(raw: unknown, keys: string[] = ['items', 'providers', 'catal
   return []
 }
 
-/* ── 离线兜底目录：与任务书 B1 名单一致的 31 家（标注「离线数据」展示） ── */
+/* ── 离线兜底目录：31 家，pid 与 backend/app/platform_api/providers.py CATALOG 的 id 键逐一对齐（标注「离线数据」展示） ── */
 const FALLBACK_CATALOG: ProviderCatalogItem[] = [
   { pid: 'openrouter', name: 'OpenRouter', kind: 'aggregator', base_url: 'https://openrouter.ai/api/v1', models: ['anthropic/claude-sonnet-4.5', 'openai/gpt-4o', 'google/gemini-2.5-pro'], aux_capable: true },
-  { pid: 'moa', name: 'MoA', kind: 'aggregator', base_url: 'https://api.moa-ai.com/v1', models: ['moa-large', 'moa-standard', 'moa-lite'], aux_capable: true },
-  { pid: 'novita', name: 'NovitaAI', kind: 'cloud', base_url: 'https://api.novita.ai/v3/openai', models: ['deepseek/deepseek-v3.2', 'meta/llama-3.3-70b', 'qwen/qwen3-235b'], aux_capable: true },
-  { pid: 'lmstudio', name: 'LM Studio', kind: 'local', base_url: 'http://localhost:1234/v1', models: ['local-model'], aux_capable: true, note: '本机推理' },
+  { pid: 'mixture_of_agents', name: 'MoA', kind: 'aggregator', base_url: 'https://api.moa-ai.com/v1', models: ['moa-large', 'moa-standard', 'moa-lite'], aux_capable: true },
+  { pid: 'novitaai', name: 'NovitaAI', kind: 'cloud', base_url: 'https://api.novita.ai/v3/openai', models: ['deepseek/deepseek-v3.2', 'meta/llama-3.3-70b', 'qwen/qwen3-235b'], aux_capable: true },
+  { pid: 'lm_studio', name: 'LM Studio', kind: 'local', base_url: 'http://localhost:1234/v1', models: ['local-model'], aux_capable: true, note: '本机推理' },
   { pid: 'anthropic', name: 'Anthropic', kind: 'cloud', base_url: 'https://api.anthropic.com', models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'] },
   { pid: 'openai', name: 'OpenAI', kind: 'cloud', base_url: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4.1', 'o3'] },
-  { pid: 'qwen', name: 'Qwen Cloud 通义千问', kind: 'cloud', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen3-max', 'qwen-plus', 'qwen-turbo'], aux_capable: true },
-  { pid: 'xai', name: 'xAI Grok', kind: 'cloud', base_url: 'https://api.x.ai/v1', models: ['grok-4', 'grok-3', 'grok-3-mini'] },
-  { pid: 'mimo', name: 'Xiaomi MiMo', kind: 'cloud', base_url: 'https://api.xiaomimimo.com/v1', models: ['mimo-v2-flash', 'mimo-v2-pro'] },
-  { pid: 'tokenhub', name: 'Tencent TokenHub', kind: 'cloud', base_url: 'https://api.hunyuan.cloud.tencent.com/v1', models: ['hunyuan-turbos', 'hunyuan-pro', 'hunyuan-lite'], aux_capable: true },
+  { pid: 'qwen_cloud', name: 'Qwen Cloud 通义千问', kind: 'cloud', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen3-max', 'qwen-plus', 'qwen-turbo'], aux_capable: true },
+  { pid: 'xai_grok', name: 'xAI Grok', kind: 'cloud', base_url: 'https://api.x.ai/v1', models: ['grok-4', 'grok-3', 'grok-3-mini'] },
+  { pid: 'xiaomi_mimo', name: 'Xiaomi MiMo', kind: 'cloud', base_url: 'https://api.xiaomimimo.com/v1', models: ['mimo-v2-flash', 'mimo-v2-pro'] },
+  { pid: 'tencent_tokenhub', name: 'Tencent TokenHub', kind: 'cloud', base_url: 'https://api.hunyuan.cloud.tencent.com/v1', models: ['hunyuan-turbos', 'hunyuan-pro', 'hunyuan-lite'], aux_capable: true },
   { pid: 'nvidia_nim', name: 'NVIDIA NIM', kind: 'cloud', base_url: 'https://integrate.api.nvidia.com/v1', models: ['meta/llama-3.3-70b-instruct', 'deepseek-ai/deepseek-r1', 'qwen/qwen3-235b-a22b'], aux_capable: true },
-  { pid: 'copilot', name: 'GitHub Copilot', kind: 'oauth', base_url: 'https://api.githubcopilot.com', models: ['gpt-4o', 'claude-sonnet-4.5', 'o3-mini'] },
+  { pid: 'github_copilot', name: 'GitHub Copilot', kind: 'oauth', base_url: 'https://api.githubcopilot.com', models: ['gpt-4o', 'claude-sonnet-4.5', 'o3-mini'] },
   { pid: 'huggingface', name: 'Hugging Face', kind: 'cloud', base_url: 'https://router.huggingface.co/v1', models: ['deepseek-ai/DeepSeek-V3.2', 'meta-llama/Llama-3.3-70B-Instruct', 'Qwen/Qwen3-235B-A22B'], aux_capable: true },
-  { pid: 'ai_studio', name: 'Google AI Studio', kind: 'cloud', base_url: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'], aux_capable: true },
-  { pid: 'vertex', name: 'Google Vertex AI', kind: 'oauth', base_url: 'https://aiplatform.googleapis.com', models: ['gemini-2.5-pro', 'gemini-2.5-flash'] },
+  { pid: 'google_ai_studio', name: 'Google AI Studio', kind: 'cloud', base_url: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'], aux_capable: true },
+  { pid: 'google_vertex', name: 'Google Vertex AI', kind: 'oauth', base_url: 'https://aiplatform.googleapis.com', models: ['gemini-2.5-pro', 'gemini-2.5-flash'] },
   { pid: 'deepseek', name: 'DeepSeek', kind: 'cloud', base_url: 'https://api.deepseek.com', models: ['deepseek-chat', 'deepseek-reasoner'], aux_capable: true },
   { pid: 'zai', name: 'Z.AI 智谱', kind: 'cloud', base_url: 'https://open.bigmodel.cn/api/paas/v4', models: ['glm-4.6', 'glm-4.5-air', 'glm-4.5-flash'], aux_capable: true },
-  { pid: 'kimi', name: 'Kimi 月之暗面', kind: 'cloud', base_url: 'https://api.moonshot.cn/v1', models: ['kimi-k2-0905-preview', 'moonshot-v1-128k', 'moonshot-v1-32k'], aux_capable: true },
+  { pid: 'kimi_moonshot', name: 'Kimi 月之暗面', kind: 'cloud', base_url: 'https://api.moonshot.cn/v1', models: ['kimi-k2-0905-preview', 'moonshot-v1-128k', 'moonshot-v1-32k'], aux_capable: true },
   { pid: 'stepfun', name: 'StepFun 阶跃星辰', kind: 'cloud', base_url: 'https://api.stepfun.com/v1', models: ['step-3', 'step-2-16k', 'step-1-flash'], aux_capable: true },
   { pid: 'minimax', name: 'MiniMax', kind: 'cloud', base_url: 'https://api.minimax.chat/v1', models: ['MiniMax-M2', 'abab6.5s-chat'], aux_capable: true },
-  { pid: 'ollama', name: 'Ollama Cloud', kind: 'local', base_url: 'http://localhost:11434/v1', models: ['qwen3:32b', 'llama3.3:70b', 'deepseek-r1:32b'], aux_capable: true, note: '本机/云端混合' },
-  { pid: 'arcee', name: 'Arcee AI', kind: 'cloud', base_url: 'https://api.arcee.ai/v1', models: ['arcee-agent', 'arcee-lite'] },
-  { pid: 'gmi', name: 'GMI Cloud', kind: 'cloud', base_url: 'https://api.gmicloud.ai/v1', models: ['deepseek-r1', 'llama-3.3-70b'] },
-  { pid: 'kilocode', name: 'Kilo Code', kind: 'oauth', base_url: 'https://api.kilocode.ai/v1', models: ['kilo-auto'] },
+  { pid: 'ollama_cloud', name: 'Ollama Cloud', kind: 'local', base_url: 'http://localhost:11434/v1', models: ['qwen3:32b', 'llama3.3:70b', 'deepseek-r1:32b'], aux_capable: true, note: '本机/云端混合' },
+  { pid: 'arcee_ai', name: 'Arcee AI', kind: 'cloud', base_url: 'https://api.arcee.ai/v1', models: ['arcee-agent', 'arcee-lite'] },
+  { pid: 'gmi_cloud', name: 'GMI Cloud', kind: 'cloud', base_url: 'https://api.gmicloud.ai/v1', models: ['deepseek-r1', 'llama-3.3-70b'] },
+  { pid: 'kilo_code', name: 'Kilo Code', kind: 'oauth', base_url: 'https://api.kilocode.ai/v1', models: ['kilo-auto'] },
   { pid: 'opencode', name: 'OpenCode', kind: 'oauth', base_url: 'https://api.opencode.ai/v1', models: ['opencode-sonnet'] },
-  { pid: 'bedrock', name: 'AWS Bedrock', kind: 'cloud', base_url: 'https://bedrock-runtime.us-east-1.amazonaws.com', models: ['anthropic.claude-sonnet-4-5', 'amazon.nova-pro-v1'] },
-  { pid: 'azure', name: 'Azure Foundry', kind: 'cloud', base_url: 'https://<resource>.services.ai.azure.com/models', models: ['gpt-4o', 'DeepSeek-V3.2'] },
+  { pid: 'aws_bedrock', name: 'AWS Bedrock', kind: 'cloud', base_url: 'https://bedrock-runtime.us-east-1.amazonaws.com', models: ['anthropic.claude-sonnet-4-5', 'amazon.nova-pro-v1'] },
+  { pid: 'azure_foundry', name: 'Azure Foundry', kind: 'cloud', base_url: 'https://<resource>.services.ai.azure.com/models', models: ['gpt-4o', 'DeepSeek-V3.2'] },
   { pid: 'qwen_oauth', name: 'Qwen OAuth', kind: 'oauth', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen3-max', 'qwen-plus'] },
-  { pid: 'alibaba_plan', name: 'Alibaba Coding Plan', kind: 'cloud', base_url: 'https://coding.dashscope.aliyuncs.com/v1', models: ['qwen3-coder-plus', 'qwen3-coder-flash'] },
+  { pid: 'alibaba_coding_plan', name: 'Alibaba Coding Plan', kind: 'cloud', base_url: 'https://coding.dashscope.aliyuncs.com/v1', models: ['qwen3-coder-plus', 'qwen3-coder-flash'] },
   { pid: 'siliconflow', name: 'SiliconFlow 硅基流动', kind: 'aggregator', base_url: 'https://api.siliconflow.cn/v1', models: ['deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3-235B-A22B', 'moonshotai/Kimi-K2-Instruct'], aux_capable: true },
-  { pid: 'custom', name: '自定义端点', kind: 'custom', base_url: '', models: [], aux_capable: true, note: '任意 OpenAI 兼容端点' },
+  { pid: 'custom_endpoint', name: '自定义端点', kind: 'custom', base_url: '', models: [], aux_capable: true, note: '任意 OpenAI 兼容端点' },
 ]
 
 /* ── 页面状态 ── */
@@ -148,7 +165,11 @@ const configMap = computed(() => {
 
 function isConfigured(pid: string): boolean {
   const c = configMap.value.get(pid)
-  return !!(c && (c.has_key || c.key_tail || c.enabled || c.model || c.authorized))
+  if (!c) return false
+  // 后端 _masked_config 的 configured 是权威标记（base_url/model/enabled 均有默认值，不能作为判据）；
+  // 旧后端无 configured 字段时，按密钥痕迹（has_api_key/api_key_tail 及历史别名）推断。
+  if (typeof c.configured === 'boolean') return c.configured
+  return !!(c.has_api_key || c.has_key || c.api_key_tail || c.key_tail || c.authorized)
 }
 
 const configuredCount = computed(() => catalog.value.filter((p) => isConfigured(p.pid)).length)
@@ -178,16 +199,19 @@ const filteredCatalog = computed(() =>
 async function loadCatalog() {
   try {
     const raw = await apiGet<unknown>('/providers/catalog')
-    const items = asArray<ProviderCatalogItem>(raw).filter((p) => p && p.pid)
+    const items = asArray<ProviderCatalogItem>(raw)
+      .map(normCatalogItem)
+      .filter((p) => p && p.pid)
     if (items.length) {
       catalog.value = items
       catalogOffline.value = false
       return
     }
     throw new Error('empty catalog')
-  } catch {
-    catalog.value = FALLBACK_CATALOG
-    catalogOffline.value = true
+  } catch (e) {
+    const network = isNetworkError(e)
+    catalogOffline.value = network
+    if (network) catalog.value = FALLBACK_CATALOG
   }
 }
 
@@ -196,9 +220,9 @@ async function loadConfigs() {
     const raw = await apiGet<unknown>('/providers/configs')
     configs.value = asArray<ProviderConfig>(raw)
     configsOffline.value = false
-  } catch {
+  } catch (e) {
+    configsOffline.value = isNetworkError(e)
     configs.value = []
-    configsOffline.value = true
   }
 }
 
@@ -207,7 +231,11 @@ async function loadAux() {
     const raw = await apiGet<unknown>('/providers/aux')
     const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const aux = (obj.aux && typeof obj.aux === 'object' ? obj.aux : obj) as AuxConfig
-    auxCfg.value = aux ?? {}
+    auxCfg.value = {
+      provider: String((aux as Record<string, unknown>)?.pid ?? aux?.provider ?? ''),
+      model: aux?.model ?? '',
+      purpose: aux?.purpose ?? '',
+    }
     auxForm.value = {
       provider: auxCfg.value.provider ?? '',
       model: auxCfg.value.model ?? '',
@@ -234,7 +262,7 @@ async function load() {
 /* ── 配置抽屉 ── */
 const drawerOpen = ref(false)
 const activeProvider = ref<ProviderCatalogItem | null>(null)
-const form = ref({ api_key: '', base_url: '', model: '', enabled: false, aux: false })
+const form = ref({ api_key: '', base_url: '', model: '', enabled: false })
 const saving = ref(false)
 const saveHint = ref('')
 const testing = ref(false)
@@ -248,11 +276,12 @@ const activeConfig = computed(() =>
 )
 const storedKeyTail = computed(() => {
   const c = activeConfig.value
-  if (c?.key_tail) return `已存密钥尾号 ····${c.key_tail}`
-  if (c?.has_key) return '已存密钥（尾号未回显）'
+  // 后端脱敏字段 api_key_tail / has_api_key 优先，历史别名 key_tail / has_key 兜底
+  const tail = c?.api_key_tail || c?.key_tail
+  if (tail) return `已存密钥尾号 ····${tail}`
+  if (c?.has_api_key || c?.has_key) return '已存密钥（尾号未回显）'
   return ''
 })
-const canAux = computed(() => activeProvider.value?.aux_capable !== false)
 
 function openDrawer(p: ProviderCatalogItem) {
   stopPolling()
@@ -263,7 +292,6 @@ function openDrawer(p: ProviderCatalogItem) {
     base_url: c?.base_url || p.base_url || '',
     model: c?.model || modelNames(p.models)[0] || '',
     enabled: !!c?.enabled,
-    aux: !!c?.aux,
   }
   testResult.value = null
   testError.value = ''
@@ -290,7 +318,6 @@ async function saveConfig() {
       base_url: form.value.base_url,
       model: form.value.model,
       enabled: form.value.enabled,
-      aux: form.value.aux,
     }
     if (form.value.api_key) payload.api_key = form.value.api_key
     await apiPut(`/providers/configs/${encodeURIComponent(p.pid)}`, payload)
@@ -298,7 +325,7 @@ async function saveConfig() {
     saveHint.value = '已保存'
     await loadConfigs()
   } catch (e) {
-    testError.value = `保存失败：${e instanceof Error ? e.message : String(e)}`
+    testError.value = `保存失败：${platformErrText(e)}`
   } finally {
     saving.value = false
   }
@@ -314,7 +341,7 @@ async function testConnection() {
     const raw = await apiPost<unknown>('/providers/test', { pid: p.pid })
     testResult.value = (raw && typeof raw === 'object' ? raw : { detail: String(raw) }) as Record<string, unknown>
   } catch (e) {
-    testError.value = `测试失败：${e instanceof Error ? e.message : String(e)}`
+    testError.value = `测试失败：${platformErrText(e)}`
   } finally {
     testing.value = false
   }
@@ -322,7 +349,7 @@ async function testConnection() {
 
 const testIsSimulated = computed(() => {
   const r = testResult.value
-  return !!(r && (r.simulated || r.stub || r.dry_run))
+  return !!(r && (r.simulated || r.stub || r.dry_run || r.mode === 'stub'))
 })
 const testOk = computed(() => {
   const r = testResult.value
@@ -337,7 +364,7 @@ const testSummary = computed(() => {
   const parts: string[] = []
   const latency = r.latency_ms ?? r.latency
   if (typeof latency === 'number') parts.push(`延迟 ${latency} ms`)
-  const detail = r.detail ?? r.message ?? r.error ?? ''
+  const detail = r.detail ?? r.message ?? r.error ?? r.reason ?? r.note ?? ''
   if (detail) parts.push(String(detail))
   return parts.join(' · ') || JSON.stringify(r)
 })
@@ -347,11 +374,23 @@ const oauth = ref<OauthState>({ status: 'idle', verificationUri: '', userCode: '
 const oauthBusy = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 轮询网络类错误的最大重试次数（退避后仍失败则放弃） */
+const OAUTH_POLL_MAX_NET_RETRIES = 3
+
 function stopPolling() {
   if (pollTimer !== null) {
     clearTimeout(pollTimer)
     pollTimer = null
   }
+}
+
+/**
+ * verificationUri 协议白名单：仅放行 https://。
+ * 该值直接进 <a :href>，须防 javascript:/data: 等伪协议注入；不合规一律置空。
+ */
+function sanitizeVerificationUri(raw: unknown): string {
+  const uri = String(raw ?? '').trim()
+  return uri.startsWith('https://') ? uri : ''
 }
 
 async function beginAuth() {
@@ -363,28 +402,36 @@ async function beginAuth() {
     const raw = await apiPost<Record<string, unknown>>(`/providers/auth/${encodeURIComponent(p.pid)}/begin`)
     const res = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const stub = !!(res.stub || res.simulated)
+    const verificationUri = sanitizeVerificationUri(res.verification_uri ?? res.url ?? res.verification_url)
     oauth.value = {
       status: stub ? 'stub' : (String(res.status ?? 'pending').toLowerCase() as OauthState['status']),
-      verificationUri: String(res.verification_uri ?? res.url ?? res.verification_url ?? ''),
+      verificationUri,
       userCode: String(res.user_code ?? res.code ?? ''),
-      hint: stub ? '后端尚未启用真实 OAuth，当前为模拟授权流程' : '',
+      hint: stub
+        ? '后端尚未启用真实 OAuth，当前为模拟授权流程'
+        : verificationUri
+          ? ''
+          : '后端未返回可用的 https 授权地址，请以后端提示为准',
     }
     if (oauth.value.status === 'stub' || oauth.value.status === 'authorized') return
     const intervalSec = typeof res.interval === 'number' && res.interval > 0 ? res.interval : 3
     startPolling(p.pid, intervalSec * 1000, 0)
   } catch (e) {
+    const stub501 = e instanceof PlatformApiError && e.status === 501
     oauth.value = {
-      status: 'error',
+      status: stub501 ? 'stub' : 'error',
       verificationUri: '',
       userCode: '',
-      hint: `授权发起失败：${e instanceof Error ? e.message : String(e)}`,
+      hint: stub501
+        ? '后端尚未启用真实 OAuth，当前为模拟授权流程'
+        : `授权发起失败：${platformErrText(e)}`,
     }
   } finally {
     oauthBusy.value = false
   }
 }
 
-function startPolling(pid: string, intervalMs: number, attempt: number) {
+function startPolling(pid: string, intervalMs: number, attempt: number, netRetries = 0) {
   stopPolling()
   if (attempt >= 40) {
     oauth.value = { ...oauth.value, status: oauth.value.status === 'authorized' ? 'authorized' : 'error', hint: '轮询超时，请重新发起授权' }
@@ -404,9 +451,25 @@ function startPolling(pid: string, intervalMs: number, attempt: number) {
         oauth.value = { ...oauth.value, status: 'error', hint: String(res.detail ?? res.message ?? '授权失败或已过期') }
         return
       }
-      startPolling(pid, intervalMs, attempt + 1)
-    } catch {
-      oauth.value = { ...oauth.value, status: 'error', hint: '轮询接口未就绪或网络异常，已停止轮询' }
+      startPolling(pid, intervalMs, attempt + 1, 0)
+    } catch (e) {
+      // 后端诚实返回 501（OAuth 未接入）时按 stub 展示，不再走错误提示
+      if (e instanceof PlatformApiError && e.status === 501) {
+        oauth.value = { ...oauth.value, status: 'stub', hint: '后端尚未启用真实 OAuth，当前为模拟授权流程' }
+        return
+      }
+      // 网络类错误：指数退避重试至多 3 次再放弃；鉴权等其他错误如实停止
+      if (isNetworkError(e) && netRetries < OAUTH_POLL_MAX_NET_RETRIES) {
+        startPolling(pid, intervalMs * 2 ** (netRetries + 1), attempt + 1, netRetries + 1)
+        return
+      }
+      oauth.value = {
+        ...oauth.value,
+        status: 'error',
+        hint: isNetworkError(e)
+          ? `网络异常，退避重试 ${OAUTH_POLL_MAX_NET_RETRIES} 次后仍未连通，已停止轮询`
+          : `轮询失败：${platformErrText(e)}`,
+      }
     }
   }, intervalMs)
 }
@@ -447,11 +510,15 @@ async function saveAux() {
   auxSaveHint.value = ''
   auxError.value = ''
   try {
-    await apiPut('/providers/aux', { ...auxForm.value })
+    await apiPut('/providers/aux', {
+      pid: auxForm.value.provider,
+      model: auxForm.value.model,
+      purpose: auxForm.value.purpose,
+    })
     auxCfg.value = { ...auxForm.value }
     auxSaveHint.value = '已保存'
   } catch (e) {
-    auxError.value = `保存失败：${e instanceof Error ? e.message : String(e)}`
+    auxError.value = `保存失败：${platformErrText(e)}`
   } finally {
     auxSaving.value = false
   }
@@ -534,7 +601,7 @@ onBeforeUnmount(stopPolling)
         <div class="pc-kind">
           <GfTag :tone="KIND_TONES[normalizeKind(p.kind)]">{{ KIND_LABELS[normalizeKind(p.kind)] }}</GfTag>
           <GfTag v-if="configMap.get(p.pid)?.enabled" tone="bamboo">已启用</GfTag>
-          <GfTag v-if="configMap.get(p.pid)?.aux" tone="gold">辅助</GfTag>
+          <GfTag v-if="auxCfg?.provider === p.pid" tone="gold">辅助</GfTag>
         </div>
         <p class="pc-url">{{ p.base_url || '端点地址在配置时填写' }}</p>
         <div v-if="modelNames(p.models).length" class="pc-models">
@@ -655,11 +722,6 @@ onBeforeUnmount(stopPolling)
               <input v-model="form.enabled" type="checkbox" :disabled="saving" />
               <span class="switch-track"><span class="switch-knob"></span></span>
               <span class="switch-text">启用该供应商</span>
-            </label>
-            <label v-if="canAux" class="switch">
-              <input v-model="form.aux" type="checkbox" :disabled="saving" />
-              <span class="switch-track"><span class="switch-knob"></span></span>
-              <span class="switch-text">可作辅助模型</span>
             </label>
           </div>
 

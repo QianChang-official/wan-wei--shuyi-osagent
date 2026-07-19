@@ -1,10 +1,11 @@
 import json
 import logging
 import re
+import sqlite3
 import uuid
 from typing import Any
 
-from ..db import get_conn
+from ..db import get_conn, transaction
 from ..memory_runtime.capsule_store import write_capsule
 from ..utils.datetime_utils import utc_now_iso_compact
 
@@ -163,57 +164,63 @@ def intake_perception(
         }
 
         try:
-            conn.execute(
-                """
-                INSERT INTO affect_state(
-                    soul_id, pleasure, arousal, dominance, current_mood, mood_intensity, updated_at
-                ) VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(soul_id) DO UPDATE SET
-                    pleasure=excluded.pleasure,
-                    arousal=excluded.arousal,
-                    dominance=excluded.dominance,
-                    current_mood=excluded.current_mood,
-                    mood_intensity=excluded.mood_intensity,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    soul_id,
-                    affect_after["pleasure"],
-                    affect_after["arousal"],
-                    affect_after["dominance"],
-                    affect_after["current_mood"],
-                    affect_after["mood_intensity"],
-                    created,
-                ),
-            )
-            conn.commit()
+            with transaction() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO affect_state(
+                        soul_id, pleasure, arousal, dominance, current_mood, mood_intensity, updated_at
+                    ) VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT(soul_id) DO UPDATE SET
+                        pleasure=excluded.pleasure,
+                        arousal=excluded.arousal,
+                        dominance=excluded.dominance,
+                        current_mood=excluded.current_mood,
+                        mood_intensity=excluded.mood_intensity,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        soul_id,
+                        affect_after["pleasure"],
+                        affect_after["arousal"],
+                        affect_after["dominance"],
+                        affect_after["current_mood"],
+                        affect_after["mood_intensity"],
+                        created,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # soul_persona 中不存在该 soul_id 时，FK ON 会触发完整性错误。
+            # 此为既有设计（幽灵 soul 写入），不阻断主流程，也不必在 warning 层刷屏。
+            logger.debug("affect_state update skipped: soul_id %s not in soul_persona", soul_id)
         except Exception as e:
             logger.warning("affect_state update failed: %s", e)
-            # 不阻断主流程
+            # 不阻断主流程；transaction() 已 rollback
 
         # 6. 写入 conversation_turns 表
         try:
-            conn.execute(
-                """
-                INSERT INTO conversation_turns(
-                    turn_id, soul_id, role, content, emotion_detected, intent_classified,
-                    capsules_used, affect_before, affect_after, created_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    turn_id,
-                    soul_id,
-                    role,
-                    content,
-                    emotion_detected,
-                    intent_classified,
-                    dumps(used_capsule_ids),
-                    dumps(affect_before),
-                    dumps(affect_after),
-                    created,
-                ),
-            )
-            conn.commit()
+            with transaction() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO conversation_turns(
+                        turn_id, soul_id, role, content, emotion_detected, intent_classified,
+                        capsules_used, affect_before, affect_after, created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        turn_id,
+                        soul_id,
+                        role,
+                        content,
+                        emotion_detected,
+                        intent_classified,
+                        dumps(used_capsule_ids),
+                        dumps(affect_before),
+                        dumps(affect_after),
+                        created,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            logger.debug("conversation_turns insert skipped: soul_id %s not in soul_persona", soul_id)
         except Exception as e:
             logger.warning("conversation_turns insert failed: %s", e)
 
@@ -233,6 +240,10 @@ def intake_perception(
                 scene="conversation",
                 task_type="perception",
                 risk_class="low",
+                provenance={"soul_id": soul_id, "origin": "conversation",
+                            "writer_identity": "runtime", "source_type": "conversation",
+                            "source_ids": [], "evidence_ids": [],
+                            "verified": False, "verification_method": "unknown"},
             )
         except Exception as e:
             logger.warning("write_capsule failed: %s", e)

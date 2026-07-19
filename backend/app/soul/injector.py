@@ -56,26 +56,36 @@ def _get_affect(soul_id: str) -> dict:
             "updated_at": None,
         }
 
+    # 03-#11: 用 is None 判断代替 `row["x"] or 默认值`——0.0 是合法 PAD 值，
+    # `or` 会把显式存储的 0.0 错误替换为默认值。
     return {
-        "pleasure": _clamp01(row["pleasure"] or 0.5),
-        "arousal": _clamp01(row["arousal"] or 0.4),
-        "dominance": _clamp01(row["dominance"] or 0.5),
-        "current_mood": row["current_mood"] or "calm",
-        "mood_intensity": _clamp01(row["mood_intensity"] or 0.3),
+        "pleasure": _clamp01(row["pleasure"] if row["pleasure"] is not None else 0.5),
+        "arousal": _clamp01(row["arousal"] if row["arousal"] is not None else 0.4),
+        "dominance": _clamp01(row["dominance"] if row["dominance"] is not None else 0.5),
+        "current_mood": row["current_mood"] if row["current_mood"] is not None else "calm",
+        "mood_intensity": _clamp01(row["mood_intensity"] if row["mood_intensity"] is not None else 0.3),
         "updated_at": row["updated_at"],
     }
 
 
 def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
-    """Fetch top-N capsules by importance_score for this soul."""
+    """Fetch top-N capsules by importance_score for this soul.
+
+    按 provenance.soul_id 过滤，确保多 soul 场景记忆不互串。
+    旧数据（provenance 不含 soul_id）作为回退返回，但排序靠后——
+    新写入应在 provenance 中标记 soul_id（intake.py 已接入）。
+    """
     try:
         rows = get_conn().execute(
             """SELECT capsule_id, content, state
                FROM memory_capsules_v2
-               WHERE json_extract(state, '$.importance_score') IS NOT NULL
-               ORDER BY json_extract(state, '$.importance_score') DESC
+               WHERE (json_extract(provenance, '$.soul_id') = ?
+                       OR json_extract(provenance, '$.soul_id') IS NULL)
+                 AND json_extract(state, '$.importance_score') IS NOT NULL
+               ORDER BY CASE WHEN json_extract(provenance, '$.soul_id') = ? THEN 0 ELSE 1 END,
+                        json_extract(state, '$.importance_score') DESC
                LIMIT ?""",
-            (limit,),
+            (soul_id, soul_id, limit),
         ).fetchall()
     except Exception:
         return []
@@ -171,9 +181,10 @@ def get_soul_state(soul_id: str) -> dict:
         "voice": row["voice"],
         "soul_values": _loads(row["soul_values"], []),
         "self_narrative": row["self_narrative"],
-        "baseline_pleasure": _clamp01(row["baseline_pleasure"] or 0.5),
-        "baseline_arousal": _clamp01(row["baseline_arousal"] or 0.5),
-        "baseline_dominance": _clamp01(row["baseline_dominance"] or 0.5),
+        # 同 03-#11：baseline 允许显式 0.0，只有 NULL 才回退默认值
+        "baseline_pleasure": _clamp01(row["baseline_pleasure"] if row["baseline_pleasure"] is not None else 0.5),
+        "baseline_arousal": _clamp01(row["baseline_arousal"] if row["baseline_arousal"] is not None else 0.5),
+        "baseline_dominance": _clamp01(row["baseline_dominance"] if row["baseline_dominance"] is not None else 0.5),
     }
 
     affect = _get_affect(soul_id)

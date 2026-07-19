@@ -1,3 +1,4 @@
+# 一键环境安装（Windows）：创建 backend\.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 20+、npm 10+）。
 [CmdletBinding()]
 param(
     [switch]$SkipFrontendBuild

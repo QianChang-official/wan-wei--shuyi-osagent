@@ -1,3 +1,5 @@
+"""发布前预检：校验 tag 与应用版本一致、VERSION_HISTORY 已发布、LICENSE/CHANGELOG/文档中心锚点齐备，未通过则阻止发版。"""
+
 from __future__ import annotations
 
 import argparse

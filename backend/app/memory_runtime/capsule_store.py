@@ -1,14 +1,21 @@
 import json
+import threading
 import uuid
 from typing import Any
 
-from ..db import get_conn
+from ..db import get_conn, database_path, transaction
 from ..audit.service import record, record_in_transaction
 from ..utils.datetime_utils import utc_now_iso_compact
 from .policy_gate import evaluate_policy
 
 RETRIEVABLE_POLICY = {"allow", "redact"}
 RETRIEVABLE_LIFECYCLE = {"active", "reinforced", "conflicted"}
+
+# B2: 模块级 once 标记，按 db_path 缓存。避免每次 write_capsule 都跑完整
+# init_db（~30 条 DDL + 迁移扫描 + print）。测试切换 WANWEI_MEMORY_DB 时
+# 新路径不在缓存中，会重新 init。
+_runtime_schema_done: set[str] = set()
+_runtime_schema_lock = threading.Lock()
 
 
 def now() -> str:
@@ -40,8 +47,16 @@ def _lifecycle_for_policy(policy_result: str) -> str:
 
 
 def init_runtime_schema() -> None:
-    from ..init_db import main
-    main()
+    """初始化 runtime schema，每个 db_path 只跑一次（线程安全）。"""
+    path = str(database_path())
+    if path in _runtime_schema_done:
+        return
+    with _runtime_schema_lock:
+        if path in _runtime_schema_done:
+            return
+        from ..init_db import main
+        main()
+        _runtime_schema_done.add(path)
 
 
 def write_capsule(
@@ -123,18 +138,25 @@ def write_capsule(
             "native_index": native_index,
         }
 
-    conn = get_conn()
-    conn.execute(
-        """INSERT INTO memory_capsules_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            capsule_id, memory_class, dumps(content), dumps([]), dumps(provenance), dumps(governance),
-            dumps(state), dumps(production_context), dumps(alignment_metadata), dumps({}),
-            dumps(relation_edges), dumps(index_refs), created, created,
-        ),
-    )
-    if governance["policy_result"] in RETRIEVABLE_POLICY and state["lifecycle"] == "active":
-        conn.execute("INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)", (capsule_id, text))
-    conn.commit()
+    with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO memory_capsules_v2 (
+                capsule_id, memory_class, content, source_events, provenance, governance,
+                state, production_context, alignment_metadata, affective_metadata,
+                relation_edges, index_refs, created_at, updated_at,
+                memory_tier, emotional_weight, created_in_dream
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                capsule_id, memory_class, dumps(content), dumps([]), dumps(provenance), dumps(governance),
+                dumps(state), dumps(production_context), dumps(alignment_metadata), dumps({}),
+                dumps(relation_edges), dumps(index_refs), created, created,
+                'working', 0.0, 0,
+            ),
+        )
+        if governance["policy_result"] in RETRIEVABLE_POLICY and state["lifecycle"] == "active":
+            conn.execute("INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)", (capsule_id, text))
     audit_id = record("capsule_write", {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class})
     # The vector copy is optional and is never created for rejected,
     # quarantined, or confirmation-pending memories.
@@ -214,10 +236,11 @@ def update_capsule(capsule_id: str, *, state: dict[str, Any] | None = None, rela
         raise KeyError(capsule_id)
     new_state = state or cap["state"]
     new_edges = relation_edges if relation_edges is not None else cap["relation_edges"]
-    get_conn().execute(
-        "UPDATE memory_capsules_v2 SET state=?, relation_edges=?, updated_at=? WHERE capsule_id=?",
-        (dumps(new_state), dumps(new_edges), now(), capsule_id),
-    ).connection.commit()
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE memory_capsules_v2 SET state=?, relation_edges=?, updated_at=? WHERE capsule_id=?",
+            (dumps(new_state), dumps(new_edges), now(), capsule_id),
+        )
     record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
     return get_capsule(capsule_id)
 
@@ -233,23 +256,22 @@ def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
     if not updates:
         return
     ts = now()
-    conn = get_conn()
-    conn.executemany(
-        """
-        UPDATE memory_capsules_v2
-        SET state=json_set(
-                state,
-                '$.usage_count', COALESCE(CAST(json_extract(state,'$.usage_count') AS INTEGER), 0) + 1,
-                '$.last_accessed_at', ?
-            ),
-            updated_at=?
-        WHERE capsule_id=?
-          AND json_extract(state,'$.lifecycle') IN ('active','reinforced','conflicted')
-          AND json_extract(governance,'$.policy_result') IN ('allow','redact')
-        """,
-        [(state.get("last_accessed_at") or ts, ts, cid) for cid, state in updates],
-    )
-    conn.commit()
+    with transaction() as conn:
+        conn.executemany(
+            """
+            UPDATE memory_capsules_v2
+            SET state=json_set(
+                    state,
+                    '$.usage_count', COALESCE(CAST(json_extract(state,'$.usage_count') AS INTEGER), 0) + 1,
+                    '$.last_accessed_at', ?
+                ),
+                updated_at=?
+            WHERE capsule_id=?
+              AND json_extract(state,'$.lifecycle') IN ('active','reinforced','conflicted')
+              AND json_extract(governance,'$.policy_result') IN ('allow','redact')
+            """,
+            [(state.get("last_accessed_at") or ts, ts, cid) for cid, state in updates],
+        )
     record("capsule_usage_batch", {"capsule_ids": [cid for cid, _ in updates], "count": len(updates)})
 
 

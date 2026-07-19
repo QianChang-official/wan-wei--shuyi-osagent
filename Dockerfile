@@ -19,7 +19,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/backend \
     WANWEI_PRODUCTION=1 \
-    WANWEI_MEMORY_DB=/data/memory.db
+    WANWEI_MEMORY_DB=/data/memory.db \
+    WANWEI_PLATFORM_DIR=/data/platform
 
 RUN addgroup --system --gid 10001 wanwei \
     && adduser --system --uid 10001 --ingroup wanwei --home /nonexistent --no-create-home wanwei
@@ -35,7 +36,7 @@ COPY reports /app/reports
 COPY frontend/web-console /app/frontend/web-console
 COPY --from=frontend-builder /build/frontend/console-vue/dist /app/frontend/console-vue/dist
 
-RUN mkdir -p /data && chown wanwei:wanwei /data
+RUN mkdir -p /data /data/platform && chown -R wanwei:wanwei /data
 
 USER 10001:10001
 EXPOSE 8010

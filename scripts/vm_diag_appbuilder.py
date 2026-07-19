@@ -1,3 +1,4 @@
+# 一次性 QA 脚本：经 QEMU HMP 诊断 app-builder 二进制在麒麟 V11 虚拟机内的动态库依赖与版本。
 import sys
 import time
 
