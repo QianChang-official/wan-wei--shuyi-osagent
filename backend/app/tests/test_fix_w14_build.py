@@ -93,6 +93,12 @@ def test_ci_has_real_dist_gate_and_security_test():
     assert "dist/index.html missing" in release
 
 
+def test_ci_production_smokes_set_independent_encryption_key():
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert text.count("WANWEI_ENCRYPTION_KEY") >= 2
+    assert "WANWEI_PRODUCTION: \"1\"" in text
+
+
 def test_cryptography_pinned():
     text = (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
     line = next(l for l in text.splitlines() if l.startswith("cryptography"))

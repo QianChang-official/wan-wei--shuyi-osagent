@@ -86,6 +86,7 @@ jobs:
         shell: bash
         env:
           WANWEI_API_KEY: ci-integration-key-with-32-characters
+          WANWEI_ENCRYPTION_KEY: IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90=
           WANWEI_MEMORY_DB: ${{ runner.temp }}/wanwei-integration.db
           WANWEI_PRODUCTION: "1"
         run: |
@@ -136,6 +137,7 @@ jobs:
             --tmpfs /data:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
             --cap-drop ALL --security-opt no-new-privileges \
             -e WANWEI_API_KEY=ci-container-key-with-32-characters \
+            -e WANWEI_ENCRYPTION_KEY=IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90= \
             -p 127.0.0.1:8010:8010 wanwei-shuyi:ci
           for _ in {1..60}; do
             if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=2).read()"; then
