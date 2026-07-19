@@ -481,6 +481,35 @@ def test_chat_complete_consumes_single_source(monkeypatch):
     assert out["status"] == "provider_error"  # 失败如实返回，不回退 mock
 
 
+def test_chat_complete_does_not_expose_provider_exception(monkeypatch):
+    import httpx
+
+    import backend.app.main as main_mod
+
+    marker = "sensitive-provider-exception-detail"
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError(marker)
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "w09-failing-provider")
+    monkeypatch.setattr(httpx, "Client", FailingClient)
+
+    out = main_mod._chat_complete([{"role": "user", "content": "hi"}])
+
+    assert out["status"] == "provider_error"
+    assert out["provider"] == "openai_compatible"
+    assert out["error"] == "provider_unavailable"
+    assert marker not in json.dumps(out, ensure_ascii=False)
+
+
 def test_workflow_design_uses_runtime_local_llama_settings(monkeypatch):
     """workflow/service.py 不再消费导入期 LOCAL_LLAMA_BASE 快照。"""
     from backend.app.workflow import service as workflow_service

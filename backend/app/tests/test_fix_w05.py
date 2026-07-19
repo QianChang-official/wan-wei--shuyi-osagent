@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -103,7 +104,7 @@ def test_stdio_subprocess_env_does_not_inherit_service_secrets(mcp_store, monkey
     assert 'OPENAI_API_KEY' not in child
 
 
-def test_live_stdio_requires_server_side_authorization(tmp_path, mcp_store, monkeypatch):
+def test_live_stdio_requires_server_side_authorization(tmp_path, mcp_store, monkeypatch, caplog):
     client = _client(tmp_path)
     h = {'x-api-key': 'test-key'}
     r = client.post(
@@ -122,9 +123,13 @@ def test_live_stdio_requires_server_side_authorization(tmp_path, mcp_store, monk
 
     monkeypatch.setenv('WANWEI_DEVICE_GEAR_ENABLED', '1')
     monkeypatch.setenv('WANWEI_MCP_STDIO_COMMANDS', 'uvx')
-    r = client.post(f'/platform/mcp/servers/{sid}/call', json={'tool': 'x'}, headers=h)
+    from backend.app.platform_api import mcp_hub
+    with caplog.at_level(logging.WARNING, logger=mcp_hub.logger.name):
+        r = client.post(f'/platform/mcp/servers/{sid}/call', json={'tool': 'x'}, headers=h)
     assert r.status_code == 403
-    assert '允许列表' in r.text
+    assert r.json()['detail'] == 'MCP stdio command 不在服务器允许列表，已拒绝执行'
+    assert 'npx.cmd' not in r.text
+    assert 'command 校验失败' in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +562,67 @@ def test_kill_process_tree_invokes_taskkill(mcp_store, monkeypatch):
     assert 'terminate' not in calls, 'taskkill 成功时不应回退 terminate'
 
 
+def test_kill_process_tree_falls_back_on_taskkill_nonzero(mcp_store, monkeypatch, caplog):
+    """taskkill 非零退出也属于失败，应回退 terminate 并记录固定诊断字段。"""
+    from backend.app.platform_api import mcp_hub
+
+    calls = {}
+
+    class _FakeProc:
+        pid = 4321
+
+        def terminate(self):
+            calls['terminate'] = True
+
+        def wait(self, timeout=None):
+            calls['wait'] = timeout
+            return 0
+
+    monkeypatch.setattr(
+        mcp_hub.subprocess,
+        'run',
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 128),
+    )
+    with caplog.at_level(logging.WARNING, logger=mcp_hub.logger.name):
+        mcp_hub._kill_process_tree(_FakeProc())
+
+    assert calls['terminate'] is True
+    assert calls['wait'] == 1.5
+    assert 'returncode=128' in caplog.text
+
+
+def test_kill_process_tree_swallows_only_expected_cleanup_errors(mcp_store, monkeypatch, caplog):
+    """系统级回收异常不阻断 close，日志只记类型，不记可能敏感的异常文本。"""
+    from backend.app.platform_api import mcp_hub
+
+    secret = 'sensitive cleanup detail'
+
+    class _FakeProc:
+        pid = 4321
+
+        def terminate(self):
+            raise PermissionError(secret)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired('secret-command', timeout)
+
+        def kill(self):
+            raise ProcessLookupError(secret)
+
+    def _taskkill_unavailable(*args, **kwargs):
+        raise OSError(secret)
+
+    monkeypatch.setattr(mcp_hub.subprocess, 'run', _taskkill_unavailable)
+    with caplog.at_level(logging.WARNING, logger=mcp_hub.logger.name):
+        mcp_hub._kill_process_tree(_FakeProc())
+
+    assert 'OSError' in caplog.text
+    assert 'PermissionError' in caplog.text
+    assert 'TimeoutExpired' in caplog.text
+    assert 'ProcessLookupError' in caplog.text
+    assert secret not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # 超时与失败状态语义区分
 # ---------------------------------------------------------------------------
@@ -590,6 +656,44 @@ def test_discover_tools_timeout_returns_timeout_status(tmp_path, mcp_store, monk
     assert "超时" in body["note"]
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "public_note"),
+    [
+        (TimeoutError("secret timeout detail"), "timeout", "工具发现超时，请稍后重试"),
+        (RuntimeError("secret protocol detail"), "error", "工具发现失败，请检查服务器配置或运行状态"),
+    ],
+)
+def test_discover_tools_does_not_expose_exception_details(
+    tmp_path, mcp_store, monkeypatch, caplog, failure, expected_status, public_note,
+):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    response = client.post(
+        "/platform/mcp/servers",
+        json={"name": "safe-discovery", "transport": "stdio", "command": "echo", "enabled": True},
+        headers=h,
+    )
+    sid = response.json()["id"]
+
+    from backend.app.platform_api import mcp_hub
+    monkeypatch.setenv('WANWEI_DEVICE_GEAR_ENABLED', '1')
+    monkeypatch.setenv('WANWEI_MCP_STDIO_COMMANDS', 'echo')
+
+    def _boom(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(mcp_hub, '_open_session', _boom)
+    with caplog.at_level(logging.WARNING, logger=mcp_hub.logger.name):
+        response = client.get(f"/platform/mcp/servers/{sid}/tools", headers=h)
+
+    body = response.json()
+    assert body["status"] == expected_status
+    assert body["note"] == public_note
+    assert str(failure) not in response.text
+    assert str(failure) not in mcp_store.get(sid)["last_error"]
+    assert str(failure) in caplog.text
+
+
 def test_call_tool_timeout_returns_timeout_mode(tmp_path, mcp_store, monkeypatch):
     """tools/call 超时返回 mode='timeout'，调用记录同样标注 timeout。"""
     client = _client(tmp_path)
@@ -619,6 +723,50 @@ def test_call_tool_timeout_returns_timeout_mode(tmp_path, mcp_store, monkeypatch
 
     rec = mcp_hub._store.get(sid)
     assert rec["status"] == "timeout"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_mode", "public_note"),
+    [
+        (TimeoutError("secret timeout detail"), "timeout", "真实调用超时，请稍后重试"),
+        (RuntimeError("secret protocol detail"), "error", "真实调用失败，请检查服务器配置或运行状态"),
+    ],
+)
+def test_call_tool_does_not_expose_exception_details(
+    tmp_path, mcp_store, monkeypatch, caplog, failure, expected_mode, public_note,
+):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    response = client.post(
+        "/platform/mcp/servers",
+        json={"name": "safe-call", "transport": "stdio", "command": "echo", "enabled": True},
+        headers=h,
+    )
+    sid = response.json()["id"]
+
+    from backend.app.platform_api import mcp_hub
+    monkeypatch.setenv('WANWEI_DEVICE_GEAR_ENABLED', '1')
+    monkeypatch.setenv('WANWEI_MCP_STDIO_COMMANDS', 'echo')
+
+    def _boom(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(mcp_hub, '_open_session', _boom)
+    with caplog.at_level(logging.WARNING, logger=mcp_hub.logger.name):
+        response = client.post(
+            f"/platform/mcp/servers/{sid}/call",
+            json={"tool": "sensitive-tool", "arguments": {}},
+            headers=h,
+        )
+
+    body = response.json()
+    assert body["mode"] == expected_mode
+    assert body["note"] == public_note
+    assert str(failure) not in response.text
+    assert str(failure) not in mcp_store.get(sid)["last_error"]
+    overview = client.get("/platform/mcp/overview", headers=h).json()
+    assert str(failure) not in overview["recent_calls"][0]["note"]
+    assert str(failure) in caplog.text
 
 
 # ---------------------------------------------------------------------------

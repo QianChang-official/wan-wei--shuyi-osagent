@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 
 import pytest
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from backend.app.security import encryption
 
@@ -24,14 +25,30 @@ def test_encrypt_derives_key_from_api_key(monkeypatch):
     api_key = "development-api-key"
     monkeypatch.delenv("WANWEI_ENCRYPTION_KEY", raising=False)
     monkeypatch.setenv("WANWEI_API_KEY", api_key)
+    derived = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"wanwei.field-encryption.v1",
+        iterations=600_000,
+    ).derive(api_key.encode("utf-8"))
     derived_key = base64.urlsafe_b64encode(
-        hashlib.sha256(api_key.encode("utf-8")).digest()
+        derived
     )
 
     ciphertext = encryption.encrypt("derived-secret")
 
     assert Fernet(derived_key).decrypt(ciphertext.encode("ascii")) == b"derived-secret"
     assert encryption.decrypt(ciphertext) == "derived-secret"
+
+
+def test_development_derivation_changes_with_api_key(monkeypatch):
+    """The fallback remains bound to the configured development API key."""
+    monkeypatch.delenv("WANWEI_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_API_KEY", "development-api-key-a")
+    ciphertext = encryption.encrypt("derived-secret")
+
+    monkeypatch.setenv("WANWEI_API_KEY", "development-api-key-b")
+    assert encryption.decrypt(ciphertext) == ""
 
 
 def test_invalid_explicit_encryption_key_fails_closed(monkeypatch):

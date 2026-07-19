@@ -73,6 +73,7 @@ def test_put_config_blocks_cloud_metadata_address(tmp_path, monkeypatch):
     )
     assert r.status_code == 422, r.text
     assert "SSRF" in r.json()["detail"]
+    assert "169.254.169.254" not in r.text
 
 
 def test_put_config_blocks_private_network_addresses(tmp_path, monkeypatch):
@@ -126,6 +127,42 @@ def test_probe_ssrf_still_blocks_malicious_base_url(tmp_path, monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert "SSRF" in body["reason"]
+    assert "169.254.169.254" not in r.text
+
+
+def test_provider_failures_do_not_expose_exception_details(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    marker = "sensitive-provider-internal-detail"
+
+    from backend.app.platform_api import providers as providers_mod
+
+    def _fail_encrypt(_value):
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(providers_mod.encryption, "encrypt", _fail_encrypt)
+    encrypted = client.put(
+        "/platform/providers/configs/openai",
+        json={"api_key": "sk-test"},
+        headers=_HEADERS,
+    )
+    assert encrypted.status_code == 500, encrypted.text
+    assert encrypted.json()["detail"] == "密钥加密失败，请检查服务端加密配置"
+    assert marker not in encrypted.text
+
+    monkeypatch.undo()
+
+    def _fail_probe(*args, **kwargs):
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(httpx, "get", _fail_probe)
+    probed = client.post(
+        "/platform/providers/test",
+        json={"pid": "lm_studio"},
+        headers=_HEADERS,
+    )
+    assert probed.status_code == 200, probed.text
+    assert probed.json()["reason"] == "本地服务不可达"
+    assert marker not in probed.text
 
 
 def test_probe_allows_explicit_loopback_endpoint(tmp_path, monkeypatch):

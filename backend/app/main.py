@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid,json
 import sqlite3
@@ -100,6 +101,8 @@ from .reproduction.service import (
     reflexion_evaluate,
     workbench as reproduction_workbench,
 )
+
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1094,15 +1097,21 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
                 'latency_ms': latency_ms,
                 'status': 'ok',
             }
-        except Exception as e:
+        except Exception as exc:
             # B3: 失败如实返回 provider_error，不静默回退 mock
+            logger.warning(
+                'OpenAI-compatible provider request failed: model=%s error_type=%s',
+                api_model,
+                type(exc).__name__,
+                exc_info=True,
+            )
             return {
                 'provider': 'openai_compatible',
                 'model': api_model,
                 'content': '',
                 'latency_ms': 0,
                 'status': 'provider_error',
-                'error': str(e)[:200],
+                'error': 'provider_unavailable',
             }
 
     # Fallback: local_mock（仅当未配置 API 时，而非 API 调用失败时）

@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -36,6 +37,7 @@ from app.security import encryption
 from app.utils.datetime_utils import utc_now_iso
 
 router = APIRouter(tags=['spaces'])
+logger = logging.getLogger(__name__)
 
 _projects = JsonStore('spaces')
 _integrations = JsonStore('integrations')
@@ -242,7 +244,13 @@ def _real_tree(project: dict) -> dict:
             'source': 'git',
         }
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError) as exc:
-        return _simulated_tree(project, note=f'git 读取异常，已回退模拟：{exc!r}')
+        logger.warning(
+            'Space tree git read failed: project_id=%s error_type=%s',
+            project.get('id'),
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return _simulated_tree(project, note='git 读取失败，已回退模拟')
 
 
 def _compile_template_pattern(template_cfg: dict) -> re.Pattern:
@@ -272,7 +280,12 @@ def _compile_template_pattern(template_cfg: dict) -> re.Pattern:
     try:
         return re.compile(r'^\s*' + pattern + r'\s*$', flags=re.S)
     except re.error as exc:
-        raise ValueError(f'提交模板无法编译为正则：{exc}') from exc
+        logger.warning(
+            'Space commit template regex compilation failed: error_type=%s',
+            type(exc).__name__,
+            exc_info=True,
+        )
+        raise ValueError('提交模板无法编译为正则') from exc
 
 
 def _validate_commit_message(message: str, template_cfg: dict, regex: re.Pattern) -> str | None:
@@ -353,7 +366,14 @@ def _check_root_path(root_path: str | None) -> None:
     try:
         validate_root_path(text)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning(
+            'Space root path rejected: error_type=%s',
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail='root_path 未通过允许目录白名单校验',
+        ) from None
 
 
 # ---------------------------------------------------------------- 项目 CRUD
@@ -513,7 +533,12 @@ def test_integration(kind: str) -> dict:
                 return {'ok': True, 'mode': 'live', 'note': f'GitHub 连通正常，账号：{login}'}
             return {'ok': False, 'mode': 'live', 'note': f'GitHub 返回 HTTP {resp.status_code}，请检查 token 权限'}
         except (httpx.RequestError, httpx.TimeoutException, ValueError) as exc:
-            return {'ok': False, 'mode': 'live', 'note': f'GitHub 连通性测试失败：{exc}'}
+            logger.warning(
+                'GitHub integration probe failed: error_type=%s',
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return {'ok': False, 'mode': 'live', 'note': 'GitHub 连通性测试失败，请稍后重试'}
 
     # linear：真实 API 尚未接入，诚实标注 stub
     return {'ok': True, 'mode': 'stub', 'note': 'linear 连通性测试暂未接入真实 API，当前为模拟通过'}
@@ -551,7 +576,15 @@ def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
     try:
         _compile_template_pattern(template_cfg)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning(
+            'Space commit template rejected: project_id=%s error_type=%s',
+            pid,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail='提交模板非法：同一占位符不能出现多次，且模板必须可编译',
+        ) from None
     project['commit_template'] = template_cfg
     _projects.set(pid, project)
     if not any(ph in template_cfg['template'] for ph in _TEMPLATE_PLACEHOLDERS):
@@ -570,12 +603,17 @@ def commit_in_space(pid: str, body: CommitIn) -> dict:
         try:
             validate_root_path(root)
         except ValueError as exc:
+            logger.warning(
+                'Space commit root path rejected: project_id=%s error_type=%s',
+                pid,
+                type(exc).__name__,
+            )
             return {
                 'ok': False,
                 'dry_run': body.dry_run,
                 'commands': [],
                 'error': 'root_path_denied',
-                'note': str(exc),
+                'note': 'root_path 未通过允许目录白名单校验',
             }
     branch = (body.branch or '').strip() or project.get('default_branch') or 'main'
     branch_error = _validate_branch_name(branch)
@@ -612,7 +650,15 @@ def commit_in_space(pid: str, body: CommitIn) -> dict:
         template_re = _compile_template_pattern(template_cfg)
     except ValueError as exc:
         # 历史脏数据（PUT 校验上线前存入的非法模板）：诚实 400 而非 500
-        raise HTTPException(status_code=400, detail=f'项目提交模板非法：{exc}') from exc
+        logger.warning(
+            'Stored commit template is invalid: project_id=%s error_type=%s',
+            pid,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail='项目提交模板非法，请重新保存提交模板',
+        ) from None
     message_error = _validate_commit_message(message, template_cfg, template_re)
     if message_error:
         return {
@@ -733,11 +779,17 @@ def commit_in_space(pid: str, body: CommitIn) -> dict:
             }
             return resp
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                'Space commit git execution failed: project_id=%s error_type=%s',
+                pid,
+                type(exc).__name__,
+                exc_info=True,
+            )
             resp = {
                 'ok': False,
                 **base,
                 'error': 'git_exec_error',
-                'note': f'git 执行异常：{exc!r}',
+                'note': 'git 执行失败，请检查仓库路径与 Git 配置',
             }
             return resp
         finally:
@@ -753,9 +805,20 @@ def commit_in_space(pid: str, body: CommitIn) -> dict:
                         if back.returncode == 0:
                             restored = True
                             break
-                        last_err = back.stderr.strip()[:300]
+                        last_err = f'git_exit_{back.returncode}'
+                        logger.warning(
+                            'Space commit branch restore failed: project_id=%s returncode=%s',
+                            pid,
+                            back.returncode,
+                        )
                     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-                        last_err = repr(exc)
+                        last_err = type(exc).__name__
+                        logger.warning(
+                            'Space commit branch restore raised: project_id=%s error_type=%s',
+                            pid,
+                            type(exc).__name__,
+                            exc_info=True,
+                        )
                 if restored:
                     if resp:
                         resp['commands'].append(restore_cmd)

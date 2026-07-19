@@ -85,6 +85,28 @@ def test_put_template_duplicate_placeholder_400(tmp_path):
     assert r.json()["template"] == "<type>(<scope>): <subject>"
 
 
+def test_template_exception_detail_is_not_exposed(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    pid = _create_project(client, h)
+    marker = "sensitive-template-parser-detail"
+
+    from backend.app.platform_api import spaces
+
+    def _fail_compile(_config):
+        raise ValueError(marker)
+
+    monkeypatch.setattr(spaces, "_compile_template_pattern", _fail_compile)
+    r = client.put(
+        f"/platform/spaces/{pid}/commit-template",
+        json={"template": "<type>: <subject>", "types": ["feat"]},
+        headers=h,
+    )
+    assert r.status_code == 400, r.text
+    assert "提交模板非法" in r.json()["detail"]
+    assert marker not in r.text
+
+
 def test_commit_with_legacy_bad_template_400_not_500(tmp_path):
     """PUT 校验上线前存入的非法模板（历史脏数据）：commit 诚实 400 而非 500。"""
     client = _client(tmp_path)
@@ -411,6 +433,7 @@ def test_create_project_rejects_root_path_outside_whitelist(tmp_path):
     )
     assert r.status_code == 422, r.text
     assert "白名单" in r.json()["detail"]
+    assert "outside_whitelist" not in r.text
 
 
 def test_update_project_rejects_root_path_outside_whitelist(tmp_path):
@@ -426,6 +449,7 @@ def test_update_project_rejects_root_path_outside_whitelist(tmp_path):
     )
     assert r.status_code == 422, r.text
     assert "白名单" in r.json()["detail"]
+    assert "outside_whitelist" not in r.text
 
     # 清空 root_path 仍被允许
     r = client.put(
@@ -457,3 +481,87 @@ def test_commit_rejects_root_path_outside_whitelist(tmp_path):
     assert body["ok"] is False, body
     assert body["error"] == "root_path_denied"
     assert "白名单" in body["note"]
+    assert "outside_whitelist" not in r.text
+
+
+def test_git_exception_detail_is_not_exposed(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    pid = _create_project(client, h, root_path=str(tmp_path))
+    marker = "sensitive-git-system-detail"
+
+    from backend.app.platform_api import spaces
+
+    monkeypatch.setattr(spaces, "_is_git_repo", lambda _root: True)
+
+    def _fail_git(*args, **kwargs):
+        raise OSError(marker)
+
+    monkeypatch.setattr(spaces, "_run_git", _fail_git)
+    r = client.post(
+        f"/platform/spaces/{pid}/commit",
+        json={
+            "message": "feat(spaces): sanitized error",
+            "dry_run": False,
+            "gear": "sandbox",
+        },
+        headers=h,
+    )
+    body = r.json()
+    assert body["error"] == "git_exec_error", body
+    assert body["note"] == "git 执行失败，请检查仓库路径与 Git 配置"
+    assert marker not in r.text
+
+
+def test_space_tree_exception_detail_is_not_exposed(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    pid = _create_project(client, h, root_path=str(tmp_path))
+    marker = "sensitive-git-tree-detail"
+
+    from backend.app.platform_api import spaces
+
+    monkeypatch.setattr(spaces, "_is_git_repo", lambda _root: True)
+
+    def _fail_git(*args, **kwargs):
+        raise OSError(marker)
+
+    monkeypatch.setattr(spaces, "_run_git", _fail_git)
+    r = client.get(f"/platform/spaces/{pid}/tree", headers=h)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["source"] == "simulated"
+    assert r.json()["note"] == "git 读取失败，已回退模拟"
+    assert marker not in r.text
+
+
+def test_github_probe_exception_detail_is_not_exposed(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    h = {"x-api-key": "test-key"}
+    marker = "sensitive-github-network-detail"
+
+    bound = client.post(
+        "/platform/spaces/integrations/github/bind",
+        json={"token": "ghp-test-token"},
+        headers=h,
+    )
+    assert bound.status_code == 200, bound.text
+
+    from backend.app.platform_api import spaces
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            raise ValueError(marker)
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(spaces.httpx, "Client", FailingClient)
+    r = client.post("/platform/spaces/integrations/github/test", headers=h)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] == "GitHub 连通性测试失败，请稍后重试"
+    assert marker not in r.text

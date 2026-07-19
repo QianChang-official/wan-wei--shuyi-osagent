@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Optional
 
@@ -35,6 +36,7 @@ from app.security.ssrf import SSRFError, validate_external_url
 from app.utils.datetime_utils import utc_now_iso
 
 router = APIRouter(tags=['providers'])
+logger = logging.getLogger(__name__)
 
 _store = JsonStore('providers')
 
@@ -511,7 +513,16 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
             try:
                 record['api_key_encrypted'] = encryption.encrypt(body.api_key.strip())
             except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=500, detail=f'密钥加密失败：{exc}') from exc
+                logger.warning(
+                    'Provider credential encryption failed: pid=%s error_type=%s',
+                    pid,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail='密钥加密失败，请检查服务端加密配置',
+                ) from None
         else:
             # 显式传空串 = 清除已存密钥
             record.pop('api_key_encrypted', None)
@@ -526,10 +537,15 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
                     allowlist=_LOCAL_PROBE_ALLOWLIST if meta['kind'] in _LOCAL_KINDS else [],
                 )
             except SSRFError as exc:
+                logger.warning(
+                    'Provider base URL rejected by SSRF policy: pid=%s error_type=%s',
+                    pid,
+                    type(exc).__name__,
+                )
                 raise HTTPException(
                     status_code=422,
-                    detail=f'base_url 未通过 SSRF 防护校验：{exc}',
-                ) from exc
+                    detail='base_url 未通过 SSRF 防护校验',
+                ) from None
     if body.model is not None:
         record['model'] = body.model.strip()
     if body.enabled is not None:
@@ -577,11 +593,16 @@ def test_provider(body: TestIn) -> dict[str, Any]:
         try:
             validate_external_url(base_url, allowlist=_LOCAL_PROBE_ALLOWLIST)
         except SSRFError as exc:
+            logger.warning(
+                'Provider probe rejected by SSRF policy: pid=%s error_type=%s',
+                body.pid,
+                type(exc).__name__,
+            )
             return {
                 'ok': False,
                 'pid': body.pid,
                 'mode': 'live',
-                'reason': f'base_url 未通过 SSRF 防护校验：{exc}',
+                'reason': 'base_url 未通过 SSRF 防护校验',
             }
         started = time.perf_counter()
         try:
@@ -596,11 +617,17 @@ def test_provider(body: TestIn) -> dict[str, Any]:
                 'note': '本地服务可达（真实探测）。',
             }
         except Exception as exc:  # noqa: BLE001 —— 任何网络异常都归为不可达
+            logger.warning(
+                'Local provider probe failed: pid=%s error_type=%s',
+                body.pid,
+                type(exc).__name__,
+                exc_info=True,
+            )
             return {
                 'ok': False,
                 'pid': body.pid,
                 'mode': 'live',
-                'reason': f'本地服务不可达：{exc.__class__.__name__}: {exc}',
+                'reason': '本地服务不可达',
             }
 
     # 云端/聚合/OAuth：密钥未配置则明确失败

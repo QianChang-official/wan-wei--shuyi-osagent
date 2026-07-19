@@ -6,9 +6,10 @@ Key resolution order:
    the field-encryption key from the API key is refused there, because the dev
    default API key (``wanwei-dev-key``) is a public constant, which would make
    every stored ciphertext trivially decryptable.
-2. Non-production fallback — SHA-256 over the API key (historical behavior;
-   keeps dev/test zero-config). A warning is logged once per process, since
-   this derivation is only acceptable for local development.
+2. Non-production fallback — PBKDF2-HMAC-SHA256 over the API key with a
+   domain-separated salt (keeps dev/test zero-config). A warning is logged
+   once per process, since this fallback is only acceptable for local
+   development. Production must use the dedicated key above.
 
 Ciphertext contract (v0.11+):
 - ``decrypt()`` accepts genuine Fernet tokens only (HMAC integrity checked).
@@ -25,11 +26,12 @@ Ciphertext contract (v0.11+):
 from __future__ import annotations
 
 import base64
-import hashlib
 import logging
 import os
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from .auth import get_api_key, is_production_mode
 
@@ -45,6 +47,24 @@ class LegacyCiphertextError(DecryptionError):
 
 
 _derived_key_warning_emitted = False
+
+
+# Keep the development fallback deterministic across restarts while using a
+# password KDF and an application-specific derivation context. Production
+# deployments must provide a dedicated random Fernet key instead.
+_DEV_DERIVATION_SALT = b"wanwei.field-encryption.v1"
+_DEV_DERIVATION_ITERATIONS = 600_000
+
+
+def _derive_development_key(api_key: str) -> bytes:
+    """Derive a Fernet key from a development API key with a password KDF."""
+    derived = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_DEV_DERIVATION_SALT,
+        iterations=_DEV_DERIVATION_ITERATIONS,
+    ).derive(api_key.encode("utf-8"))
+    return base64.urlsafe_b64encode(derived)
 
 
 def _get_fernet() -> Fernet:
@@ -64,10 +84,7 @@ def _get_fernet() -> Fernet:
                 "key from the API key. Acceptable only for local dev/test — set "
                 "WANWEI_ENCRYPTION_KEY for any real deployment."
             )
-        derived_key = base64.urlsafe_b64encode(
-            hashlib.sha256(get_api_key().encode("utf-8")).digest()
-        )
-        return Fernet(derived_key)
+        return Fernet(_derive_development_key(get_api_key()))
 
     try:
         return Fernet(configured_key.encode("ascii"))

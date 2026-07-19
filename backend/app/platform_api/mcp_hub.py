@@ -34,6 +34,7 @@
   未走 UI 路径。
 """
 import json
+import logging
 import os
 import queue
 import shutil
@@ -52,6 +53,7 @@ from app.platform_api.store import JsonStore
 from app.security import encryption
 
 router = APIRouter(prefix='/mcp', tags=['mcp-hub'])
+logger = logging.getLogger(__name__)
 
 _store = JsonStore('mcp_servers')
 
@@ -454,7 +456,14 @@ def _require_stdio_execution(rec: dict, *, action: str) -> None:
             'action': action,
             'reason': 'command_not_allowed',
         })
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        logger.warning(
+            'MCP stdio command 校验失败：server_id=%s action=%s error_type=%s',
+            rec.get('id'), action, type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail='MCP stdio command 不在服务器允许列表，已拒绝执行',
+        ) from None
     audit_safe('mcp_stdio_allowed', {'server_id': rec.get('id'), 'action': action})
 
 
@@ -470,25 +479,48 @@ def _check_cmd_shim_argv(argv: list[str]) -> None:
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Windows 进程树回收：taskkill /T 覆盖孙进程、/F 强制；失败回退 terminate。"""
+    taskkill_succeeded = False
     try:
-        subprocess.run(
+        result = subprocess.run(
             ['taskkill', '/PID', str(proc.pid), '/T', '/F'],
             capture_output=True,
             timeout=5,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
-    except Exception:  # noqa: BLE001 —— taskkill 不可用等场景回退单进程终止
+        taskkill_succeeded = result.returncode == 0
+        if not taskkill_succeeded:
+            logger.warning(
+                'taskkill 回收 MCP 进程树失败：pid=%s returncode=%s',
+                proc.pid, result.returncode,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            'taskkill 回收 MCP 进程树失败：pid=%s error_type=%s',
+            proc.pid, type(exc).__name__,
+        )
+
+    if not taskkill_succeeded:
         try:
             proc.terminate()
-        except Exception:  # noqa: BLE001 —— 清理阶段不再抛错
-            pass
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(
+                'terminate 回收 MCP 进程失败：pid=%s error_type=%s',
+                proc.pid, type(exc).__name__,
+            )
     try:
         proc.wait(timeout=1.5)
-    except Exception:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            '等待 MCP 进程退出失败：pid=%s error_type=%s',
+            proc.pid, type(exc).__name__,
+        )
         try:
             proc.kill()
-        except Exception:  # noqa: BLE001 —— 清理阶段不再抛错
-            pass
+        except (OSError, subprocess.SubprocessError) as kill_exc:
+            logger.warning(
+                'kill 回收 MCP 进程失败：pid=%s error_type=%s',
+                proc.pid, type(kill_exc).__name__,
+            )
 
 
 def _request_budget(rec: dict) -> float:
@@ -833,12 +865,14 @@ def discover_tools(sid: str) -> dict:
             result = rpc.request('tools/list')
         finally:
             rpc.close()
-    except TimeoutError as exc:
-        note = f'工具发现超时：{exc}'
+    except TimeoutError:
+        logger.warning('MCP 工具发现超时：server_id=%s', sid, exc_info=True)
+        note = '工具发现超时，请稍后重试'
         _mark_timeout(sid, rec, note)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'timeout', 'note': note}
-    except Exception as exc:  # noqa: BLE001 —— 子进程/协议失败落为 error
-        note = f'工具发现失败：{exc}'
+    except Exception:  # noqa: BLE001 —— 子进程/协议失败落为 error
+        logger.exception('MCP 工具发现失败：server_id=%s', sid)
+        note = '工具发现失败，请检查服务器配置或运行状态'
         _mark_error(sid, rec, note)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'error', 'note': note}
 
@@ -899,13 +933,15 @@ def call_tool(sid: str, payload: CallIn) -> dict:
             result = rpc.request('tools/call', {'name': payload.tool, 'arguments': payload.arguments})
         finally:
             rpc.close()
-    except TimeoutError as exc:
-        note = f'真实调用超时：{exc}'
+    except TimeoutError:
+        logger.warning('MCP 工具调用超时：server_id=%s tool=%s', sid, payload.tool, exc_info=True)
+        note = '真实调用超时，请稍后重试'
         _mark_timeout(sid, rec, note)
         _record_call(rec, payload, ok=False, mode='timeout', note=note)
         return {'ok': False, 'mode': 'timeout', 'note': note, 'plan': _redact_plan(plan)}
-    except Exception as exc:  # noqa: BLE001
-        note = f'真实调用失败：{exc}'
+    except Exception:  # noqa: BLE001
+        logger.exception('MCP 工具调用失败：server_id=%s tool=%s', sid, payload.tool)
+        note = '真实调用失败，请检查服务器配置或运行状态'
         _mark_error(sid, rec, note)
         _record_call(rec, payload, ok=False, mode='error', note=note)
         return {'ok': False, 'mode': 'error', 'note': note, 'plan': _redact_plan(plan)}
