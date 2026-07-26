@@ -109,8 +109,12 @@ def is_public_path(path: str) -> bool:
 
 
 def _is_protected_get(method: str, path: str) -> bool:
-    """Fail-closed: 除显式公开路径外，所有 GET 均要求鉴权。"""
-    if method != "GET":
+    """Fail-closed: 除显式公开路径外，所有 GET/HEAD 均要求鉴权。
+
+    HEAD 是无响应体的 GET，Starlette 会为声明了 GET 的路由自动接受 HEAD。
+    若不一并纳入保护判定，HEAD 请求会同时绕过鉴权与保护性 GET 限流。
+    """
+    if method not in {"GET", "HEAD"}:
         return False
     return not _is_public_path(path)
 
@@ -133,7 +137,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if _is_public_path(request.url.path):
             return await call_next(request)
 
-        # Check if auth required: 写方法 或 任何非公开 GET
+        # Check if auth required: 写方法 或 任何非公开 GET/HEAD
         needs_auth = (
             request.method in _WRITE_METHODS or
             _is_protected_get(request.method, request.url.path)

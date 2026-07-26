@@ -114,6 +114,30 @@ def test_protected_get_endpoints_require_auth(tmp_path):
     assert client.get("/workflow/stats", headers=headers).status_code == 200
 
 
+def test_head_requests_do_not_bypass_auth_on_protected_endpoints(tmp_path):
+    """回归：HEAD 请求必须与 GET 一样受 fail-closed 鉴权约束。
+
+    修复前 needs_auth 只覆盖写方法与受保护 GET，HEAD 两者都不沾，于是绕过
+    鉴权中间件。FastAPI 的 @app.get 处理器对 HEAD 返回 405（不执行处理器、
+    不泄露响应体），但 Starlette 挂载（StaticFiles / 旧版控制台等）会响应
+    HEAD，故仍须在鉴权层统一堵住。此测试锁定：未鉴权 HEAD 命中受保护路径
+    一律被鉴权层拦为 401，而非漏到路由层。
+    """
+    client = _client(tmp_path, api_key="test-key")
+    from backend.app.workflow.persistence import init_workflow_persistence
+
+    init_workflow_persistence()
+
+    # 未携带 key：受保护读端点的 HEAD 必须被鉴权层拦截（401），而非放行
+    assert client.head("/audit/logs").status_code == 401
+    assert client.head("/memory/v2/search?q=test").status_code == 401
+    assert client.head("/kylin/sdk/status").status_code == 401
+    assert client.head("/workflow/runs").status_code == 401
+
+    # 公开路径不受鉴权影响：鉴权层放行（路由是否支持 HEAD 与鉴权判定无关）
+    assert client.head("/health").status_code != 401
+
+
 def test_model_gateway_config_routes_require_auth_and_mask_keys(tmp_path):
     client = _client(tmp_path, api_key="test-key")
     body = {

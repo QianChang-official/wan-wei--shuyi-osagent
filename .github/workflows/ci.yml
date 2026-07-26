@@ -100,10 +100,12 @@ jobs:
         shell: bash
         env:
           WANWEI_API_KEY: ci-integration-key-with-32-characters
-          WANWEI_ENCRYPTION_KEY: IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90=
           WANWEI_MEMORY_DB: ${{ runner.temp }}/wanwei-integration.db
           WANWEI_PRODUCTION: "1"
         run: |
+          # 每次运行生成一次性 Fernet 密钥（32 字节 urlsafe base64），避免把
+          # 形似真实密钥的固定值提交进公开仓库。集成库为一次性临时库，无需持久密钥。
+          export WANWEI_ENCRYPTION_KEY="$(python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
           python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8010 --no-proxy-headers > "$RUNNER_TEMP/wanwei.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/wanwei.pid"
           for _ in {1..40}; do

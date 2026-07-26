@@ -207,8 +207,21 @@ function downscaleImage(file: File, maxWidth: number): Promise<string> {
   })
 }
 
+/**
+ * 背景图 URL 白名单：值经 url("...") 插入 <style>，须防 CSS 注入。
+ * 仅放行 data:image/ 与 http(s)://；且禁止能突破 url("...") 上下文的字符
+ * （" ' ( ) \ < > 换行）——合法 base64 data URL 与普通 http(s) URL 均不含这些字符，
+ * 而形如 x");}body{...} 的注入串会被拦下。上传路径（canvas.toDataURL）本就安全，
+ * 此校验主要防御后端/localStorage 被投毒的加载路径。
+ */
+function isSafeBackgroundUrl(u: string): boolean {
+  if (!/^data:image\//i.test(u) && !/^https?:\/\//i.test(u)) return false
+  return !/["'()\\<>\r\n]/.test(u)
+}
+
 function applyBodyBackground(dataUrl: string) {
   removeBodyBackground()
+  if (!isSafeBackgroundUrl(dataUrl)) return
   const style = document.createElement('style')
   style.id = BG_STYLE_ID
   style.textContent = `body::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:url("${dataUrl}");background-size:cover;background-position:center;opacity:.8;}`

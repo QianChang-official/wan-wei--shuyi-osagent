@@ -48,6 +48,16 @@ function percent(value: number) {
   return `${Math.round(value * 100)}%`
 }
 
+/**
+ * source_urls 协议白名单：仅放行 http(s)://，防 javascript:/data: 等伪协议注入。
+ * 与 ProvidersView.sanitizeVerificationUri 同源模式（研究来源可能为 http，故放行 http）。
+ * 该值直接进 <a :href>，Vue 不对 :href 做协议消毒；不合规一律置空。
+ */
+function safeSourceUrl(raw: unknown): string {
+  const uri = String(raw ?? '').trim()
+  return /^https?:\/\//i.test(uri) ? uri : ''
+}
+
 onMounted(async () => {
   loading.value = true
   error.value = ''
@@ -123,7 +133,7 @@ onMounted(async () => {
           <div class="ratio"><i :style="{ width: percent(item.adoption_ratio) }"></i><b>{{ percent(item.adoption_ratio) }}</b></div>
           <p class="idea">{{ item.core_idea }}</p>
           <div class="sources">
-            <a v-for="(url, index) in item.source_urls" :key="url" :href="url" target="_blank" rel="noreferrer">
+            <a v-for="(url, index) in item.source_urls" :key="url" :href="safeSourceUrl(url)" target="_blank" rel="noreferrer">
               来源 {{ index + 1 }}
             </a>
           </div>

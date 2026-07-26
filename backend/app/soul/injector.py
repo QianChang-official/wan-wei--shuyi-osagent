@@ -1,4 +1,12 @@
-"""Soul injection prompt builder and soul state aggregator."""
+"""Soul injection prompt builder and soul state aggregator.
+
+安全边界：本模块把核心记忆拼进模型「系统提示」（route_chat 以 system 角色注入），
+是记忆重注入的最高危面。因此 _get_core_memories 的 SQL 过滤必须与
+capsule_store.allowed_for_context 的治理判定保持同步——policy_result 白名单、
+sensitivity_level(S3) 排除、lifecycle 白名单三者缺一不可。任何放宽此过滤的改动
+（新增可检索状态、调整白名单）都须同步这两处，否则被 policy-gate 隔离的投毒/
+提示注入记忆会绕过治理直接进入系统提示。见 test_mission_b 的隔离回归测试。
+"""
 
 import json
 from typing import Any
@@ -82,6 +90,15 @@ def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
                WHERE (json_extract(provenance, '$.soul_id') = ?
                        OR json_extract(provenance, '$.soul_id') IS NULL)
                  AND json_extract(state, '$.importance_score') IS NOT NULL
+                 -- 治理隔离：与 capsule_store.allowed_for_context 对齐。
+                 -- soul 注入会把记忆写入模型「系统提示」，是最高危的重注入面；
+                 -- 若不做此过滤，被 policy-gate 判为 quarantine/require_confirmation
+                 -- 的投毒/提示注入记忆（仍带 importance_score）会绕过治理直接进系统提示。
+                 -- RETRIEVABLE_POLICY={allow,redact} / RETRIEVABLE_LIFECYCLE={active,reinforced,conflicted}
+                 AND json_extract(governance, '$.policy_result') IN ('allow', 'redact')
+                 AND (json_extract(governance, '$.sensitivity_level') IS NULL
+                       OR json_extract(governance, '$.sensitivity_level') != 'S3')
+                 AND json_extract(state, '$.lifecycle') IN ('active', 'reinforced', 'conflicted')
                ORDER BY CASE WHEN json_extract(provenance, '$.soul_id') = ? THEN 0 ELSE 1 END,
                         json_extract(state, '$.importance_score') DESC
                LIMIT ?""",
