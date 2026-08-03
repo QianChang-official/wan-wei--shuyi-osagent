@@ -228,8 +228,9 @@ def test_memory_center_remember_and_sessions(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_system_settings_and_health(tmp_path):
+def test_system_settings_and_health(tmp_path, monkeypatch):
     client = _client(tmp_path)
+    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
     h = {"x-api-key": "test-key"}
 
     r = client.get("/platform/system/health", headers=h)
@@ -241,7 +242,7 @@ def test_system_settings_and_health(tmp_path):
 
     r = client.put(
         "/platform/system/settings",
-        json={"theme": "auto"},
+        json={"gear": "device", "theme": "auto"},
         headers=h,
     )
     assert r.status_code == 200, r.text

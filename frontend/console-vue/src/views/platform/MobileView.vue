@@ -353,7 +353,7 @@ async function togglePower() {
   powerBusy.value = true
   const next = powerKnown.value ? !preventSleep.value : true
   try {
-    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next })
+    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next, gear: 'device' })
     const v = normalizePower(res)
     preventSleep.value = v ?? next
     powerKnown.value = true

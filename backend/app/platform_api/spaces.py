@@ -357,11 +357,11 @@ def _check_integration_kind(kind: str) -> None:
 
 
 def _store_delete(store: JsonStore, key: str) -> None:
-    """JsonStore 无公开 delete，锁内读-改-写实现按键删除。"""
-    with store._lock:  # noqa: SLF001 —— 与 store 内部方法同一锁
-        data = store._read()  # noqa: SLF001
+    """Delete one key without exposing JsonStore's private read/write primitives."""
+    def _delete(data: dict) -> None:
         data.pop(key, None)
-        store._write(data)  # noqa: SLF001
+
+    store.mutate(_delete)
 
 
 def _check_root_path(root_path: str | None) -> str:
@@ -431,7 +431,6 @@ def get_project(pid: str) -> dict:
 
 @router.put('/spaces/projects/{pid}')
 def update_project(pid: str, body: ProjectUpdateIn) -> dict:
-    project = _get_project_or_404(pid)
     changes = body.model_dump(exclude_unset=True)
     if 'kind' in changes:
         if changes['kind'] not in PROJECT_KINDS:
@@ -443,37 +442,52 @@ def update_project(pid: str, body: ProjectUpdateIn) -> dict:
         changes['root_path'] = _check_root_path(changes['root_path'])
     if 'parent_id' in changes:
         parent_id = (changes['parent_id'] or '').strip() or None
-        if parent_id is not None:
-            if parent_id == pid:
-                raise HTTPException(status_code=400, detail='父空间不能是自身')
-            if not isinstance(_projects.get(parent_id), dict):
-                raise HTTPException(status_code=400, detail=f'父空间不存在：{parent_id}')
+        if parent_id == pid:
+            raise HTTPException(status_code=400, detail='父空间不能是自身')
         changes['parent_id'] = parent_id
     if 'default_branch' in changes:
         changes['default_branch'] = (changes['default_branch'] or '').strip() or 'main'
-    project.update(changes)
-    _projects.set(pid, project)
-    return _public_project(project)
+    def _apply(data: dict) -> dict:
+        stored = data.get(pid)
+        if not isinstance(stored, dict):
+            raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
+        parent_id = changes.get('parent_id')
+        if parent_id is not None and not isinstance(data.get(parent_id), dict):
+            raise HTTPException(status_code=400, detail=f'父空间不存在：{parent_id}')
+        project = dict(stored)
+        project.update(changes)
+        data[pid] = project
+        return _public_project(project)
+
+    return _projects.mutate(_apply)
 
 
 @router.delete('/spaces/projects/{pid}')
 def delete_project(pid: str) -> dict:
-    _get_project_or_404(pid)
-    # 级联删除后代空间（旧数据无 parent_id 视为根空间，不受影响）
-    descendants: list[str] = []
-    frontier = [pid]
-    all_projects = _projects.all()
-    while frontier:
-        current = frontier.pop()
-        children = [
-            key for key, value in all_projects.items()
-            if isinstance(value, dict) and value.get('parent_id') == current
-        ]
-        descendants.extend(children)
-        frontier.extend(children)
-    for child_id in descendants:
-        _store_delete(_projects, child_id)
-    _store_delete(_projects, pid)
+    def _cascade(data: dict) -> list[str]:
+        if not isinstance(data.get(pid), dict):
+            raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
+
+        # A visited set also bounds traversal if legacy/corrupt data contains a cycle.
+        descendants: list[str] = []
+        visited = {pid}
+        frontier = [pid]
+        while frontier:
+            current = frontier.pop()
+            children = [
+                key for key, value in data.items()
+                if key not in visited
+                and isinstance(value, dict)
+                and value.get('parent_id') == current
+            ]
+            visited.update(children)
+            descendants.extend(children)
+            frontier.extend(children)
+        for project_id in (*descendants, pid):
+            data.pop(project_id, None)
+        return descendants
+
+    descendants = _projects.mutate(_cascade)
     return {'ok': True, 'id': pid, 'deleted_children': descendants}
 
 
@@ -570,7 +584,6 @@ def get_commit_template(pid: str) -> dict:
 
 @router.put('/spaces/{pid}/commit-template')
 def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
-    project = _get_project_or_404(pid)
     types = [t.strip() for t in body.types if t and t.strip()]
     if not types:
         raise HTTPException(status_code=400, detail='types 不能为空')
@@ -591,8 +604,15 @@ def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
             status_code=400,
             detail='提交模板非法：同一占位符不能出现多次，且模板必须可编译',
         ) from None
-    project['commit_template'] = template_cfg
-    _projects.set(pid, project)
+    def _apply(data: dict) -> None:
+        stored = data.get(pid)
+        if not isinstance(stored, dict):
+            raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
+        project = dict(stored)
+        project['commit_template'] = template_cfg
+        data[pid] = project
+
+    _projects.mutate(_apply)
     if not any(ph in template_cfg['template'] for ph in _TEMPLATE_PLACEHOLDERS):
         return {
             **template_cfg,

@@ -287,9 +287,10 @@ def test_sandbox_dash_args_explicitly_validated(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_browser_launch_plan_uses_valid_host_rules_syntax(tmp_path):
+def test_browser_launch_plan_uses_valid_host_rules_syntax(tmp_path, monkeypatch):
     client = _client(tmp_path)
-    r = client.post("/platform/system/browser/launch", json={}, headers=_H)
+    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
+    r = client.post("/platform/system/browser/launch", json={"gear": "device"}, headers=_H)
     assert r.status_code == 200, r.text
     body = r.json()
     plan = body["plan"]
@@ -310,7 +311,11 @@ def test_browser_launch_plan_uses_valid_host_rules_syntax(tmp_path):
 def test_browser_launch_rejects_non_http_schemes(tmp_path):
     client = _client(tmp_path)
     for url in ("file:///etc/passwd", "javascript:alert(1)", "chrome://settings"):
-        r = client.post("/platform/system/browser/launch", json={"url": url}, headers=_H)
+        r = client.post(
+            "/platform/system/browser/launch",
+            json={"gear": "device", "url": url},
+            headers=_H,
+        )
         assert r.status_code == 422, r.text
 
 
@@ -387,17 +392,21 @@ def test_emulator_start_then_list_not_marked_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_settings_background_image_max_length(tmp_path):
+def test_settings_background_image_max_length(tmp_path, monkeypatch):
     client = _client(tmp_path)
+    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
     r = client.put(
         "/platform/system/settings",
-        json={"background_image": "data:image/png;base64," + "A" * (2 * 1024 * 1024)},
+        json={
+            "gear": "device",
+            "background_image": "data:image/png;base64," + "A" * (2 * 1024 * 1024),
+        },
         headers=_H,
     )
     assert r.status_code == 422, r.text
     r = client.put(
         "/platform/system/settings",
-        json={"background_image": "data:image/png;base64,iVBORw0KGgo="},
+        json={"gear": "device", "background_image": "data:image/png;base64,iVBORw0KGgo="},
         headers=_H,
     )
     assert r.status_code == 200, r.text
