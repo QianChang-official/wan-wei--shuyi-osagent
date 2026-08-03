@@ -75,6 +75,7 @@ def write_capsule(
     alignment_metadata: dict[str, Any] | None = None,
     relation_edges: list[dict[str, Any]] | None = None,
     soul_id: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     init_runtime_schema()
     text = _content_text(content)
@@ -88,7 +89,7 @@ def write_capsule(
     )
     capsule_id = "cap_" + uuid.uuid4().hex[:12]
     created = now()
-    provenance = provenance or {
+    provenance = dict(provenance or {
         "origin": "human" if source_type in {"user_input", "user"} else source_type,
         "writer_identity": "runtime",
         "source_type": source_type,
@@ -96,7 +97,21 @@ def write_capsule(
         "evidence_ids": [],
         "verified": source_type in {"user_input", "eval", "file"},
         "verification_method": "manual" if source_type == "user_input" else "unknown",
-    }
+    })
+    resolved_soul_id = soul_id or provenance.get("soul_id")
+    resolved_owner_id = owner_id
+    if resolved_soul_id and resolved_owner_id is None:
+        from ..soul.ownership import owner_id_for_soul
+
+        resolved_owner_id = owner_id_for_soul(str(resolved_soul_id))
+    if resolved_owner_id is None:
+        from ..soul.ownership import configured_actor_id
+
+        resolved_owner_id = configured_actor_id()
+    if resolved_soul_id:
+        provenance["soul_id"] = str(resolved_soul_id)
+    if resolved_owner_id:
+        provenance["owner_id"] = resolved_owner_id
     production_context = production_context or {
         "scene": scene, "task_type": task_type, "risk_class": risk_class,
         "tenant_scope": "local", "validity_scope": "project",
@@ -215,14 +230,60 @@ def _row_to_capsule(row: Any) -> dict[str, Any]:
     return d
 
 
-def get_capsule(capsule_id: str) -> dict[str, Any] | None:
-    row = get_conn().execute("SELECT * FROM memory_capsules_v2 WHERE capsule_id=?", (capsule_id,)).fetchone()
+def _scope_predicate(
+    *,
+    owner_id: str | None,
+    soul_id: str | None,
+    table_alias: str = "",
+) -> tuple[str, list[Any]]:
+    prefix = f"{table_alias}." if table_alias else ""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if owner_id is not None:
+        clauses.append(f"json_extract({prefix}provenance, '$.owner_id')=?")
+        params.append(owner_id)
+    if soul_id is not None:
+        clauses.append(
+            f"(json_extract({prefix}provenance, '$.soul_id')=? "
+            f"OR json_extract({prefix}provenance, '$.soul_id') IS NULL)"
+        )
+        params.append(soul_id)
+    return (" AND ".join(clauses), params)
+
+
+def get_capsule(
+    capsule_id: str,
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+    external_read: bool = False,
+) -> dict[str, Any] | None:
+    scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
+    clauses = ["capsule_id=?"]
+    params: list[Any] = [capsule_id]
+    if scope_sql:
+        clauses.append(scope_sql)
+        params.extend(scope_params)
+    if external_read:
+        clauses.extend([
+            "json_extract(governance,'$.policy_result') IN ('allow','redact')",
+            "json_extract(state,'$.lifecycle') NOT IN ('quarantined','candidate','rejected')",
+        ])
+    row = get_conn().execute(
+        f"SELECT * FROM memory_capsules_v2 WHERE {' AND '.join(clauses)}",
+        params,
+    ).fetchone()
     if not row:
         return None
     return _row_to_capsule(row)
 
 
-def get_capsules_batch(capsule_ids: list[str]) -> dict[str, dict[str, Any]]:
+def get_capsules_batch(
+    capsule_ids: list[str],
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
     """Fetch multiple capsules in a single query (avoids N+1).
 
     Returns a mapping of capsule_id -> capsule dict. Missing ids are omitted.
@@ -231,40 +292,65 @@ def get_capsules_batch(capsule_ids: list[str]) -> dict[str, dict[str, Any]]:
     if not capsule_ids:
         return {}
     placeholders = ",".join("?" for _ in capsule_ids)
+    scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
+    where = f"capsule_id IN ({placeholders})"
+    if scope_sql:
+        where += f" AND {scope_sql}"
     rows = get_conn().execute(
-        f"SELECT * FROM memory_capsules_v2 WHERE capsule_id IN ({placeholders})",
-        tuple(capsule_ids),
+        f"SELECT * FROM memory_capsules_v2 WHERE {where}",
+        [*capsule_ids, *scope_params],
     ).fetchall()
     return {row["capsule_id"]: _row_to_capsule(row) for row in rows}
 
 
-def list_capsules(limit: int = 50) -> list[dict[str, Any]]:
+def list_capsules(
+    limit: int = 50,
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> list[dict[str, Any]]:
+    scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
+    scope_clause = f" AND {scope_sql}" if scope_sql else ""
     rows = get_conn().execute(
-        """
+        f"""
         SELECT capsule_id FROM memory_capsules_v2
-        WHERE json_extract(state,'$.lifecycle') NOT IN ('forgotten','deleted','rejected')
+        WHERE json_extract(state,'$.lifecycle') NOT IN (
+            'forgotten','deleted','rejected','quarantined','candidate'
+        )
+          AND json_extract(governance,'$.policy_result') IN ('allow','redact')
+          {scope_clause}
         ORDER BY created_at DESC LIMIT ?
         """,
-        (limit,),
+        [*scope_params, limit],
     ).fetchall()
     ids = [r["capsule_id"] for r in rows]
-    by_id = get_capsules_batch(ids)
+    by_id = get_capsules_batch(ids, owner_id=owner_id, soul_id=soul_id)
     return [by_id[i] for i in ids if i in by_id]
 
 
-def update_capsule(capsule_id: str, *, state: dict[str, Any] | None = None, relation_edges: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    cap = get_capsule(capsule_id)
+def update_capsule(
+    capsule_id: str,
+    *,
+    state: dict[str, Any] | None = None,
+    relation_edges: list[dict[str, Any]] | None = None,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
+    cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise KeyError(capsule_id)
     new_state = state or cap["state"]
     new_edges = relation_edges if relation_edges is not None else cap["relation_edges"]
+    scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
+    scope_clause = f" AND {scope_sql}" if scope_sql else ""
     with transaction() as conn:
         conn.execute(
-            "UPDATE memory_capsules_v2 SET state=?, relation_edges=?, updated_at=? WHERE capsule_id=?",
-            (dumps(new_state), dumps(new_edges), now(), capsule_id),
+            "UPDATE memory_capsules_v2 SET state=?, relation_edges=?, updated_at=? "
+            f"WHERE capsule_id=?{scope_clause}",
+            [dumps(new_state), dumps(new_edges), now(), capsule_id, *scope_params],
         )
     record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
-    return get_capsule(capsule_id)
+    return get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
 
 
 def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
@@ -297,7 +383,14 @@ def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
     record("capsule_usage_batch", {"capsule_ids": [cid for cid, _ in updates], "count": len(updates)})
 
 
-def forget_capsules_in_transaction(conn, capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
+def forget_capsules_in_transaction(
+    conn,
+    capsule_ids: list[str],
+    *,
+    mode: str = "soft_delete",
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
     """Apply local forget state using the caller's transaction."""
     from .vector_index import mark_vectors_delete_pending_in_transaction
 
@@ -305,9 +398,12 @@ def forget_capsules_in_transaction(conn, capsule_ids: list[str], *, mode: str = 
     unique_ids = list(dict.fromkeys(capsule_ids))
     if unique_ids:
         placeholders = ",".join("?" for _ in unique_ids)
+        scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
+        scope_clause = f" AND {scope_sql}" if scope_sql else ""
         rows = conn.execute(
-            f"SELECT capsule_id,state FROM memory_capsules_v2 WHERE capsule_id IN ({placeholders})",
-            unique_ids,
+            f"SELECT capsule_id,state FROM memory_capsules_v2 "
+            f"WHERE capsule_id IN ({placeholders}){scope_clause}",
+            [*unique_ids, *scope_params],
         ).fetchall()
     else:
         rows = []
@@ -337,12 +433,24 @@ def forget_capsules_in_transaction(conn, capsule_ids: list[str], *, mode: str = 
     }
 
 
-def forget_capsules(capsule_ids: list[str], *, mode: str = "soft_delete") -> dict[str, Any]:
+def forget_capsules(
+    capsule_ids: list[str],
+    *,
+    mode: str = "soft_delete",
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
     init_runtime_schema()
     conn = get_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        result = forget_capsules_in_transaction(conn, capsule_ids, mode=mode)
+        result = forget_capsules_in_transaction(
+            conn,
+            capsule_ids,
+            mode=mode,
+            owner_id=owner_id,
+            soul_id=soul_id,
+        )
         audit_id = record_in_transaction(
             conn,
             "forget_confirm",

@@ -242,6 +242,9 @@ def test_create_persona_idempotent_and_error_honest(isolated_db, monkeypatch):
 def test_persona_update_api_returns_explicit_error(tmp_path, monkeypatch):
     client = _client(tmp_path)
     from backend.app.soul import persona as persona_mod
+    from backend.app.soul.persona import create_persona
+
+    create_persona("soul_w09_api")
 
     monkeypatch.setattr(persona_mod, "transaction", _broken_transaction())
     r = client.put(
@@ -333,6 +336,10 @@ def test_forget_confirm_uses_materialized_legacy_links(tmp_path):
 
     from backend.app.audit.service import record
     from backend.app.db import get_conn, transaction
+    from backend.app.soul.ownership import actor_id_from_api_key
+
+    owner_id = actor_id_from_api_key("test-key")
+    soul_id = "soul_default"
 
     with transaction() as txn:
         txn.execute(
@@ -341,14 +348,21 @@ def test_forget_confirm_uses_materialized_legacy_links(tmp_path):
         )
         txn.execute(
             "INSERT INTO memory_events(event_id, source_type, scene, content, quality_score, "
-            "sensitivity_level, trust_score, created_at) "
-            "VALUES ('evt_w09_1','user_input','chat','旧记忆内容',0.5,'S0',0.9,'2024-01-01T00:00:00Z')"
+            "sensitivity_level, trust_score, created_at, owner_id, soul_id) "
+            "VALUES ('evt_w09_1','user_input','chat','旧记忆内容',0.5,'S0',0.9,"
+            "'2024-01-01T00:00:00Z',?,?)",
+            (owner_id, soul_id),
         )
         txn.execute(
             "INSERT INTO memory_forget_requests(forget_request_id, scope, candidates, status, result, "
             "created_at, updated_at) VALUES ('fr_w09_1','assistant',?,'pending',NULL,"
             "'2024-01-02T00:00:00Z','2024-01-02T00:00:00Z')",
             (json.dumps([{"event_id": "evt_w09_1"}]),),
+        )
+        txn.execute(
+            "INSERT INTO memory_forget_request_scopes(forget_request_id, owner_id, soul_id) "
+            "VALUES ('fr_w09_1',?,?)",
+            (owner_id, soul_id),
         )
     # legacy 链接只存在于 audit_logs（memory_event_capsules 无记录），触发精准回捞
     record("memory_write", {"event_id": "evt_w09_1", "capsule_id": "cap_legacy_w09"})
@@ -388,6 +402,10 @@ def test_forget_confirm_missing_legacy_link_still_409(tmp_path):
     client = _client(tmp_path)
 
     from backend.app.db import transaction
+    from backend.app.soul.ownership import actor_id_from_api_key
+
+    owner_id = actor_id_from_api_key("test-key")
+    soul_id = "soul_default"
 
     with transaction() as txn:
         txn.execute(
@@ -395,6 +413,11 @@ def test_forget_confirm_missing_legacy_link_still_409(tmp_path):
             "created_at, updated_at) VALUES ('fr_w09_2','assistant',?,'pending',NULL,"
             "'2024-01-02T00:00:00Z','2024-01-02T00:00:00Z')",
             (json.dumps([{"event_id": "evt_w09_missing"}]),),
+        )
+        txn.execute(
+            "INSERT INTO memory_forget_request_scopes(forget_request_id, owner_id, soul_id) "
+            "VALUES ('fr_w09_2',?,?)",
+            (owner_id, soul_id),
         )
 
     r = client.post(

@@ -48,6 +48,14 @@ from .research_adoption.service import list_routes as list_adoption_routes, list
 from .utils.datetime_utils import utc_now_iso
 from .soul import build_injection_prompt, create_persona, get_persona, update_persona, get_soul_state, route_chat
 from .soul.persona import PersonaPolicyViolation, PersonaStoreError
+from .soul.ownership import (
+    SoulAccessDenied,
+    SoulScope,
+    SoulSelectionRequired,
+    actor_id_for_request,
+    configured_actor_id,
+    resolve_owned_soul,
+)
 from .affect import (
     AffectSoulNotFoundError,
     AffectState,
@@ -122,6 +130,43 @@ logger = logging.getLogger(__name__)
 _QUALITY_HIGH = 0.9
 _QUALITY_LOW = 0.5
 _QUALITY_THRESHOLD_CHARS = 8
+
+
+def _owned_soul_scope(
+    request: Request | None,
+    soul_id: str | None,
+    *,
+    allow_internal_unscoped: bool = False,
+) -> SoulScope | None:
+    """Resolve a request's Soul without leaking cross-owner existence.
+
+    Direct Python callers predate HTTP ownership and are used by internal
+    evaluation code.  They retain unscoped behavior only when explicitly
+    allowed; every actual HTTP request is resolved to an owned Soul.
+    """
+    if request is None and allow_internal_unscoped:
+        return None
+    try:
+        return resolve_owned_soul(request, soul_id)
+    except SoulSelectionRequired as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "soul_id_required"},
+        ) from exc
+    except SoulAccessDenied as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "soul_not_found", "soul_id": soul_id},
+        ) from exc
+
+
+def _public_capsule(capsule: dict) -> dict:
+    """Redact content and remove internal ownership metadata from API output."""
+    output = redact_capsule_for_output(capsule)
+    provenance = output.get("provenance")
+    if isinstance(provenance, dict):
+        provenance.pop("owner_id", None)
+    return output
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -423,16 +468,51 @@ def reproduction_memoryarena_workbench():
     return reproduction_workbench()
 
 @app.get('/reproduction/hippo-lite/graph')
-def reproduction_hippo_graph():
-    return hippo_graph()
+def reproduction_hippo_graph(
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    return hippo_graph(
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
 
 @app.post('/reproduction/hippo-lite/recall')
-def reproduction_hippo_recall(req: HippoRecallIn):
-    return hippo_recall(req)
+def reproduction_hippo_recall(
+    req: HippoRecallIn,
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    return hippo_recall(
+        req,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
 
 @app.get('/reproduction/retention/state')
-def reproduction_retention_state():
-    return retention_state()
+def reproduction_retention_state(
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    return retention_state(
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
 
 @app.post('/reproduction/retention/simulate')
 def reproduction_retention_simulate(req: RetentionSimulateIn):
@@ -459,8 +539,19 @@ def reproduction_memcube_schema():
     return memcube_schema()
 
 @app.get('/reproduction/memory-tiers')
-def reproduction_memory_tiers():
-    return memory_tiers()
+def reproduction_memory_tiers(
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    return memory_tiers(
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
 
 @app.get('/reproduction/locomo/template')
 def reproduction_locomo_template():
@@ -525,7 +616,12 @@ def deepening_visual_verification_checklist_dry_run_view(req: VisualChecklistIn)
 
 # legacy v0.2/v0.3 endpoint kept for compatibility
 @app.post('/memory/events')
-def add_event(event:MemoryEventIn):
+def add_event(event: MemoryEventIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        event.soul_id,
+        allow_internal_unscoped=True,
+    )
     event_id='evt_'+uuid.uuid4().hex[:12]; text=json.dumps(event.content,ensure_ascii=False); guard=evaluate_policy(text=text); quality=_QUALITY_HIGH if len(text)>_QUALITY_THRESHOLD_CHARS else _QUALITY_LOW
     policy = guard['policy_result']
     if policy in ('reject', 'quarantine'):
@@ -539,23 +635,75 @@ def add_event(event:MemoryEventIn):
     stored_text = redact_sensitive_text(text) if policy == 'redact' else text
     capsule_id='cap_'+uuid.uuid4().hex[:12]
     with transaction() as conn:
-        conn.execute('INSERT INTO memory_events VALUES (?,?,?,?,?,?,?,?)',(event_id,event.source_type,event.scene,stored_text,quality,guard['sensitivity_level'],guard['trust_score'],utc_now_iso()))
+        conn.execute(
+            """INSERT INTO memory_events(
+                event_id, source_type, scene, content, quality_score,
+                sensitivity_level, trust_score, created_at, soul_id, owner_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event_id,
+                event.source_type,
+                event.scene,
+                stored_text,
+                quality,
+                guard['sensitivity_level'],
+                guard['trust_score'],
+                utc_now_iso(),
+                soul_scope.soul_id if soul_scope else event.soul_id,
+                soul_scope.owner_id if soul_scope else None,
+            ),
+        )
         conn.execute('INSERT INTO memory_fts(event_id,content) VALUES (?,?)',(event_id,stored_text))
         conn.execute('INSERT INTO memory_capsules VALUES (?,?,?,?,?,?)',(capsule_id,'event',stored_text,'active',guard['trust_score'],utc_now_iso()))
         conn.execute('INSERT INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
     audit_id=record('memory_write',{'event_id':event_id,'capsule_id':capsule_id,'guard':guard}); return {'event_id':event_id,'capsule_id':capsule_id,'quality_score':quality,**guard,'audit_id':audit_id}
 
 @app.get('/memory/search')
-def search(q:str,scene:str='general',top_k:int=5):
+def search(
+    q: str,
+    scene: str = 'general',
+    top_k: int = 5,
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
     q, top_k = validate_search_params(q, top_k)
-    results=do_search(q,top_k); evidence=[{'source_event_id':r['event_id'],'source_type':r['source_type'],'trust_score':r['trust_score'],'actions':['view_source','correct','forget']} for r in results]
+    results = do_search(
+        q,
+        top_k,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
+    evidence = [
+        {
+            'source_event_id': result['event_id'],
+            'source_type': result['source_type'],
+            'trust_score': result['trust_score'],
+            'actions': ['view_source', 'correct', 'forget'],
+        }
+        for result in results
+    ]
     return {'query':q,'results':results,'evidence_cards':evidence}
 
 @app.post('/memory/forget/preview')
-def forget_preview(req:ForgetPreviewIn):
+def forget_preview(req: ForgetPreviewIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
     instruction, _ = validate_search_params(req.instruction, 10)
-    capsules, retrieval = search_capsules_with_status(instruction, top_k=10)
-    capsules = [redact_capsule_for_output(item) for item in capsules]
+    capsules, retrieval = search_capsules_with_status(
+        instruction,
+        top_k=10,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
+    capsules = [_public_capsule(item) for item in capsules]
     candidates = [
         {
             'capsule_id': item['capsule_id'],
@@ -567,13 +715,19 @@ def forget_preview(req:ForgetPreviewIn):
         }
         for item in capsules
     ]
-    legacy_candidates = do_search(instruction, 10)
+    legacy_candidates = do_search(
+        instruction,
+        10,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
     candidates.extend(legacy_candidates)
     forget_request_id='forget_'+uuid.uuid4().hex
     payload = {
         'forget_request_id': forget_request_id,
         'instruction': instruction,
         'scope': req.scope,
+        'soul_id': soul_scope.soul_id if soul_scope else req.soul_id,
         'retrieval': retrieval,
         'candidates': candidates,
     }
@@ -590,6 +744,13 @@ def forget_preview(req:ForgetPreviewIn):
             'INSERT INTO memory_forget_requests VALUES (?,?,?,?,?,?,?)',
             (forget_request_id, req.scope, json.dumps(audit_candidates), 'pending', None, timestamp, timestamp),
         )
+        if soul_scope is not None:
+            conn.execute(
+                """INSERT INTO memory_forget_request_scopes(
+                    forget_request_id, owner_id, soul_id
+                ) VALUES (?,?,?)""",
+                (forget_request_id, soul_scope.owner_id, soul_scope.soul_id),
+            )
         record_in_transaction(
             conn,
             'forget_preview',
@@ -740,16 +901,34 @@ def _native_delete_states(result: dict) -> dict[int, int]:
     return states
 
 
-def _legacy_capsule_links(conn, event_ids: list[str]) -> dict[str, str]:
+def _legacy_capsule_links(
+    conn,
+    event_ids: list[str],
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, str]:
     """从 memory_event_capsules 读取 event→capsule 持久链接（只读）。"""
     if not event_ids:
         return {}
     placeholders = ','.join('?' for _ in event_ids)
+    joins = ""
+    clauses = [f"link.event_id IN ({placeholders})"]
+    params: list[object] = list(event_ids)
+    if owner_id is not None or soul_id is not None:
+        joins = "JOIN memory_events AS event ON event.event_id=link.event_id"
+    if owner_id is not None:
+        clauses.append("event.owner_id=?")
+        params.append(owner_id)
+    if soul_id is not None:
+        clauses.append("(event.soul_id=? OR event.soul_id IS NULL)")
+        params.append(soul_id)
     return {
         row['event_id']: row['capsule_id']
         for row in conn.execute(
-            f"SELECT event_id,capsule_id FROM memory_event_capsules WHERE event_id IN ({placeholders})",
-            event_ids,
+            "SELECT link.event_id,link.capsule_id FROM memory_event_capsules AS link "
+            f"{joins} WHERE {' AND '.join(clauses)}",
+            params,
         ).fetchall()
     }
 
@@ -794,13 +973,25 @@ def _audit_legacy_capsule_links(conn, event_ids: list[str], known: set[str]) -> 
 
 
 @app.post('/memory/forget/confirm')
-def forget_confirm(req:ForgetConfirmIn):
+def forget_confirm(req: ForgetConfirmIn, request: Request = None):
     conn=get_conn()
     ticket = conn.execute(
-        'SELECT * FROM memory_forget_requests WHERE forget_request_id=?',
+        """SELECT ticket.*,
+                  scope.owner_id AS ticket_owner_id,
+                  scope.soul_id AS ticket_soul_id
+           FROM memory_forget_requests AS ticket
+           LEFT JOIN memory_forget_request_scopes AS scope
+             ON scope.forget_request_id=ticket.forget_request_id
+           WHERE ticket.forget_request_id=?""",
         (req.forget_request_id,),
     ).fetchone()
-    if not ticket:
+    request_owner_id = actor_id_for_request(request) if request is not None else None
+    ticket_owner_id = ticket['ticket_owner_id'] if ticket else None
+    ticket_soul_id = ticket['ticket_soul_id'] if ticket else None
+    if not ticket or (
+        request_owner_id is not None
+        and (not ticket_owner_id or ticket_owner_id != request_owner_id)
+    ):
         audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
     if not req.confirm:
@@ -870,7 +1061,12 @@ def forget_confirm(req:ForgetConfirmIn):
     # BEGIN IMMEDIATE 内全表扫 audit_logs + 逐行 json.loads，写事务窗口随
     # 审计表增长无限拉大。缺失链接的 409 判定也随之前置，事务内只剩幂等
     # 回填与删除。
-    legacy_capsule_ids = _legacy_capsule_links(conn, event_ids)
+    legacy_capsule_ids = _legacy_capsule_links(
+        conn,
+        event_ids,
+        owner_id=ticket_owner_id if request is not None else None,
+        soul_id=ticket_soul_id if request is not None else None,
+    )
     audit_discovered_links: dict[str, str] = {}
     if len(legacy_capsule_ids) != len(event_ids):
         audit_discovered_links = _audit_legacy_capsule_links(conn, event_ids, set(legacy_capsule_ids))
@@ -913,8 +1109,37 @@ def forget_confirm(req:ForgetConfirmIn):
                 conn.execute('DELETE FROM memory_capsules WHERE capsule_id=?',(legacy_capsule_id,))
             elif legacy_capsule_id:
                 conn.execute("UPDATE memory_capsules SET lifecycle='forgotten' WHERE capsule_id=?",(legacy_capsule_id,))
-            conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
-            conn.execute('DELETE FROM memory_events WHERE event_id=?',(event_id,))
+            event_scope_sql = ""
+            event_scope_params: list[object] = []
+            if request is not None:
+                event_scope_sql = (
+                    " AND owner_id=? AND (soul_id=? OR soul_id IS NULL)"
+                )
+                event_scope_params = [ticket_owner_id, ticket_soul_id]
+            deleted_event = conn.execute(
+                f"DELETE FROM memory_events WHERE event_id=?{event_scope_sql}",
+                [event_id, *event_scope_params],
+            )
+            if deleted_event.rowcount:
+                conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
+        if request is not None and capsule_ids:
+            placeholders = ','.join('?' for _ in capsule_ids)
+            scoped_rows = conn.execute(
+                f"""SELECT capsule_id FROM memory_capsules_v2
+                    WHERE capsule_id IN ({placeholders})
+                      AND json_extract(provenance, '$.owner_id')=?
+                      AND (json_extract(provenance, '$.soul_id')=?
+                           OR json_extract(provenance, '$.soul_id') IS NULL)""",
+                [*capsule_ids, ticket_owner_id, ticket_soul_id],
+            ).fetchall()
+            if {row['capsule_id'] for row in scoped_rows} != set(capsule_ids):
+                raise HTTPException(
+                    status_code=404,
+                    detail={'error': 'memory_not_found'},
+                )
+        # Keep the established helper call contract for internal extensions;
+        # the scoped membership check above executes in this same write
+        # transaction, so IDs cannot cross the owner boundary before deletion.
         result=forget_capsules_in_transaction(conn, capsule_ids, mode=req.mode)
         audit_id=record_in_transaction(
             conn,
@@ -983,10 +1208,16 @@ def _ensure_dream_lock(soul_id: str) -> None:
 
 
 @app.post('/soul/connect')
-def soul_connect(req: SoulConnectIn):
+def soul_connect(req: SoulConnectIn, request: Request = None):
     """Soul injection handshake — returns soul_id + injection_prompt."""
+    owner_id = actor_id_for_request(request) if request is not None else configured_actor_id()
     try:
-        soul_id = req.soul_id or create_persona()
+        soul_id = create_persona(req.soul_id, owner_id=owner_id)
+    except SoulAccessDenied as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={'error': 'soul_not_found', 'soul_id': req.soul_id},
+        ) from exc
     except PersonaStoreError as exc:
         # 03-#6: 建 persona 失败不再假成功返回 sid，显式 500
         raise HTTPException(
@@ -1003,14 +1234,20 @@ def soul_connect(req: SoulConnectIn):
 
 
 @app.get('/soul/state/{soul_id}')
-def soul_state(soul_id: str):
+def soul_state(soul_id: str, request: Request = None):
     """Full soul state: persona + affect + core memories."""
+    _owned_soul_scope(request, soul_id)
     return get_soul_state(soul_id)
 
 
 @app.put('/soul/persona/{soul_id}')
-def soul_persona_update(soul_id: str, req: SoulPersonaUpdateIn):
+def soul_persona_update(
+    soul_id: str,
+    req: SoulPersonaUpdateIn,
+    request: Request = None,
+):
     """Update persona fields (name, core_traits, voice, soul_values, self_narrative)."""
+    _owned_soul_scope(request, soul_id)
     try:
         update_persona(soul_id, **req.model_dump(exclude_unset=True))
     except PersonaPolicyViolation as exc:
@@ -1034,8 +1271,9 @@ def soul_persona_update(soul_id: str, req: SoulPersonaUpdateIn):
 
 
 @app.get('/soul/affect/{soul_id}')
-def soul_affect_get(soul_id: str):
+def soul_affect_get(soul_id: str, request: Request = None):
     """Current PAD affect state."""
+    _owned_soul_scope(request, soul_id)
     state = load_affect(soul_id)
     return {
         'soul_id': soul_id,
@@ -1052,8 +1290,10 @@ def soul_affect_put(
     soul_id: str,
     trigger: str = Query(default='manual', min_length=1, max_length=100),
     intensity: float = 1.0,
+    request: Request = None,
 ):
     """Apply a validated affect transition to an existing soul."""
+    _owned_soul_scope(request, soul_id)
     try:
         new_state = transition(soul_id, trigger, intensity)
     except InvalidAffectIntensityError as exc:
@@ -1091,8 +1331,9 @@ def soul_affect_put(
 
 
 @app.post('/soul/dream')
-def soul_dream(req: SoulDreamIn):
+def soul_dream(req: SoulDreamIn, request: Request = None):
     """Manually trigger a dream cycle for the soul."""
+    _owned_soul_scope(request, req.soul_id)
     result = run_dream(req.soul_id)
     return {
         'soul_id': req.soul_id,
@@ -1165,7 +1406,7 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
 
 
 @app.post('/soul/chat')
-def soul_chat(req: SoulChatIn):
+def soul_chat(req: SoulChatIn, request: Request = None):
     """Soul-injected chat endpoint.
 
     1. Inject soul prompt into messages
@@ -1176,6 +1417,8 @@ def soul_chat(req: SoulChatIn):
     6. Return full result
     """
     soul_id = req.soul_id
+    soul_scope = _owned_soul_scope(request, soul_id)
+    assert soul_scope is not None
 
     # 1. Soul injection
     routed = route_chat(soul_id, req.messages)
@@ -1186,7 +1429,12 @@ def soul_chat(req: SoulChatIn):
     # 和情绪重复累积；只取最后一条（当轮新增）即可。
     user_contents = [m['content'] for m in req.messages if m.get('role') == 'user']
     if user_contents:
-        intake_perception(soul_id, role='user', content=user_contents[-1])
+        intake_perception(
+            soul_id,
+            role='user',
+            content=user_contents[-1],
+            owner_id=soul_scope.owner_id,
+        )
 
     # 3. Call model gateway
     completion = _chat_complete(injected_messages, model=req.model)
@@ -1194,7 +1442,12 @@ def soul_chat(req: SoulChatIn):
     # 4. Perception: intake assistant reply
     assistant_content = completion.get('content', '')
     if assistant_content:
-        intake_perception(soul_id, role='assistant', content=assistant_content)
+        intake_perception(
+            soul_id,
+            role='assistant',
+            content=assistant_content,
+            owner_id=soul_scope.owner_id,
+        )
 
     # 5. Tune response style by current affect
     current_affect = load_affect(soul_id)
@@ -1210,34 +1463,103 @@ def soul_chat(req: SoulChatIn):
 
 # v0.6 MemoryOps Runtime endpoints
 @app.post('/memory/v2/capsules')
-def v2_write_capsule(req: CapsuleWriteIn):
-    return write_capsule(**req.model_dump())
+def v2_write_capsule(req: CapsuleWriteIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
+    payload = req.model_dump()
+    if soul_scope is not None:
+        payload["soul_id"] = soul_scope.soul_id
+        payload["owner_id"] = soul_scope.owner_id
+    return write_capsule(**payload)
 
 @app.get('/memory/v2/capsules')
-def v2_list_capsules(limit: int = Query(default=50, ge=1, le=200)):
-    items = [redact_capsule_for_output(item) for item in list_capsules(limit)]
+def v2_list_capsules(
+    limit: int = Query(default=50, ge=1, le=200),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    items = [
+        _public_capsule(item)
+        for item in list_capsules(
+            limit,
+            owner_id=soul_scope.owner_id if soul_scope else None,
+            soul_id=soul_scope.soul_id if soul_scope else None,
+        )
+    ]
     return {'items': items}
 
 @app.get('/memory/v2/capsules/{capsule_id}')
-def v2_get_capsule(capsule_id: str):
-    cap = get_capsule(capsule_id)
+def v2_get_capsule(
+    capsule_id: str,
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    cap = get_capsule(
+        capsule_id,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+        external_read=True,
+    )
     if not cap:
+        if request is not None:
+            raise HTTPException(status_code=404, detail={'error': 'not_found'})
         return {'error':'not_found','capsule_id':capsule_id}
-    return redact_capsule_for_output(cap)
+    return _public_capsule(cap)
 
 @app.get('/memory/v2/search')
-def v2_search(q:str,top_k:int=5,high_risk:bool=False):
+def v2_search(
+    q: str,
+    top_k: int = 5,
+    high_risk: bool = False,
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
     q, top_k = validate_search_params(q, top_k)
-    results, retrieval = search_capsules_with_status(q,top_k=top_k,high_risk=high_risk)
-    results = [redact_capsule_for_output(result) for result in results]
+    results, retrieval = search_capsules_with_status(
+        q,
+        top_k=top_k,
+        high_risk=high_risk,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
+    results = [_public_capsule(result) for result in results]
     return {'query':q,'retrieval':retrieval,'results':results,'evidence_cards':[build_evidence_card(r) for r in results]}
 
 @app.post('/memory/v2/command')
-def v2_command(req: CommandLoopIn):
+def v2_command(req: CommandLoopIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
     validate_goal_length(req.goal)
-    result = run_command_loop(goal=req.goal, scene=req.scene, top_k=req.top_k)
+    result = run_command_loop(
+        goal=req.goal,
+        scene=req.scene,
+        top_k=req.top_k,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
     recalled_memories = [
-        redact_capsule_for_output(item) for item in result['recalled_memories']
+        _public_capsule(item) for item in result['recalled_memories']
     ]
     result['recalled_memories'] = recalled_memories
     result['evidence_cards'] = [
@@ -1246,8 +1568,18 @@ def v2_command(req: CommandLoopIn):
     return result
 
 @app.post('/memory/v2/reflection')
-def v2_reflection(req: ReflectionIn):
-    return reflect_task(req.task_id, req.model_dump())
+def v2_reflection(req: ReflectionIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
+    return reflect_task(
+        req.task_id,
+        req.model_dump(),
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
 
 @app.get('/audit/logs')
 def audit_logs(limit:int=50,trace_id:str|None=None):

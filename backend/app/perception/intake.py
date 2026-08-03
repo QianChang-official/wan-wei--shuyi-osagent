@@ -102,6 +102,7 @@ def intake_perception(
     role: str,
     content: str,
     used_capsule_ids: list[str] | None = None,
+    owner_id: str | None = None,
 ) -> dict:
     """每轮对话结束后调用，完成感知处理.
 
@@ -117,6 +118,10 @@ def intake_perception(
     turn_id = "turn_" + uuid.uuid4().hex[:12]
     created = now()
     used_capsule_ids = used_capsule_ids or []
+    if owner_id is None:
+        from ..soul.ownership import owner_id_for_soul
+
+        owner_id = owner_id_for_soul(soul_id)
 
     try:
         # 1. 提取情绪信号
@@ -241,7 +246,9 @@ def intake_perception(
                 task_type="perception",
                 risk_class="low",
                 soul_id=soul_id,
+                owner_id=owner_id,
                 provenance={"soul_id": soul_id, "origin": "conversation",
+                            "owner_id": owner_id,
                             "writer_identity": "runtime", "source_type": "conversation",
                             "source_ids": [], "evidence_ids": [],
                             "verified": False, "verification_method": "unknown"},

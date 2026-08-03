@@ -3,6 +3,7 @@ from .utils.datetime_utils import utc_now_iso_compact
 
 
 VECTOR_GENERATION_FENCING_MIGRATION = "vector_generation_fencing_v1"
+SOUL_OWNERSHIP_MIGRATION = "soul_owner_scope_v1"
 
 
 def migrate_legacy_vector_refs(conn) -> bool:
@@ -92,7 +93,7 @@ def main():
     conn = get_conn(); cur = conn.cursor()
     cur.executescript("""
     -- legacy v0.2 tables (kept for backward compatibility)
-    CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, source_type TEXT, scene TEXT, content TEXT, quality_score REAL, sensitivity_level TEXT, trust_score REAL, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, source_type TEXT, scene TEXT, content TEXT, quality_score REAL, sensitivity_level TEXT, trust_score REAL, created_at TEXT, soul_id TEXT, owner_id TEXT);
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(event_id, content);
     CREATE TABLE IF NOT EXISTS memory_capsules(capsule_id TEXT PRIMARY KEY, memory_type TEXT, payload TEXT, lifecycle TEXT, trust_score REAL, created_at TEXT);
     CREATE TABLE IF NOT EXISTS memory_event_capsules(event_id TEXT PRIMARY KEY, capsule_id TEXT NOT NULL UNIQUE);
@@ -179,6 +180,7 @@ def main():
     -- v0.11 Soul Awakening: new tables for soul injection, affect, dream, reflection
     CREATE TABLE IF NOT EXISTS soul_persona(
         soul_id TEXT PRIMARY KEY,
+        owner_id TEXT,
         name TEXT NOT NULL DEFAULT '枢忆',
         core_traits TEXT NOT NULL DEFAULT '["严谨", "有温度", "会自省"]',
         voice TEXT DEFAULT '专业但不冷漠，偶尔幽默',
@@ -262,6 +264,7 @@ def main():
     """)
     migrate_legacy_vector_refs(conn)
     _migrate_soul_awakening(conn)
+    _migrate_soul_ownership(conn)
     conn.commit(); print('initialized')
 
 
@@ -380,6 +383,157 @@ def _migrate_soul_awakening(conn) -> None:
     # B5 知识舱 schema（支持 FTS5 缺失时降级 LIKE）
     from .platform_api.knowledge import init_knowledge_schema
     init_knowledge_schema(conn)
+
+
+def _migrate_soul_ownership(conn) -> None:
+    """Add durable owner/soul scope while preserving legacy local data.
+
+    Historical installations had one configured API key and globally scoped
+    memories.  The migration assigns those rows to the actor derived from the
+    currently configured key.  A missing capsule ``soul_id`` is attached to
+    ``soul_default`` (or the only existing Soul) when that choice is
+    unambiguous; otherwise it remains owner-scoped legacy data.
+    """
+    from .soul.ownership import configured_actor_id
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    if conn.execute(
+        "SELECT 1 FROM memory_schema_migrations WHERE name=?",
+        (SOUL_OWNERSHIP_MIGRATION,),
+    ).fetchone():
+        return
+
+    owner_id = configured_actor_id()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM memory_schema_migrations WHERE name=?",
+            (SOUL_OWNERSHIP_MIGRATION,),
+        ).fetchone():
+            conn.commit()
+            return
+
+        persona_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(soul_persona)")
+        }
+        if "owner_id" not in persona_columns:
+            conn.execute("ALTER TABLE soul_persona ADD COLUMN owner_id TEXT")
+        conn.execute(
+            "UPDATE soul_persona SET owner_id=? WHERE owner_id IS NULL OR owner_id=''",
+            (owner_id,),
+        )
+
+        default_row = conn.execute(
+            "SELECT soul_id FROM soul_persona WHERE soul_id='soul_default' AND owner_id=?",
+            (owner_id,),
+        ).fetchone()
+        if default_row is None:
+            owned_rows = conn.execute(
+                "SELECT soul_id FROM soul_persona WHERE owner_id=? ORDER BY created_at, soul_id LIMIT 2",
+                (owner_id,),
+            ).fetchall()
+            default_soul_id = str(owned_rows[0]["soul_id"]) if len(owned_rows) == 1 else None
+        else:
+            default_soul_id = str(default_row["soul_id"])
+
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(memory_events)")
+        }
+        if "soul_id" not in event_columns:
+            conn.execute("ALTER TABLE memory_events ADD COLUMN soul_id TEXT")
+        if "owner_id" not in event_columns:
+            conn.execute("ALTER TABLE memory_events ADD COLUMN owner_id TEXT")
+        conn.execute(
+            "UPDATE memory_events SET owner_id=? WHERE owner_id IS NULL OR owner_id=''",
+            (owner_id,),
+        )
+        if default_soul_id is not None:
+            conn.execute(
+                "UPDATE memory_events SET soul_id=? WHERE soul_id IS NULL OR soul_id=''",
+                (default_soul_id,),
+            )
+
+        # Normalize malformed/empty historical provenance before adding scope.
+        conn.execute(
+            """
+            UPDATE memory_capsules_v2
+            SET provenance=CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END
+            WHERE provenance IS NULL OR NOT json_valid(provenance)
+            """
+        )
+        conn.execute(
+            """
+            UPDATE memory_capsules_v2
+            SET provenance=json_set(
+                provenance,
+                '$.owner_id',
+                COALESCE(
+                    (SELECT persona.owner_id
+                     FROM soul_persona AS persona
+                     WHERE persona.soul_id=json_extract(memory_capsules_v2.provenance, '$.soul_id')),
+                    ?
+                )
+            )
+            WHERE json_extract(provenance, '$.owner_id') IS NULL
+               OR json_extract(provenance, '$.owner_id')=''
+            """,
+            (owner_id,),
+        )
+        if default_soul_id is not None:
+            conn.execute(
+                """
+                UPDATE memory_capsules_v2
+                SET provenance=json_set(provenance, '$.soul_id', ?)
+                WHERE (json_extract(provenance, '$.soul_id') IS NULL
+                       OR json_extract(provenance, '$.soul_id')='')
+                  AND json_extract(provenance, '$.owner_id')=?
+                """,
+                (default_soul_id, owner_id),
+            )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_forget_request_scopes(
+                forget_request_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                soul_id TEXT,
+                FOREIGN KEY(forget_request_id)
+                    REFERENCES memory_forget_requests(forget_request_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_forget_request_scopes(forget_request_id, owner_id, soul_id)
+            SELECT forget_request_id, ?, ? FROM memory_forget_requests
+            """,
+            (owner_id, default_soul_id),
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_soul_persona_owner ON soul_persona(owner_id, soul_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_events_scope ON memory_events(owner_id, soul_id, created_at)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_capsules_v2_scope
+            ON memory_capsules_v2(
+                json_extract(provenance, '$.owner_id'),
+                json_extract(provenance, '$.soul_id')
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO memory_schema_migrations(name, applied_at) VALUES (?,?)",
+            (SOUL_OWNERSHIP_MIGRATION, utc_now_iso_compact()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 if __name__ == '__main__':

@@ -30,8 +30,15 @@ def _state_for_capsule(cap: dict, index: int) -> dict:
     }
 
 
-def state() -> dict:
-    capsules = [cap for cap in list_capsules(50) if cap]
+def state(*, owner_id: str | None = None, soul_id: str | None = None) -> dict:
+    if owner_id is None and soul_id is None:
+        capsules = [cap for cap in list_capsules(50) if cap]
+    else:
+        capsules = [
+            cap
+            for cap in list_capsules(50, owner_id=owner_id, soul_id=soul_id)
+            if cap
+        ]
     items = [_state_for_capsule(cap, i) for i, cap in enumerate(capsules)]
     if not items:
         items = [
