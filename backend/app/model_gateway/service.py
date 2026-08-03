@@ -499,9 +499,10 @@ async def _run_smoke_in_dedicated_pool_async(
             asyncio.shield(async_future),
             timeout=_SMOKE_RESULT_TIMEOUT_S,
         )
-    except TimeoutError as exc:
-        # asyncio and socket timeouts share the built-in TimeoutError type.
-        # Completion state identifies a worker exception from a pool deadline.
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        # Python 3.10 exposes asyncio.TimeoutError separately; newer versions
+        # alias it to built-in TimeoutError. Completion state identifies a
+        # worker exception from a pool deadline in either runtime.
         if future.done():
             return future.result()
         future.cancel()
