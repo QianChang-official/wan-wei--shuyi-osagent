@@ -21,18 +21,21 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left
 import os
 import re
 import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.platform_api.guards import audit_safe
+from app.platform_api.deps import WORK_GEARS
+from app.platform_api.guards import audit_safe, require_gear
 from app.platform_api.store import JsonStore
 
 router = APIRouter(prefix='/automation', tags=['platform-automation'])
@@ -49,6 +52,73 @@ STEP_TYPE_LABELS = {
     'http': 'HTTP 请求',
     'memory': '记忆',
     'condition': '条件判断',
+}
+
+MAX_FLOW_COUNT = 200
+MAX_STEPS_PER_FLOW = 64
+MAX_FLOW_NAME_LENGTH = 120
+MAX_FLOW_DESCRIPTION_LENGTH = 2000
+MAX_STEP_ID_LENGTH = 64
+MAX_STEP_NAME_LENGTH = 120
+MAX_STEP_TEXT_LENGTH = 2000
+MAX_CRON_EXPRESSION_LENGTH = 128
+_MAX_CRON_FIELD_SEGMENTS = 32
+_MAX_CRON_SEARCH_DAYS = 400
+
+
+class _StepConfigBase(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+
+    simulate_failure: bool = False
+
+
+class _AgentStepConfig(_StepConfigBase):
+    task: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+
+
+class _ShellStepConfig(_StepConfigBase):
+    command: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+
+
+class _HttpStepConfig(_StepConfigBase):
+    method: str = 'GET'
+    url: str = Field(default='', max_length=2048)
+    desc: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+
+    @field_validator('method')
+    @classmethod
+    def _method_valid(cls, value: str) -> str:
+        method = value.upper()
+        if method not in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'}:
+            raise ValueError('method 须为受支持的 HTTP 方法')
+        return method
+
+
+class _MemoryStepConfig(_StepConfigBase):
+    op: str = 'read'
+    key: str = Field(default='', max_length=256)
+    desc: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+
+    @field_validator('op')
+    @classmethod
+    def _operation_valid(cls, value: str) -> str:
+        operation = value.lower()
+        if operation not in {'read', 'write'}:
+            raise ValueError("op 须为 'read' 或 'write'")
+        return operation
+
+
+class _ConditionStepConfig(_StepConfigBase):
+    expr: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+    desc: str = Field(default='', max_length=MAX_STEP_TEXT_LENGTH)
+
+
+_STEP_CONFIG_MODELS: dict[str, type[_StepConfigBase]] = {
+    'agent': _AgentStepConfig,
+    'shell': _ShellStepConfig,
+    'http': _HttpStepConfig,
+    'memory': _MemoryStepConfig,
+    'condition': _ConditionStepConfig,
 }
 
 
@@ -75,6 +145,86 @@ def _store_delete(store: JsonStore, key: str) -> bool:
         return True
 
 
+def _bounded_text(value: Any, *, field: str, max_length: int, default: str = '') -> str:
+    text = str(value if value is not None else default)
+    if len(text) > max_length:
+        raise ValueError(f'{field} 最长 {max_length} 个字符')
+    return text
+
+
+def _normalize_step(raw_step: dict, index: int) -> dict:
+    if not isinstance(raw_step, dict):
+        raise ValueError(f'steps[{index}] 须为对象')
+    step_type = raw_step.get('type', 'agent')
+    if step_type not in STEP_TYPES:
+        raise ValueError(f'steps[{index}].type 须为 {list(STEP_TYPES)} 之一')
+    raw_config = raw_step.get('config', {})
+    if not isinstance(raw_config, dict):
+        raise ValueError(f'steps[{index}].config 须为对象')
+    try:
+        config = _STEP_CONFIG_MODELS[step_type].model_validate(raw_config)
+    except ValidationError as exc:
+        raise ValueError(f'steps[{index}].config 与 {step_type} schema 不匹配：{exc}') from exc
+    return {
+        'id': _bounded_text(
+            raw_step.get('id') or f'st{index + 1}',
+            field=f'steps[{index}].id',
+            max_length=MAX_STEP_ID_LENGTH,
+        ),
+        'type': step_type,
+        'name': _bounded_text(
+            raw_step.get('name') or f'步骤{index + 1}',
+            field=f'steps[{index}].name',
+            max_length=MAX_STEP_NAME_LENGTH,
+        ),
+        'config': config.model_dump(exclude_unset=True),
+        'on_error': 'continue' if raw_step.get('on_error') == 'continue' else 'stop',
+    }
+
+
+def _normalize_steps(raw_steps: list) -> list[dict]:
+    if len(raw_steps) > MAX_STEPS_PER_FLOW:
+        raise ValueError(f'每个流程最多 {MAX_STEPS_PER_FLOW} 个步骤')
+    return [_normalize_step(step, index) for index, step in enumerate(raw_steps)]
+
+
+def _enforce_real_execution_gear(step_type: str, gear: str | None) -> None:
+    """未来真实步骤执行器必须经过的单一权限边界。
+
+    当前运行器只做模拟，因此不会申请任何执行档位。真实执行实现必须显式
+    传入 sandbox/device；human_review 仅表示等待人工，不得被当作执行授权。
+    device 档继续复用全局默认拒绝闸门，避免后续接入真实 shell/HTTP 时绕过。
+    """
+    if step_type not in STEP_TYPES:
+        raise ValueError(f'未知步骤类型：{step_type}')
+    if gear not in {'sandbox', 'device'}:
+        audit_safe('gear_denied', {
+            'action': 'automation_step_execute',
+            'step_type': step_type,
+            'gear': gear,
+            'reason': 'explicit_execution_gear_required',
+        })
+        raise PermissionError('真实自动化步骤必须显式选择 sandbox 或 device 档')
+    denied = require_gear(
+        gear,
+        action='automation_step_execute',
+        context={'step_type': step_type},
+    )
+    if denied:
+        raise PermissionError(f'{WORK_GEARS[gear]}档未获授权')
+
+
+def _store_new_flow(flow_id: str, flow: dict) -> None:
+    """在同一锁内完成数量门禁与创建，避免并发请求同时越过上限。"""
+    with _flows._lock:  # noqa: SLF001 - JsonStore 尚无 create-if-capacity API
+        data = _flows._read()  # noqa: SLF001
+        flow_count = sum(isinstance(item, dict) for item in data.values())
+        if flow_count >= MAX_FLOW_COUNT:
+            raise HTTPException(409, f'流程数量已达上限（{MAX_FLOW_COUNT}）')
+        data[flow_id] = flow
+        _flows._write(data)  # noqa: SLF001
+
+
 def _normalize_flow(pf: dict, fid: str, existing: Optional[dict]) -> dict:
     """把任意来源（POST/PUT/ai-apply）的流程载荷归一成契约定义的完整结构。"""
     pf = pf if isinstance(pf, dict) else {}
@@ -85,27 +235,25 @@ def _normalize_flow(pf: dict, fid: str, existing: Optional[dict]) -> dict:
     cron = cron.strip() if isinstance(cron, str) and cron.strip() else None
     # 非定时流同样允许保留 cron 草稿，前端自行忽略。
     # steps 语义：list（含 []）→ 按载荷归一（[] 即显式清空）；
-    # None / 缺失 / 非 list → 保持 existing 原值（新建时为空列表）。
+    # None / 缺失 → 保持 existing 原值（新建时为空列表）；其他类型拒绝。
     raw_steps = pf.get('steps')
-    if not isinstance(raw_steps, list):
+    if raw_steps is not None and not isinstance(raw_steps, list):
+        raise ValueError('steps 须为数组或 null')
+    if raw_steps is None:
         raw_steps = existing.get('steps') if isinstance(existing.get('steps'), list) else []
-    steps: list[dict] = []
-    for i, s in enumerate(raw_steps, 1):
-        if not isinstance(s, dict):
-            continue
-        stype = s.get('type') if s.get('type') in STEP_TYPES else 'agent'
-        cfg = s.get('config') if isinstance(s.get('config'), dict) else {}
-        steps.append({
-            'id': str(s.get('id') or f'st{i}'),
-            'type': stype,
-            'name': str(s.get('name') or f'步骤{i}'),
-            'config': cfg,
-            'on_error': 'continue' if s.get('on_error') == 'continue' else 'stop',
-        })
+    steps = _normalize_steps(raw_steps)
     return {
         'id': fid,
-        'name': str(pf.get('name') or existing.get('name') or '未命名流程'),
-        'desc': str(pf.get('desc') if pf.get('desc') is not None else existing.get('desc', '')),
+        'name': _bounded_text(
+            pf.get('name') or existing.get('name') or '未命名流程',
+            field='name',
+            max_length=MAX_FLOW_NAME_LENGTH,
+        ),
+        'desc': _bounded_text(
+            pf.get('desc') if pf.get('desc') is not None else existing.get('desc', ''),
+            field='desc',
+            max_length=MAX_FLOW_DESCRIPTION_LENGTH,
+        ),
         'trigger': trigger,
         'cron': cron,
         'steps': steps,
@@ -125,7 +273,10 @@ def _parse_cron_field(field: str, lo: int, hi: int) -> set[int]:
     if field in ('*', '?', ''):
         return set(range(lo, hi + 1))
     values: set[int] = set()
-    for part in field.split(','):
+    segments = field.split(',')
+    if len(segments) > _MAX_CRON_FIELD_SEGMENTS:
+        raise ValueError(f'cron 单字段最多 {_MAX_CRON_FIELD_SEGMENTS} 个片段')
+    for part in segments:
         part = part.strip()
         if not part:
             raise ValueError('cron 字段含空片段')
@@ -154,6 +305,8 @@ def _parse_cron_field(field: str, lo: int, hi: int) -> set[int]:
 
 def _validate_cron_expr(cron: str) -> None:
     """校验 5 段 cron（分 时 日 月 周）的格式与取值范围，非法抛 ValueError。"""
+    if len(cron) > MAX_CRON_EXPRESSION_LENGTH:
+        raise ValueError(f'cron 最长 {MAX_CRON_EXPRESSION_LENGTH} 个字符')
     parts = cron.split()
     if len(parts) != 5:
         raise ValueError('cron 须为 5 段：分 时 日 月 周（如 "0 7 * * *"）')
@@ -164,6 +317,27 @@ def _validate_cron_expr(cron: str) -> None:
             raise ValueError(f'cron 字段非法：{part!r}（{exc}）') from exc
 
 
+@lru_cache(maxsize=256)
+def _parsed_cron(
+    cron: str,
+) -> tuple[tuple[int, ...], frozenset[int], frozenset[int], bool, bool, frozenset[int]]:
+    """解析并缓存 cron 的有界执行计划。
+
+    minute-of-day 至多 1440 项，日期扫描由 _MAX_CRON_SEARCH_DAYS 封顶；
+    缓存避免列表/总览接口反复为同一表达式展开字段集合。
+    """
+    _validate_cron_expr(cron)
+    parts = cron.split()
+    minutes = _parse_cron_field(parts[0], 0, 59)
+    hours = _parse_cron_field(parts[1], 0, 23)
+    minute_offsets = tuple(hour * 60 + minute for hour in sorted(hours) for minute in sorted(minutes))
+    doms = frozenset(_parse_cron_field(parts[2], 1, 31))
+    months = frozenset(_parse_cron_field(parts[3], 1, 12))
+    dows_raw = _parse_cron_field(parts[4], 0, 7)
+    dows = frozenset(0 if day == 7 else day for day in dows_raw)
+    return minute_offsets, doms, months, parts[2] in ('*', '?'), parts[4] in ('*', '?'), dows
+
+
 def _next_cron_dt(cron: Optional[str], now: Optional[datetime] = None) -> tuple[Optional[datetime], bool]:
     """返回 (下次触发的本地 aware datetime, approximate)。
 
@@ -172,29 +346,18 @@ def _next_cron_dt(cron: Optional[str], now: Optional[datetime] = None) -> tuple[
     解析失败 / 400 天内无触发 → (None, True)。固定偏移不处理 DST 跳变，
     与 approximate 语义一致（部署目标时区无夏令时）。
     """
-    parts = (cron or '').split()
-    if len(parts) != 5:
-        return None, True
     try:
-        minutes = _parse_cron_field(parts[0], 0, 59)
-        hours = _parse_cron_field(parts[1], 0, 23)
-        doms = _parse_cron_field(parts[2], 1, 31)
-        months = _parse_cron_field(parts[3], 1, 12)
-        dows_raw = _parse_cron_field(parts[4], 0, 7)
+        minute_offsets, doms, months, dom_any, dow_any, dows = _parsed_cron(cron or '')
     except (ValueError, AttributeError):
         return None, True
-    dows = {0 if d == 7 else d for d in dows_raw}
-    dom_any = parts[2] in ('*', '?')
-    dow_any = parts[4] in ('*', '?')
     # dom 与 dow 同时受限时 cron 语义为「或」，粗算结果标注 approximate
     approximate = not dom_any and not dow_any
     now = now or datetime.now().astimezone()
     if now.tzinfo is None:
         now = now.astimezone()  # naive 按本地时间解释，输出始终 aware
     start = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    sorted_hours = sorted(hours)
-    sorted_minutes = sorted(minutes)
-    for offset in range(0, 400):
+    start_minute = start.hour * 60 + start.minute
+    for offset in range(_MAX_CRON_SEARCH_DAYS):
         day = (start + timedelta(days=offset)).date()
         if day.month not in months:
             continue
@@ -209,11 +372,12 @@ def _next_cron_dt(cron: Optional[str], now: Optional[datetime] = None) -> tuple[
             day_ok = day.day in doms or cron_dow in dows
         if not day_ok:
             continue
-        for h in sorted_hours:
-            for m in sorted_minutes:
-                cand = datetime(day.year, day.month, day.day, h, m, tzinfo=start.tzinfo)
-                if cand >= start:
-                    return cand, approximate
+        first_candidate = bisect_left(minute_offsets, start_minute) if offset == 0 else 0
+        if first_candidate >= len(minute_offsets):
+            continue
+        minute_of_day = minute_offsets[first_candidate]
+        hour, minute = divmod(minute_of_day, 60)
+        return datetime(day.year, day.month, day.day, hour, minute, tzinfo=start.tzinfo), approximate
     return None, True
 
 
@@ -402,6 +566,9 @@ def _parse_steps(text: str) -> tuple[list[dict], list[str]]:
                 default_on_error = 'continue'
                 continue
         for part in _expand_condition(c):
+            if len(steps) >= MAX_STEPS_PER_FLOW:
+                notes.append(f'步骤已截断为上限 {MAX_STEPS_PER_FLOW} 条')
+                return steps, notes
             steps.append(_infer_step(part, idx, on_error))
             idx += 1
     if not steps:
@@ -768,11 +935,11 @@ def _check_cron_value(v: Optional[str]) -> Optional[str]:
 
 
 class FlowIn(BaseModel):
-    name: str = Field(min_length=1)
-    desc: str = ''
+    name: str = Field(min_length=1, max_length=MAX_FLOW_NAME_LENGTH)
+    desc: str = Field(default='', max_length=MAX_FLOW_DESCRIPTION_LENGTH)
     trigger: Literal['manual', 'schedule', 'event'] = 'manual'
-    cron: Optional[str] = None
-    steps: list[dict] = Field(default_factory=list)
+    cron: Optional[str] = Field(default=None, max_length=MAX_CRON_EXPRESSION_LENGTH)
+    steps: list[dict] = Field(default_factory=list, max_length=MAX_STEPS_PER_FLOW)
     enabled: bool = True
 
     @field_validator('cron')
@@ -780,13 +947,18 @@ class FlowIn(BaseModel):
     def _cron_valid(cls, v: Optional[str]) -> Optional[str]:
         return _check_cron_value(v)
 
+    @field_validator('steps')
+    @classmethod
+    def _steps_valid(cls, value: list[dict]) -> list[dict]:
+        return _normalize_steps(value)
+
 
 class FlowPatch(BaseModel):
-    name: Optional[str] = None
-    desc: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=MAX_FLOW_NAME_LENGTH)
+    desc: Optional[str] = Field(default=None, max_length=MAX_FLOW_DESCRIPTION_LENGTH)
     trigger: Optional[Literal['manual', 'schedule', 'event']] = None
-    cron: Optional[str] = None
-    steps: Optional[list[dict]] = None
+    cron: Optional[str] = Field(default=None, max_length=MAX_CRON_EXPRESSION_LENGTH)
+    steps: Optional[list[dict]] = Field(default=None, max_length=MAX_STEPS_PER_FLOW)
     enabled: Optional[bool] = None
 
     @field_validator('cron')
@@ -794,10 +966,15 @@ class FlowPatch(BaseModel):
     def _cron_valid(cls, v: Optional[str]) -> Optional[str]:
         return _check_cron_value(v)
 
+    @field_validator('steps')
+    @classmethod
+    def _steps_valid(cls, value: Optional[list[dict]]) -> Optional[list[dict]]:
+        return _normalize_steps(value) if value is not None else None
+
 
 class AiEditIn(BaseModel):
     flow_id: Optional[str] = None
-    instruction: str = Field(min_length=1)
+    instruction: str = Field(min_length=1, max_length=4000)
 
 
 class AiApplyIn(BaseModel):
@@ -815,7 +992,7 @@ def list_flows() -> list[dict]:
 def create_flow(payload: FlowIn) -> dict:
     fid = _new_id('flow')
     flow = _normalize_flow(payload.model_dump(), fid=fid, existing=None)
-    _flows.set(fid, flow)
+    _store_new_flow(fid, flow)
     audit_safe('flow_created', {'flow_id': fid, 'name': flow.get('name')})
     return _flow_view(flow)
 
@@ -906,7 +1083,10 @@ def update_flow(fid: str, payload: FlowPatch) -> dict:
         raise HTTPException(404, f'流程不存在：{fid}')
     merged = dict(existing)
     merged.update(payload.model_dump(exclude_unset=True))
-    flow = _normalize_flow(merged, fid=fid, existing=existing)
+    try:
+        flow = _normalize_flow(merged, fid=fid, existing=existing)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     _flows.set(fid, flow)
     return _flow_view(flow)
 
@@ -948,8 +1128,14 @@ def ai_apply_flow(fid: str, payload: AiApplyIn, response: Response, create: bool
     target_id = fid
     if existing is None:
         target_id = _new_id('fl')
-    flow = _normalize_flow(payload.proposed_flow, fid=target_id, existing=existing)
-    _flows.set(target_id, flow)
+    try:
+        flow = _normalize_flow(payload.proposed_flow, fid=target_id, existing=existing)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if existing is None:
+        _store_new_flow(target_id, flow)
+    else:
+        _flows.set(target_id, flow)
     if existing is None:
         response.status_code = 201
         audit_safe('flow_created', {'flow_id': target_id, 'requested_id': fid, 'name': flow.get('name'), 'via': 'ai-apply'})

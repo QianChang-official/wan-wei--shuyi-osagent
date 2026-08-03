@@ -2,7 +2,6 @@ import logging
 
 from ..db import get_conn
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +37,8 @@ def search(
             params,
         ).fetchall()
     except Exception as exc:
-        logger.warning("legacy memory FTS search failed; returning no results: %s", exc)
+        # SQLite/驱动异常文本可能回显 MATCH 输入，因此只记异常类型；这既让
+        # 降级可观测，又不会把潜在敏感查询写入日志。
+        logger.warning('legacy FTS 检索失败，降级为空结果（%s）', type(exc).__name__)
         return []
     return [dict(r) for r in rows]

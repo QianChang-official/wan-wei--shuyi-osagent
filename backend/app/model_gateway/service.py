@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import http.client
 import json as jsonlib
 import logging
@@ -45,12 +46,26 @@ def local_llama_allowlist() -> list[str] | None:
     return [h.strip() for h in raw.split(",") if h.strip()] if raw else None
 
 
-# 03-#18 线程池耗尽风险缓解标注：
-# 一次真实 smoke / soul chat 调用会以该超时阻塞 FastAPI 同步线程池的一个
-# worker 最长 20s（默认约 40 线程），并以 _SMOKE_SEMAPHORE 限制真实 smoke
-# 并发上限。慢端点高并发仍可能占满线程池；后续版本应引入慢路径专用池/队列。
 OPENAI_COMPATIBLE_TIMEOUT_S = 20
-_SMOKE_SEMAPHORE = threading.BoundedSemaphore(4)
+# Preserve the previous four-request admission ceiling while splitting it into
+# two isolated network workers plus two queued jobs. This avoids increasing the
+# number of request workers waiting for a result during rollout.
+_SMOKE_WORKER_COUNT = 2
+_SMOKE_QUEUE_CAPACITY = 2
+_SMOKE_RESULT_TIMEOUT_S = OPENAI_COMPATIBLE_TIMEOUT_S + 5
+_SMOKE_QUEUE_SLOTS = threading.BoundedSemaphore(_SMOKE_WORKER_COUNT + _SMOKE_QUEUE_CAPACITY)
+_SMOKE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_SMOKE_WORKER_COUNT,
+    thread_name_prefix="model-gateway-smoke",
+)
+
+
+class _SmokeQueueFull(RuntimeError):
+    pass
+
+
+class _SmokeDeadlineExceeded(TimeoutError):
+    pass
 
 
 LOCAL_LLAMA_BASE, LOCAL_LLAMA_MODEL, LOCAL_LLAMA_CONFIGURED = local_llama_settings()
@@ -341,12 +356,7 @@ def _openai_compatible_smoke(
     prompt: str,
     max_tokens: int,
 ) -> tuple[str, int, str]:
-    """同步阻塞式 smoke 调用。
-
-    03-#18 如实标注：本函数在 FastAPI 同步线程池中执行，超时
-    OPENAI_COMPATIBLE_TIMEOUT_S（20s）内独占一个 worker 线程；慢端点并发
-    可耗尽默认约 40 线程的池，拖垮全部同步接口。本版本不重构池化方案。
-    """
+    """同步阻塞式 smoke 调用；API 路径必须经专用池提交。"""
     started = time.perf_counter()
     payload = {
         "model": model,
@@ -373,6 +383,44 @@ def _openai_compatible_smoke(
     choices = data.get("choices") or []
     text = choices[0].get("message", {}).get("content", "") if choices else ""
     return "ok", latency_ms, text[:600]
+
+
+def _run_smoke_in_dedicated_pool(
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+) -> tuple[str, int, str]:
+    """在有界专用池中执行真实 smoke，隔离默认请求线程池的慢 I/O。
+
+    容量槽覆盖正在运行和排队的任务。调用方等待超时后不能提前释放槽，
+    因为底层 socket/DNS 工作可能仍在继续；完成回调才是唯一释放点。
+    """
+    slot_gate = _SMOKE_QUEUE_SLOTS
+    if not slot_gate.acquire(blocking=False):
+        raise _SmokeQueueFull
+    try:
+        future = _SMOKE_EXECUTOR.submit(
+            _openai_compatible_smoke,
+            api_base,
+            api_key,
+            model,
+            prompt,
+            max_tokens,
+        )
+    except Exception:
+        slot_gate.release()
+        raise
+    future.add_done_callback(lambda _future: slot_gate.release())
+    try:
+        return future.result(timeout=_SMOKE_RESULT_TIMEOUT_S)
+    except FutureTimeoutError as exc:
+        # concurrent.futures.TimeoutError aliases built-in TimeoutError. A socket
+        # timeout raised *by* the worker must keep its network-error semantics.
+        if future.done():
+            return future.result()
+        raise _SmokeDeadlineExceeded from exc
 
 
 def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
@@ -427,25 +475,13 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
         )
     api_base = provider["api_base"]
     try:
-        if not _SMOKE_SEMAPHORE.acquire(blocking=False):
-            return ModelGatewayTestOut(
-                provider=provider["provider"],
-                model=model,
-                dry_run=False,
-                status="busy",
-                request_id=request_id,
-                message="Model gateway smoke queue is full; retry later.",
-            )
-        try:
-            status, latency_ms, preview = _openai_compatible_smoke(
-                api_base,
-                provider["api_key"],
-                model,
-                req.prompt_preview,
-                req.max_tokens,
-            )
-        finally:
-            _SMOKE_SEMAPHORE.release()
+        status, latency_ms, preview = _run_smoke_in_dedicated_pool(
+            api_base,
+            provider["api_key"],
+            model,
+            req.prompt_preview,
+            req.max_tokens,
+        )
         return ModelGatewayTestOut(
             provider=provider["provider"],
             model=model,
@@ -455,6 +491,24 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
             message=f"OpenAI-compatible smoke completed via {api_base}.",
             latency_ms=latency_ms,
             response_preview=preview,
+        )
+    except _SmokeQueueFull:
+        return ModelGatewayTestOut(
+            provider=provider["provider"],
+            model=model,
+            dry_run=False,
+            status="busy",
+            request_id=request_id,
+            message="Model gateway smoke queue is full; retry later.",
+        )
+    except _SmokeDeadlineExceeded:
+        return ModelGatewayTestOut(
+            provider=provider["provider"],
+            model=model,
+            dry_run=False,
+            status="error",
+            request_id=request_id,
+            message="Model gateway smoke exceeded the isolated worker deadline.",
         )
     except SSRFError as exc:
         return ModelGatewayTestOut(
