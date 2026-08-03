@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
+import anyio
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -26,6 +29,28 @@ from backend.app.db import get_conn, transaction  # noqa: E402
 from backend.app.model_gateway import service as gateway_service  # noqa: E402
 from backend.app.model_gateway.schemas import ModelGatewayTestIn  # noqa: E402
 from backend.app.retrieval import service as legacy_retrieval  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def clean_smoke_runtime():
+    def shutdown_loaded_runtimes():
+        seen: set[int] = set()
+        for module_name in (
+            "app.model_gateway.service",
+            "backend.app.model_gateway.service",
+        ):
+            service = sys.modules.get(module_name)
+            if service is None or id(service) in seen:
+                continue
+            seen.add(id(service))
+            service.shutdown_smoke_executor()
+
+    # The suite deliberately exercises both supported import roots. Clear a
+    # runtime created by either identity so the lifecycle assertion measures
+    # only the application instance under test.
+    shutdown_loaded_runtimes()
+    yield
+    shutdown_loaded_runtimes()
 
 
 @pytest.fixture
@@ -143,6 +168,48 @@ def test_ai_apply_cannot_bypass_step_config_schema(automation_client):
     assert automation._flows.get(created["id"])["steps"] == []
 
 
+def test_non_step_patch_preserves_legacy_step_config(automation_client):
+    flow_id = "flow-legacy-shell"
+    legacy_steps = [_step("shell", {"cmd": "echo legacy"})]
+    automation._flows.set(
+        flow_id,
+        {
+            "id": flow_id,
+            "name": "legacy",
+            "desc": "",
+            "trigger": "manual",
+            "cron": None,
+            "steps": legacy_steps,
+            "enabled": True,
+            "created_at": "2026-08-04T00:00:00+08:00",
+            "updated_at": "2026-08-04T00:00:00+08:00",
+            "ai_editable": True,
+        },
+    )
+
+    toggled = automation_client.put(
+        f"/automation/flows/{flow_id}",
+        json={"enabled": False},
+    )
+    assert toggled.status_code == 200, toggled.text
+    assert toggled.json()["steps"] == legacy_steps
+    assert automation._flows.get(flow_id)["steps"] == legacy_steps
+
+    null_steps = automation_client.put(
+        f"/automation/flows/{flow_id}",
+        json={"name": "legacy-renamed", "steps": None},
+    )
+    assert null_steps.status_code == 200, null_steps.text
+    assert null_steps.json()["steps"] == legacy_steps
+
+    explicit_legacy_steps = automation_client.put(
+        f"/automation/flows/{flow_id}",
+        json={"steps": legacy_steps},
+    )
+    assert explicit_legacy_steps.status_code == 422
+    assert automation._flows.get(flow_id)["steps"] == legacy_steps
+
+
 def test_cron_input_and_recalculation_are_bounded():
     with pytest.raises(ValueError, match="最长"):
         automation._validate_cron_expr("0" * (automation.MAX_CRON_EXPRESSION_LENGTH + 1))
@@ -200,7 +267,60 @@ def test_real_smoke_runs_on_dedicated_worker(monkeypatch):
     assert observed["thread"] != caller_thread
 
 
+def test_async_smoke_does_not_starve_the_only_anyio_worker(monkeypatch):
+    smoke_started = threading.Event()
+    release_smoke = threading.Event()
+    monkeypatch.setattr(gateway_service, "_get_config", lambda _provider: _configured_provider())
+
+    def blocking_smoke(*_args):
+        smoke_started.set()
+        if not release_smoke.wait(timeout=5):
+            raise TimeoutError("test did not release smoke worker")
+        return "ok", 3, "ready"
+
+    monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", blocking_smoke)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        previous_tokens = limiter.total_tokens
+        limiter.total_tokens = 1
+        gateway_service.start_smoke_executor()
+        try:
+            yield
+        finally:
+            limiter.total_tokens = previous_tokens
+            gateway_service.shutdown_smoke_executor()
+
+    app = FastAPI(lifespan=lifespan)
+
+    @app.post("/smoke")
+    async def smoke_route():
+        request = ModelGatewayTestIn(provider="custom", dry_run=False)
+        return await gateway_service.run_provider_test_async(request)
+
+    @app.get("/probe")
+    def synchronous_probe():
+        return {"status": "ready"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as callers:
+        smoke_response = callers.submit(client.post, "/smoke")
+        assert smoke_started.wait(timeout=2)
+        probe_response = callers.submit(client.get, "/probe")
+        try:
+            probe = probe_response.result(timeout=1)
+        finally:
+            release_smoke.set()
+        smoke = smoke_response.result(timeout=5)
+
+    assert probe.status_code == 200
+    assert probe.json() == {"status": "ready"}
+    assert smoke.status_code == 200
+    assert smoke.json()["status"] == "ok"
+
+
 def test_real_smoke_rejects_when_bounded_queue_is_full(monkeypatch):
+    gateway_service.start_smoke_executor()
     full_gate = threading.BoundedSemaphore(1)
     assert full_gate.acquire(blocking=False)
     monkeypatch.setattr(gateway_service, "_SMOKE_QUEUE_SLOTS", full_gate)
@@ -215,6 +335,7 @@ def test_real_smoke_rejects_when_bounded_queue_is_full(monkeypatch):
 
 def test_real_smoke_pool_enforces_worker_and_queue_capacity(monkeypatch):
     capacity = gateway_service._SMOKE_WORKER_COUNT + gateway_service._SMOKE_QUEUE_CAPACITY
+    gateway_service.start_smoke_executor()
 
     class TrackingGate:
         def __init__(self):
@@ -262,15 +383,77 @@ def test_real_smoke_pool_enforces_worker_and_queue_capacity(monkeypatch):
     monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", blocking_smoke)
     request = ModelGatewayTestIn(provider="custom", dry_run=False)
 
+    def run_async_request():
+        return asyncio.run(gateway_service.run_provider_test_async(request))
+
     with ThreadPoolExecutor(max_workers=capacity + 1) as callers:
-        admitted = [callers.submit(gateway_service.run_provider_test, request) for _ in range(capacity)]
+        admitted = [callers.submit(run_async_request) for _ in range(capacity)]
         assert gate.all_acquired.wait(timeout=2)
         assert workers_started.wait(timeout=2)
-        rejected = callers.submit(gateway_service.run_provider_test, request).result(timeout=2)
+        rejected = callers.submit(run_async_request).result(timeout=2)
         assert rejected.status == "busy"
         assert peak_active == gateway_service._SMOKE_WORKER_COUNT
         release_workers.set()
         assert [future.result(timeout=5).status for future in admitted] == ["ok"] * capacity
+
+
+def test_async_deadline_cancels_future_and_callback_releases_once(monkeypatch):
+    class CountingGate:
+        def __init__(self):
+            self.acquire_calls = 0
+            self.release_calls = 0
+
+        def acquire(self, blocking=False):
+            assert blocking is False
+            self.acquire_calls += 1
+            return True
+
+        def release(self):
+            self.release_calls += 1
+
+    class TrackingFuture(Future):
+        def __init__(self):
+            super().__init__()
+            self.cancel_calls = 0
+
+        def cancel(self):
+            self.cancel_calls += 1
+            return super().cancel()
+
+    class FakeExecutor:
+        def __init__(self, future):
+            self.future = future
+
+        def submit(self, *_args, **_kwargs):
+            return self.future
+
+        def shutdown(self, *, wait, cancel_futures):
+            assert wait is True
+            assert cancel_futures is True
+
+    gate = CountingGate()
+    future = TrackingFuture()
+    with gateway_service._SMOKE_RUNTIME_LOCK:
+        gateway_service._SMOKE_EXECUTOR = FakeExecutor(future)
+        gateway_service._SMOKE_QUEUE_SLOTS = gate
+    monkeypatch.setattr(gateway_service, "_SMOKE_RESULT_TIMEOUT_S", 0.01)
+
+    with pytest.raises(gateway_service._SmokeDeadlineExceeded):
+        asyncio.run(
+            gateway_service._run_smoke_in_dedicated_pool_async(
+                "https://model.example/v1",
+                "",
+                "test-model",
+                "ping",
+                16,
+            )
+        )
+
+    assert gate.acquire_calls == 1
+    # asyncio.wrap_future propagates cancellation back to its concurrent
+    # future, so the explicit deadline cancellation may be repeated safely.
+    assert future.cancel_calls >= 1
+    assert gate.release_calls == 1
 
 
 def test_worker_network_timeout_is_not_misreported_as_pool_deadline(monkeypatch):
@@ -281,11 +464,55 @@ def test_worker_network_timeout_is_not_misreported_as_pool_deadline(monkeypatch)
 
     monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", network_timeout)
 
-    result = gateway_service.run_provider_test(ModelGatewayTestIn(provider="custom", dry_run=False))
+    result = asyncio.run(
+        gateway_service.run_provider_test_async(
+            ModelGatewayTestIn(provider="custom", dry_run=False)
+        )
+    )
 
     assert result.status == "error"
     assert "smoke failed: socket timed out" in result.message
     assert "isolated worker deadline" not in result.message
+
+
+def test_app_lifespan_restarts_and_fully_shuts_down_smoke_executor(
+    isolated_db,
+    tmp_path,
+    monkeypatch,
+):
+    from backend.app import app_runtime
+
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
+    monkeypatch.setattr(gateway_service, "_get_config", lambda _provider: _configured_provider())
+    monkeypatch.setattr(
+        gateway_service,
+        "_openai_compatible_smoke",
+        lambda *_args: ("ok", 2, "ready"),
+    )
+    executors = []
+    request_headers = {"X-API-Key": app_runtime.get_api_key()}
+
+    for _ in range(2):
+        with TestClient(app_runtime.app) as client:
+            response = client.post(
+                "/model-gateway/test",
+                json={"provider": "custom", "dry_run": False},
+                headers=request_headers,
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "ok"
+            assert gateway_service._SMOKE_EXECUTOR is not None
+            executors.append(gateway_service._SMOKE_EXECUTOR)
+
+        assert gateway_service._SMOKE_EXECUTOR is None
+        assert gateway_service._SMOKE_QUEUE_SLOTS is None
+        assert not [
+            thread.name
+            for thread in threading.enumerate()
+            if thread.name.startswith("model-gateway-smoke")
+        ]
+
+    assert executors[0] is not executors[1]
 
 
 def test_emotion_binding_locks_before_read_and_preserves_concurrent_write(isolated_db, monkeypatch):

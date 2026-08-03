@@ -225,8 +225,19 @@ def _store_new_flow(flow_id: str, flow: dict) -> None:
         _flows._write(data)  # noqa: SLF001
 
 
-def _normalize_flow(pf: dict, fid: str, existing: Optional[dict]) -> dict:
-    """把任意来源（POST/PUT/ai-apply）的流程载荷归一成契约定义的完整结构。"""
+def _normalize_flow(
+    pf: dict,
+    fid: str,
+    existing: Optional[dict],
+    *,
+    preserve_existing_steps: bool = False,
+) -> dict:
+    """把任意来源（POST/PUT/ai-apply）的流程载荷归一成契约定义的完整结构。
+
+    ``preserve_existing_steps`` 只用于未显式修改 steps 的 PUT。历史版本允许
+    宽松的 config 别名；对这些流程修改名称或启用状态时必须逐字保留步骤，
+    但任何新建、AI apply 或显式 steps 更新仍须通过当前严格 schema。
+    """
     pf = pf if isinstance(pf, dict) else {}
     existing = existing or {}
     now = _now_iso()
@@ -236,12 +247,16 @@ def _normalize_flow(pf: dict, fid: str, existing: Optional[dict]) -> dict:
     # 非定时流同样允许保留 cron 草稿，前端自行忽略。
     # steps 语义：list（含 []）→ 按载荷归一（[] 即显式清空）；
     # None / 缺失 → 保持 existing 原值（新建时为空列表）；其他类型拒绝。
-    raw_steps = pf.get('steps')
-    if raw_steps is not None and not isinstance(raw_steps, list):
-        raise ValueError('steps 须为数组或 null')
-    if raw_steps is None:
-        raw_steps = existing.get('steps') if isinstance(existing.get('steps'), list) else []
-    steps = _normalize_steps(raw_steps)
+    if preserve_existing_steps:
+        existing_steps = existing.get('steps')
+        steps = existing_steps if isinstance(existing_steps, list) else []
+    else:
+        raw_steps = pf.get('steps')
+        if raw_steps is not None and not isinstance(raw_steps, list):
+            raise ValueError('steps 须为数组或 null')
+        if raw_steps is None:
+            raw_steps = existing.get('steps') if isinstance(existing.get('steps'), list) else []
+        steps = _normalize_steps(raw_steps)
     return {
         'id': fid,
         'name': _bounded_text(
@@ -1081,10 +1096,16 @@ def update_flow(fid: str, payload: FlowPatch) -> dict:
     existing = _flows.get(fid)
     if existing is None:
         raise HTTPException(404, f'流程不存在：{fid}')
+    patch = payload.model_dump(exclude_unset=True)
     merged = dict(existing)
-    merged.update(payload.model_dump(exclude_unset=True))
+    merged.update(patch)
     try:
-        flow = _normalize_flow(merged, fid=fid, existing=existing)
+        flow = _normalize_flow(
+            merged,
+            fid=fid,
+            existing=existing,
+            preserve_existing_steps=patch.get('steps') is None,
+        )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     _flows.set(fid, flow)

@@ -40,7 +40,15 @@ from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
 from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
-from .model_gateway.service import delete_config, list_configs, list_providers, run_provider_test, upsert_config
+from .model_gateway.service import (
+    delete_config,
+    list_configs,
+    list_providers,
+    run_provider_test_async,
+    shutdown_smoke_executor,
+    start_smoke_executor,
+    upsert_config,
+)
 from .tool_registry.service import list_skills, list_tools
 from .tuning.service import get_defaults, list_policy_modes
 from .export_center.service import list_packages
@@ -217,6 +225,7 @@ async def lifespan(app: FastAPI):
     from .platform_api.agents import resume_runs
     resume_runs()
 
+    start_smoke_executor()
     try:
         yield
     finally:
@@ -226,6 +235,7 @@ async def lifespan(app: FastAPI):
         affect_decay_thread.join(timeout=5)
         dream_scheduler_stop.set()
         dream_scheduler_thread.join(timeout=5)
+        shutdown_smoke_executor()
         close_all()
 
 _prod_mode = is_production_mode()
@@ -376,8 +386,8 @@ def model_gateway_configs_delete(provider: str):
     return {"deleted": delete_config(provider)}
 
 @app.post('/model-gateway/test')
-def model_gateway_test(req: ModelGatewayTestIn):
-    return run_provider_test(req)
+async def model_gateway_test(req: ModelGatewayTestIn):
+    return await run_provider_test_async(req)
 
 @app.get('/tool-registry/tools')
 def tool_registry_tools():
