@@ -51,6 +51,15 @@ def _connect(client: TestClient, api_key: str, soul_id: str) -> dict:
     return response.json()
 
 
+def test_actor_id_derivation_preserves_existing_agent_owner_ids():
+    from backend.app.security.auth import actor_id_from_api_key
+
+    # Platform agents already persist this identifier. Soul ownership must use
+    # the exact same derivation so existing agent rows do not change owners.
+    assert actor_id_from_api_key("test-key") == "api_5e1d3346fadf80ee7f967211"
+    assert actor_id_from_api_key(" test-key ") == "api_5e1d3346fadf80ee7f967211"
+
+
 def test_all_soul_endpoints_hide_cross_owner_rows(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     _connect(client, OWNER_A_KEY, "soul_owner_a")

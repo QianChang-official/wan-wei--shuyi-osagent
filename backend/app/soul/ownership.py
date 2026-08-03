@@ -7,17 +7,11 @@ principal boundary without storing or returning the credential itself.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Any
 
 from ..db import get_conn
-from ..security.auth import get_api_key
-
-
-# Keep the derivation compatible with platform_api.agents._actor_id so one API
-# principal has one stable identity across both ownership domains.
-_ACTOR_ID_SALT = b"wanwei-agent-owner-v1"
+from ..security.auth import actor_id_from_api_key, get_api_key
 
 
 class SoulAccessDenied(LookupError):
@@ -32,23 +26,6 @@ class SoulSelectionRequired(ValueError):
 class SoulScope:
     soul_id: str
     owner_id: str
-
-
-def actor_id_from_api_key(api_key: str) -> str:
-    """Derive a non-reversible, stable owner identifier from an API key."""
-    normalized = api_key.strip()
-    if not normalized:
-        raise ValueError("api_key must not be empty")
-    digest = hashlib.scrypt(
-        normalized.encode("utf-8"),
-        salt=_ACTOR_ID_SALT,
-        n=2**14,
-        r=8,
-        p=1,
-        dklen=12,
-        maxmem=64 * 1024 * 1024,
-    )
-    return "api_" + digest.hex()
 
 
 def configured_actor_id() -> str:

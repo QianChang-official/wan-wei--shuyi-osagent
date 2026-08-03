@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import secrets
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -20,6 +22,30 @@ from starlette.responses import JSONResponse
 
 
 MIN_PRODUCTION_API_KEY_LENGTH = 32
+_ACTOR_ID_SALT = b"wanwei-agent-owner-v1"
+
+
+@lru_cache(maxsize=16)
+def actor_id_from_api_key(api_key: str) -> str:
+    """Derive the stable, non-reversible owner ID shared by protected APIs.
+
+    Valid API keys are high-entropy values and repeat across requests. Caching
+    avoids paying scrypt's deliberate CPU and memory cost on every authenticated
+    Soul, memory, and agent operation while retaining the existing identifier.
+    """
+    normalized = api_key.strip()
+    if not normalized:
+        raise ValueError("api_key must not be empty")
+    digest = hashlib.scrypt(
+        normalized.encode("utf-8"),
+        salt=_ACTOR_ID_SALT,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=12,
+        maxmem=64 * 1024 * 1024,
+    )
+    return "api_" + digest.hex()
 
 
 def is_production_mode() -> bool:

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import bisect
-import hashlib
 import random
 import uuid
 from datetime import datetime, timedelta
@@ -31,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.platform_api.deps import THINK_DEPTHS, THINK_DEPTH_LABELS, WORK_GEARS
 from app.platform_api.guards import audit_safe, require_gear
 from app.platform_api.store import JsonStore
+from app.security.auth import actor_id_from_api_key
 
 router = APIRouter(prefix='/agents', tags=['智能体舱'])
 
@@ -65,21 +65,11 @@ def _new_id(prefix: str) -> str:
     return f'{prefix}_{uuid.uuid4().hex[:10]}'
 
 
-# owner 身份派生盐：输入已是高熵随机 API Key（桌面端 48 位十六进制），
-# 固定盐不削弱防护目标（混淆存储在 agents.json 中的原始密钥）；
-# 使用 scrypt（内存困难型）满足敏感数据哈希的强度要求。
-_ACTOR_ID_SALT = b'wanwei-agent-owner-v1'
-
-
 def _actor_id(request: Request) -> str:
     api_key = (request.headers.get('x-api-key') or '').strip()
     if not api_key:
         return 'anonymous'
-    digest = hashlib.scrypt(
-        api_key.encode('utf-8'), salt=_ACTOR_ID_SALT,
-        n=2**14, r=8, p=1, dklen=12, maxmem=64 * 1024 * 1024,
-    )
-    return 'api_' + digest.hex()
+    return actor_id_from_api_key(api_key)
 
 
 def _agent_visible(agent: dict, owner_id: str) -> bool:
