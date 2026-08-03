@@ -1093,22 +1093,27 @@ def get_flow(fid: str) -> dict:
 
 @router.put('/flows/{fid}')
 def update_flow(fid: str, payload: FlowPatch) -> dict:
-    existing = _flows.get(fid)
-    if existing is None:
-        raise HTTPException(404, f'流程不存在：{fid}')
     patch = payload.model_dump(exclude_unset=True)
-    merged = dict(existing)
-    merged.update(patch)
-    try:
+
+    def _apply(data: dict) -> dict:
+        existing = data.get(fid)
+        if not isinstance(existing, dict):
+            raise HTTPException(404, f'流程不存在：{fid}')
+        merged = dict(existing)
+        merged.update(patch)
         flow = _normalize_flow(
             merged,
             fid=fid,
             existing=existing,
             preserve_existing_steps=patch.get('steps') is None,
         )
+        data[fid] = flow
+        return flow
+
+    try:
+        flow = _flows.mutate(_apply)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    _flows.set(fid, flow)
     return _flow_view(flow)
 
 

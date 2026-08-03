@@ -111,9 +111,15 @@ Compose 默认以生产模式运行，要求通过 secret 文件提供 API key�
 ## 真实边界
 
 - 当前系统是单节点 alpha，不宣称企业生产级、多副本高可用或 SLA。
+- Soul 与记忆按 API principal 隔离：服务从 `X-API-Key` 派生不可逆 owner ID，
+  Soul、persona、会话、感知记录及记忆检索/注入均要求 owner 与 `soul_id` 同时匹配；
+  跨 owner 请求按“不存在”处理，不向调用方泄露另一 owner 的记录。多 Soul owner
+  必须显式选择 `soul_id`，并发写入在事务/锁边界内合并。
 - 「离线」的如实边界：运行时核心功能不依赖外网服务；但桌面端首次启动需联网执行 `pip install -r requirements.txt`（默认清华镜像源），纯离线目标机需预先准备 Python 依赖包。
 - 31 家模型接入中，未接通真实外部调用的供应商均诚实标注为 stub；OAuth 设备授权流程为模拟 stub。
-- 沙盒执行等自动化能力在 alpha 阶段为受约束的 dry-run；梦境归档仅支持手动触发，无每夜调度或启动时补跑。
+- 自动化工作流在 alpha 阶段仍是受约束的 dry-run：shell/http/agent/memory 步骤只返回 `would_run`，不真实执行；任何未来真实步骤都必须显式选择 `sandbox` 或 `device` gear，`human_review` 不能被当作执行授权。
+- MCP stdio 真实进程默认关闭，必须同时满足 device 授权和部署白名单；将 `python`、`node`、PowerShell、`npx`、`uvx` 等解释器或包启动器加入白名单，等同向该服务账号授予任意代码执行能力，生产环境应只允许受控的专用 MCP 包装器路径。子进程不会继承 `WANWEI_*` 服务秘密，但这不降低白名单本身的高信任级别。
+- 梦境归档仅支持手动触发，无每夜调度或启动时补跑。
 - 原生 Kylin 检索在 SDK 不可用时回退 FTS5；OCR、物理目标硬件和其他目标架构仍需独立验收。
 - 正式偏好提取准确率、知识检索召回率和冲突处理正确率尚未形成赛题级实测报告。
 

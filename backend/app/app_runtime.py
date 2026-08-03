@@ -41,6 +41,8 @@ from .memory_runtime.evolution import reflect_task
 from .platform.service import list_modules, module_summary
 from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
 from .model_gateway.service import (
+    _run_smoke_in_dedicated_pool,
+    _run_smoke_in_dedicated_pool_async,
     delete_config,
     list_configs,
     list_providers,
@@ -1355,6 +1357,51 @@ def soul_dream(req: SoulDreamIn, request: Request = None):
 # /soul/chat — OpenAI-compatible soul-injected chat
 # ---------------------------------------------------------------------------
 
+
+def _chat_request_context(messages: list[dict], model: str) -> tuple[str, str, str] | None:
+    """Resolve the configured provider once and bound the prompt payload."""
+    from .model_gateway.service import local_llama_settings
+
+    api_base, env_model, _configured = local_llama_settings()
+    api_model = env_model if model == 'default' else model
+    if not api_base or not api_model:
+        return None
+    prompt = '\n'.join(
+        str(message.get('content', ''))
+        for message in messages
+        if isinstance(message, dict)
+    )[-4000:]
+    return api_base, api_model, prompt
+
+
+def _provider_error_completion(api_model: str, exc: Exception) -> dict:
+    """Return a stable public error while keeping provider details in logs only."""
+    logger.warning(
+        'OpenAI-compatible provider request failed: model=%s error_type=%s',
+        api_model,
+        type(exc).__name__,
+        exc_info=True,
+    )
+    return {
+        'provider': 'openai_compatible',
+        'model': api_model,
+        'content': '',
+        'latency_ms': 0,
+        'status': 'provider_error',
+        'error': 'provider_unavailable',
+    }
+
+
+def _local_mock_completion() -> dict:
+    return {
+        'provider': 'local_mock',
+        'model': 'memoryops-local-mock',
+        'content': '（local_mock 回复）我收到了你的消息，正在思考中……',
+        'latency_ms': 0,
+        'status': 'ok',
+    }
+
+
 def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
     """Lightweight chat completion via the configured model gateway.
 
@@ -1362,21 +1409,14 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
     03-#14: env 解析、allowlist 解析与超时常量统一走 model_gateway.service
     的单源访问函数，不再在本函数内各自重读/重解析。
     03-#18 加固：真实调用复用 model_gateway 的 hardened smoke path，
-    共享 pinned-IP SSRF 防护与较短超时；避免本路由私自重建一套
-    httpx/DNS 解析逻辑。注意：并发限流信号量在 run_provider_test 入口，
-    本路径不经过（soul chat 走 FastAPI 线程池自然限流）。
+    共享 pinned-IP SSRF 防护、较短超时和有界专用线程池；避免本路由
+    私自重建一套 httpx/DNS 解析逻辑。
     """
-    from .model_gateway.service import _openai_compatible_smoke, local_llama_settings  # noqa: SLF001
-
-    api_base, env_model, _configured = local_llama_settings()
-    api_model = env_model if model == 'default' else model
-
-    if api_base and api_model:
+    context = _chat_request_context(messages, model)
+    if context is not None:
+        api_base, api_model, prompt = context
         try:
-            # Reuse the hardened gateway path: pinned-IP SSRF defense, 20s timeout,
-            # no duplicate smoke preflight, and no separate DNS resolution here.
-            prompt = '\n'.join(str(m.get('content', '')) for m in messages if isinstance(m, dict))[-4000:]
-            status, latency_ms, content = _openai_compatible_smoke(
+            status, latency_ms, content = _run_smoke_in_dedicated_pool(
                 api_base, '', api_model, prompt, 512,
             )
             if status != 'ok':
@@ -1390,33 +1430,37 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
             }
         except Exception as exc:
             # B3: 失败如实返回 provider_error，不静默回退 mock
-            logger.warning(
-                'OpenAI-compatible provider request failed: model=%s error_type=%s',
-                api_model,
-                type(exc).__name__,
-                exc_info=True,
+            return _provider_error_completion(api_model, exc)
+    return _local_mock_completion()
+
+
+async def _chat_complete_async(messages: list[dict], model: str = 'default') -> dict:
+    """Async counterpart that leaves the Starlette worker pool available."""
+    context = _chat_request_context(messages, model)
+    if context is not None:
+        api_base, api_model, prompt = context
+        try:
+            status, latency_ms, content = await _run_smoke_in_dedicated_pool_async(
+                api_base, '', api_model, prompt, 512,
             )
+            if status != 'ok':
+                raise RuntimeError(f'gateway_status={status}')
             return {
                 'provider': 'openai_compatible',
                 'model': api_model,
-                'content': '',
-                'latency_ms': 0,
-                'status': 'provider_error',
-                'error': 'provider_unavailable',
+                'content': content,
+                'latency_ms': latency_ms,
+                'status': 'ok',
             }
+        except Exception as exc:
+            return _provider_error_completion(api_model, exc)
 
     # Fallback: local_mock（仅当未配置 API 时，而非 API 调用失败时）
-    return {
-        'provider': 'local_mock',
-        'model': 'memoryops-local-mock',
-        'content': '（local_mock 回复）我收到了你的消息，正在思考中……',
-        'latency_ms': 0,
-        'status': 'ok',
-    }
+    return _local_mock_completion()
 
 
 @app.post('/soul/chat')
-def soul_chat(req: SoulChatIn, request: Request = None):
+async def soul_chat(req: SoulChatIn, request: Request = None):
     """Soul-injected chat endpoint.
 
     1. Inject soul prompt into messages
@@ -1447,7 +1491,7 @@ def soul_chat(req: SoulChatIn, request: Request = None):
         )
 
     # 3. Call model gateway
-    completion = _chat_complete(injected_messages, model=req.model)
+    completion = await _chat_complete_async(injected_messages, model=req.model)
 
     # 4. Perception: intake assistant reply
     assistant_content = completion.get('content', '')

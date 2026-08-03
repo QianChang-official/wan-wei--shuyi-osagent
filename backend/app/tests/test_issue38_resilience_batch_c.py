@@ -106,6 +106,66 @@ def test_concurrent_flow_creates_cannot_cross_count_limit(automation_client, mon
     assert len(automation._flows.all()) == 1
 
 
+def test_concurrent_flow_partial_updates_are_not_lost(monkeypatch):
+    flow_id = "flow-concurrent-update"
+    initial = {
+        "id": flow_id,
+        "name": "before",
+        "desc": "before",
+        "trigger": "manual",
+        "cron": None,
+        "steps": [],
+        "enabled": True,
+        "created_at": "2026-08-04T00:00:00+08:00",
+        "updated_at": "2026-08-04T00:00:00+08:00",
+        "ai_editable": True,
+    }
+
+    class ConcurrentFlowStore:
+        def __init__(self):
+            self.data = {flow_id: initial}
+            self.lock = threading.RLock()
+            self.legacy_get_barrier = threading.Barrier(2)
+
+        def get(self, key):
+            with self.lock:
+                value = dict(self.data[key])
+            # This deterministically exposes the old get/merge/set race while
+            # the mutate-based implementation never enters this legacy path.
+            self.legacy_get_barrier.wait(timeout=2)
+            return value
+
+        def set(self, key, value):
+            with self.lock:
+                self.data[key] = value
+
+        def mutate(self, fn):
+            with self.lock:
+                return fn(self.data)
+
+    store = ConcurrentFlowStore()
+    monkeypatch.setattr(automation, "_flows", store)
+
+    with ThreadPoolExecutor(max_workers=2) as callers:
+        futures = [
+            callers.submit(
+                automation.update_flow,
+                flow_id,
+                automation.FlowPatch(name="renamed"),
+            ),
+            callers.submit(
+                automation.update_flow,
+                flow_id,
+                automation.FlowPatch(desc="preserved"),
+            ),
+        ]
+        for future in futures:
+            future.result(timeout=5)
+
+    assert store.data[flow_id]["name"] == "renamed"
+    assert store.data[flow_id]["desc"] == "preserved"
+
+
 def test_flow_rejects_more_than_bounded_step_count(automation_client):
     steps = [_step("agent", {"task": f"task-{index}"}) for index in range(automation.MAX_STEPS_PER_FLOW + 1)]
 
@@ -317,6 +377,85 @@ def test_async_smoke_does_not_starve_the_only_anyio_worker(monkeypatch):
     assert probe.json() == {"status": "ready"}
     assert smoke.status_code == 200
     assert smoke.json()["status"] == "ok"
+
+
+def test_chat_completion_does_not_starve_the_only_anyio_worker(monkeypatch):
+    """The async soul-chat model wait must stay outside AnyIO's worker pool."""
+    from backend.app import app_runtime
+
+    smoke_started = threading.Event()
+    release_smoke = threading.Event()
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_BASE", "https://model.example/v1")
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "chat-model")
+
+    def blocking_smoke(*_args):
+        smoke_started.set()
+        if not release_smoke.wait(timeout=5):
+            raise TimeoutError("test did not release chat worker")
+        return "ok", 3, "ready"
+
+    monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", blocking_smoke)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        previous_tokens = limiter.total_tokens
+        limiter.total_tokens = 1
+        gateway_service.start_smoke_executor()
+        try:
+            yield
+        finally:
+            limiter.total_tokens = previous_tokens
+            gateway_service.shutdown_smoke_executor()
+
+    app = FastAPI(lifespan=lifespan)
+
+    @app.post("/chat")
+    async def chat_route():
+        return await app_runtime._chat_complete_async(
+            [{"role": "user", "content": "hello"}],
+        )
+
+    @app.get("/probe")
+    def synchronous_probe():
+        return {"status": "ready"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as callers:
+        chat_response = callers.submit(client.post, "/chat")
+        assert smoke_started.wait(timeout=2)
+        probe_response = callers.submit(client.get, "/probe")
+        try:
+            probe = probe_response.result(timeout=1)
+        finally:
+            release_smoke.set()
+        chat = chat_response.result(timeout=5)
+
+    assert probe.status_code == 200
+    assert probe.json() == {"status": "ready"}
+    assert chat.status_code == 200
+    assert chat.json()["status"] == "ok"
+
+
+def test_chat_complete_sync_uses_dedicated_worker(monkeypatch):
+    """Legacy synchronous callers retain the bounded worker isolation."""
+    from backend.app import app_runtime
+
+    caller_thread = threading.current_thread().name
+    observed: dict[str, str] = {}
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_BASE", "https://model.example/v1")
+    monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "chat-model")
+
+    def fake_smoke(*_args):
+        observed["thread"] = threading.current_thread().name
+        return "ok", 3, "ready"
+
+    monkeypatch.setattr(gateway_service, "_openai_compatible_smoke", fake_smoke)
+
+    result = app_runtime._chat_complete([{"role": "user", "content": "hello"}])
+
+    assert result["status"] == "ok"
+    assert observed["thread"].startswith("model-gateway-smoke")
+    assert observed["thread"] != caller_thread
 
 
 def test_real_smoke_rejects_when_bounded_queue_is_full(monkeypatch):
