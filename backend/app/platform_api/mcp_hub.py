@@ -467,6 +467,7 @@ _COMBINABLE_INLINE_FLAGS: dict[str, frozenset[str]] = {
     'ruby': frozenset({'e'}),
     'perl': frozenset({'e'}),
 }
+_PYTHON_COMBINABLE_SHORT_OPTIONS = frozenset('bBdEiIOPqRrsStTuvUx3')
 
 
 def _launcher_name(command: str) -> str:
@@ -475,6 +476,36 @@ def _launcher_name(command: str) -> str:
         if name.endswith(suffix):
             return name[:-len(suffix)]
     return name
+
+
+def _python_short_options_execute_inline(token: str) -> bool:
+    """Return whether a Python short-option token contains ``-c``.
+
+    CPython combines known no-value switches (for example ``-I`` and ``-B``).
+    Every other switch consumes the remainder, terminates parsing, or is invalid,
+    so a later ``c`` in that token cannot act as another short option.
+    """
+    if not token.startswith('-') or token.startswith('--'):
+        return False
+    for option in token[1:]:
+        if option == 'c':
+            return True
+        if option not in _PYTHON_COMBINABLE_SHORT_OPTIONS:
+            return False
+    return False
+
+
+def _cmd_token_executes_command(token: str) -> bool:
+    """Return whether one CMD option token contains a ``/c`` or ``/k`` switch."""
+    if not token.startswith('/'):
+        return False
+    # CMD accepts multiple slash-delimited switches in one argv token, so each
+    # segment must be inspected instead of comparing only the complete token.
+    return any(
+        segment.startswith(('c', 'k'))
+        for segment in token.lower().split('/')[1:]
+        if segment
+    )
 
 
 def _validate_stdio_args(command: str, args: list[str] | None) -> None:
@@ -507,20 +538,14 @@ def _validate_stdio_args(command: str, args: list[str] | None) -> None:
             inspected_token.startswith(prefix) and len(token) > len(prefix)
             for prefix in ('-c', '/c', '/k', '-e', '-p')
         )
-        combined_flags = _COMBINABLE_INLINE_FLAGS.get(launcher, frozenset())
-        if launcher == 'py' or launcher.startswith('python'):
-            combined_flags = frozenset({'c'})
-        short_cluster = token[1:] if re.fullmatch(r'-[A-Za-z]+', token) else ''
-        has_combined_inline_flag = bool(combined_flags.intersection(short_cluster))
-        cmd_switches = (
-            [part for part in lowered.split('/') if part]
-            if launcher == 'cmd'
-            else []
-        )
-        has_chained_cmd_execution = any(
-            switch.startswith(('c', 'k'))
-            for switch in cmd_switches
-        )
+        is_python_launcher = launcher == 'py' or launcher.startswith('python')
+        if is_python_launcher:
+            has_combined_inline_flag = _python_short_options_execute_inline(token)
+        else:
+            combined_flags = _COMBINABLE_INLINE_FLAGS.get(launcher, frozenset())
+            short_cluster = token[1:] if re.fullmatch(r'-[A-Za-z]+', token) else ''
+            has_combined_inline_flag = bool(combined_flags.intersection(short_cluster))
+        has_chained_cmd_execution = launcher == 'cmd' and _cmd_token_executes_command(token)
         if (
             option_for_match in _INLINE_EXEC_FLAGS
             or has_attached_short_code

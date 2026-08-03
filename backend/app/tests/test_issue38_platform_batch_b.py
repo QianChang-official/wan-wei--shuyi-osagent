@@ -198,8 +198,10 @@ def test_mcp_server_partial_updates_are_atomic(monkeypatch):
         ('cmd.exe', ['/d', '/c', 'dir']),
         ('bash', ['-lc', 'id']),
         ('python', ['-Ic', 'print(1)']),
+        ('python', ['-IBc', 'print(1)']),
         ('cmd.exe', ['/d/c', 'dir']),
         ('cmd.exe', ['/q/d/c', 'dir']),
+        ('cmd.exe', ['/d/k', 'dir']),
     ],
 )
 def test_mcp_interpreter_inline_execution_flags_are_rejected(command, args):
@@ -213,6 +215,24 @@ def test_mcp_interpreter_double_dash_stops_option_scanning():
     from backend.app.platform_api import mcp_hub
 
     mcp_hub._validate_stdio_args('python', ['--', '-c', 'not-inline-code'])
+
+
+@pytest.mark.parametrize(
+    ('command', 'args'),
+    [
+        ('python', ['-IB', 'trusted_server.py']),
+        ('python', ['-Xdevc', 'trusted_server.py']),
+        ('python', ['-Wignore::DeprecationWarning', 'trusted_server.py']),
+        ('py', ['-V:PythonCore/3.14c']),
+        ('cmd.exe', ['/d', '/q']),
+        ('npx.cmd', ['--yes', 'trusted-mcp-package']),
+        ('trusted-mcp', ['-c', 'literal-wrapper-argument']),
+    ],
+)
+def test_mcp_stdio_argument_guard_preserves_non_inline_options(command, args):
+    from backend.app.platform_api import mcp_hub
+
+    mcp_hub._validate_stdio_args(command, args)
 
 
 def test_mcp_late_runtime_result_does_not_overwrite_newer_config(monkeypatch):
