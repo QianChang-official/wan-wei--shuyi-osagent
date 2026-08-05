@@ -15,8 +15,19 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 
-def _client(tmp_path: Path, *, peer: str = "testclient") -> TestClient:
-    os.environ["WANWEI_API_KEY"] = "test-key"
+def _client(
+    tmp_path: Path, *, peer: str = "testclient", explicit_key: bool = True
+) -> TestClient:
+    """构造测试客户端。
+
+    ``explicit_key=True`` 模拟运维方显式配置 ``WANWEI_API_KEY``（此时回环免密
+    让位给 fail-closed 校验）；``False`` 模拟裸启动自举密钥的桌面即插即用场景。
+    """
+    if explicit_key:
+        os.environ["WANWEI_API_KEY"] = "test-key"
+    else:
+        os.environ.pop("WANWEI_API_KEY", None)
+        os.environ.pop("WANWEI_API_KEY_FILE", None)
     os.environ["WANWEI_MEMORY_DB"] = str(tmp_path / "memory.db")
     os.environ.pop("WANWEI_PRODUCTION", None)
 
@@ -34,11 +45,42 @@ def _client(tmp_path: Path, *, peer: str = "testclient") -> TestClient:
 
 
 def test_loopback_peer_with_loopback_bind_is_exempt(tmp_path, monkeypatch):
-    """桌面单机场景：回环绑定 + 回环对端无 key 可访问（即插即用核心）。"""
+    """桌面单机场景：回环绑定 + 回环对端 + 自举密钥，无 key 可访问（即插即用核心）。"""
     monkeypatch.setenv("WANWEI_HOST", "127.0.0.1")
-    client = _client(tmp_path, peer="127.0.0.1")
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
+    client = _client(tmp_path, peer="127.0.0.1", explicit_key=False)
     # /model-gateway/configs 是受保护 GET，无 key 时回环应放行。
     assert client.get("/model-gateway/configs").status_code == 200
+
+
+def test_explicit_api_key_env_disables_exemption(tmp_path, monkeypatch):
+    """回归 CI smoke：显式配置 WANWEI_API_KEY 即视为要求鉴权，回环也不免密。
+
+    起因：CI 的 HTTP integration smoke 断言「缺 key 必 401」，但服务以
+    WANWEI_API_KEY + WANWEI_PRODUCTION 启动、请求来自 127.0.0.1，旧逻辑
+    照样免密放行，导致 smoke 失败。
+    """
+    monkeypatch.setenv("WANWEI_HOST", "127.0.0.1")
+    client = _client(tmp_path, peer="127.0.0.1", explicit_key=True)
+    assert client.get("/model-gateway/configs").status_code == 401
+    assert (
+        client.get(
+            "/model-gateway/configs",
+            headers={"X-API-Key": "test-key"},
+        ).status_code
+        == 200
+    )
+
+
+def test_production_mode_disables_exemption(tmp_path, monkeypatch):
+    """生产模式下回环免密必须关闭（即使密钥是自举的）。"""
+    monkeypatch.setenv("WANWEI_HOST", "127.0.0.1")
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
+    client = _client(tmp_path, peer="127.0.0.1", explicit_key=False)
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+    assert client.get("/model-gateway/configs").status_code == 401
 
 
 def test_loopback_exempt_disabled_by_env(tmp_path, monkeypatch):

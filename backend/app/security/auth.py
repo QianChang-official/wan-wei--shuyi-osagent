@@ -60,7 +60,12 @@ def actor_id_from_api_key(api_key: str) -> str:
     normalized = api_key.strip()
     if not normalized:
         raise ValueError("api_key must not be empty")
-    digest = hashlib.blake2b(
+    # 说明（CodeQL py/weak-sensitive-data-hashing）：这里不是密码哈希。
+    # 输入是 secrets.token_hex(24)（96 bit 熵）级别的 API key，输出仅用作
+    # 稳定、不可逆的 actor 标识符，不用于凭据校验（校验走 compare_digest
+    # 明文常量时间比较）。高熵输入下离线暴力破解不成立，因此无需
+    # scrypt/argon2 这类计算昂贵 KDF；相反 KDF 会给每次请求加 ~100ms。
+    digest = hashlib.blake2b(  # noqa: S324  # nosec B324
         normalized.encode("utf-8"),
         digest_size=12,
         salt=_ACTOR_ID_SALT,
@@ -201,12 +206,31 @@ def _is_loopback_bound() -> bool:
 
 
 def _loopback_exempt_enabled() -> bool:
-    """Loopback exemption is on unless explicitly disabled."""
-    return os.getenv("WANWEI_REQUIRE_KEY_ON_LOOPBACK", "").strip().lower() not in {
+    """回环免密是否启用。
+
+    默认开启（单机自用即插即用），但以下任一情形视为"运维方明确要求鉴权"，
+    免密必须让位给 fail-closed 路径：
+
+    1. ``WANWEI_REQUIRE_KEY_ON_LOOPBACK`` 显式打开；
+    2. ``WANWEI_PRODUCTION`` 生产模式；
+    3. 显式提供了密钥来源（``WANWEI_API_KEY`` / ``WANWEI_API_KEY_FILE``）——
+       用户特意配了密钥，就是想让它被校验，而非被绕过。
+
+    自举生成的密钥不算"显式提供"，所以裸启动仍然免密可用。
+    """
+    if os.getenv("WANWEI_REQUIRE_KEY_ON_LOOPBACK", "").strip().lower() in {
         "1",
         "true",
         "yes",
-    }
+    }:
+        return False
+    if is_production_mode():
+        return False
+    if os.getenv("WANWEI_API_KEY", "").strip() or os.getenv(
+        "WANWEI_API_KEY_FILE", ""
+    ).strip():
+        return False
+    return True
 
 
 def warn_if_exposed_bind() -> None:
