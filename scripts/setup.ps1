@@ -1,4 +1,4 @@
-# 一键环境安装（Windows）：创建 backend\.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 22+、npm 10+）。
+# 一键环境安装（Windows）：创建 backend\.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 22.12+、npm 10+）。
 [CmdletBinding()]
 param(
     [switch]$SkipFrontendBuild
@@ -20,8 +20,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $nodeVersion = [version]((node --version).Trim() -replace '^v', '')
-if ($nodeVersion -lt [version]'22.0.0') {
-    throw "Node.js 22 or newer is required; found $nodeVersion."
+if ($nodeVersion -lt [version]'22.12.0') {
+    throw "Node.js 22.12 or newer is required; found $nodeVersion."
 }
 $npmVersion = [version]((npm --version).Trim())
 if ($npmVersion -lt [version]'10.0.0') {

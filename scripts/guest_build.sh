@@ -1,7 +1,9 @@
 #!/bin/bash
 # guest_build.sh — 在麒麟 guest 上构建桌面 deb/rpm 包（免 apt，用户态 node）
 set -e
-export PATH="$HOME/opt/node-v20/bin:$PATH"
+export PATH="$HOME/opt/node-v22/bin:$PATH"
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' \
+  || { echo "Node.js 22.12+ is required; run guest_setup2.sh first" >&2; exit 1; }
 export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
 

@@ -88,10 +88,18 @@ def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
     新写入应在 provenance 中标记 soul_id（intake.py 已接入）。
     """
     try:
+        owner_row = get_conn().execute(
+            "SELECT owner_id FROM soul_persona WHERE soul_id=?",
+            (soul_id,),
+        ).fetchone()
+        if owner_row is None or not owner_row["owner_id"]:
+            return []
+        owner_id = str(owner_row["owner_id"])
         rows = get_conn().execute(
             """SELECT capsule_id, content, state, governance
                FROM memory_capsules_v2
-               WHERE (json_extract(provenance, '$.soul_id') = ?
+               WHERE json_extract(provenance, '$.owner_id') = ?
+                 AND (json_extract(provenance, '$.soul_id') = ?
                        OR json_extract(provenance, '$.soul_id') IS NULL)
                  AND json_extract(state, '$.importance_score') IS NOT NULL
                  -- 治理隔离：与 capsule_store.allowed_for_context 对齐。
@@ -106,7 +114,7 @@ def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
                ORDER BY CASE WHEN json_extract(provenance, '$.soul_id') = ? THEN 0 ELSE 1 END,
                         json_extract(state, '$.importance_score') DESC
                LIMIT ?""",
-            (soul_id, soul_id, limit),
+            (owner_id, soul_id, soul_id, limit),
         ).fetchall()
     except Exception:
         return []

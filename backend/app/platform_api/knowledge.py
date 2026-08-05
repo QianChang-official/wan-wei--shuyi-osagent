@@ -526,10 +526,11 @@ def search_docs(
             try:
                 rows = conn.execute(
                     """
-                    SELECT doc_id, title,
+                    SELECT kb_fts.doc_id, kb_docs.title,
                            snippet(kb_fts, 2, '<b>', '</b>', '…', 24) AS snip,
                            bm25(kb_fts) AS rank
                     FROM kb_fts
+                    JOIN kb_docs ON kb_docs.id = kb_fts.doc_id
                     WHERE kb_fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
@@ -540,7 +541,9 @@ def search_docs(
                     items = [
                         {
                             'id': r['doc_id'],
-                            'title': _compact_cjk_snippet(r['title'] or ''),
+                            # API 字段保持原始文本语义；HTML 输出编码属于渲染端职责。
+                            # 联表读取规范标题，避免返回 FTS 索引中的 CJK 插空格副本。
+                            'title': r['title'],
                             'snippet': _sanitize_fts_snippet(r['snip'] or ''),
                             'score': round(-float(r['rank']), 6),
                         }
@@ -565,7 +568,8 @@ def search_docs(
     ).fetchall()
     items = [
         {
-            'id': r['id'], 'title': r['title'],
+            'id': r['id'],
+            'title': r['title'],
             'snippet': _like_snippet(r['body'], q),
             'score': 1.0,
         }

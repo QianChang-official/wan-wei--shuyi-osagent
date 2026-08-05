@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -51,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.platform_api.guards import audit_safe, device_gear_enabled, mask_secret_keys
 from app.platform_api.store import JsonStore
 from app.security import encryption
+from app.security.ssrf import validate_external_url
 
 router = APIRouter(prefix='/mcp', tags=['mcp-hub'])
 logger = logging.getLogger(__name__)
@@ -67,14 +69,16 @@ Transport = Literal['stdio', 'sse', 'streamable_http']
 _CALLS_KEY = '_recent_calls'
 _SEED_KEY = '_seeded_at'
 _COMMAND_CLEAR_KEY = '_preset_command_cleared_at'
+_CONFIG_REVISION_KEY = '_config_revision'
 _CALLS_CAP = 20
 _HANDSHAKE_BUDGET = 10.0  # initialize 握手独立预算（秒），与业务请求计时分离
 _DEFAULT_CALL_BUDGET = 30.0  # tools/list、tools/call 单次请求的保守默认预算（秒）
 _MAX_CALL_BUDGET = 300.0  # 服务器级 timeout_seconds 上限（秒）
 
 # 真实 stdio 会启动本机进程，必须同时满足服务端 device 授权和显式命令
-# 白名单。既支持 PATH 中的可执行文件名，也支持受控绝对路径；不要允许
-# python/powershell/cmd 这类通用解释器，以免退化为任意命令执行。
+# 白名单。既支持 PATH 中的可执行文件名，也支持受控绝对路径。把
+# python/node/powershell 或 npx/uvx 等解释器、包启动器加入白名单，本质上
+# 等同授予任意代码执行能力；生产部署应只允许受控的专用 MCP 包装器路径。
 _DEFAULT_STDIO_COMMANDS: frozenset[str] = frozenset()
 _STDIO_COMMANDS_ENV = 'WANWEI_MCP_STDIO_COMMANDS'
 
@@ -100,7 +104,7 @@ class ServerIn(BaseModel):
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
-    url: str | None = None
+    url: str | None = Field(default=None, max_length=2048)
     enabled: bool = True
     # 连接态为服务端内部状态，客户端仅可声明/重置为 unknown（缺省即 unknown）
     status: Literal['unknown'] = 'unknown'
@@ -119,7 +123,7 @@ class ServerPatch(BaseModel):
     command: str | None = None
     args: list[str] | None = None
     env: dict[str, str] | None = None
-    url: str | None = None
+    url: str | None = Field(default=None, max_length=2048)
     enabled: bool | None = None
     # 仅允许重置为 unknown；connected/error 由服务端探测/调用结果维护
     status: Literal['unknown'] | None = None
@@ -192,40 +196,51 @@ _PRESETS: list[dict[str, Any]] = [
 
 def _ensure_seeded() -> None:
     """首次访问时写入 3 个预置示例服务器（enabled:false），幂等。"""
-    if not _store.get(_SEED_KEY):
+    def _seed(data: dict) -> None:
+        if data.get(_SEED_KEY):
+            return
         now = _now()
-        mapping: dict[str, Any] = {_SEED_KEY: now}
+        data[_SEED_KEY] = now
         for preset in _PRESETS:
             rec = dict(preset)
             rec['created_at'] = now
             rec['tools_cache'] = []
             rec['tools_count'] = 0
-            mapping[rec['id']] = rec
-        _store.update(mapping)
+            rec[_CONFIG_REVISION_KEY] = 1
+            data[rec['id']] = rec
+
+    if not _store.get(_SEED_KEY):
+        _store.mutate(_seed)
     _migrate_clear_preset_commands()
 
 
 def _migrate_clear_preset_commands() -> None:
     """一次性迁移：修复前播种的预置示例仍带可执行 command，将其清空。"""
-    if _store.get(_COMMAND_CLEAR_KEY):
-        return
     preset_ids = {p['id'] for p in _PRESETS}
-    updated: dict[str, Any] = {_COMMAND_CLEAR_KEY: _now()}
-    for sid in preset_ids:
-        rec = _store.get(sid)
-        if not isinstance(rec, dict):
-            continue
-        # 仅当记录仍携带旧版预置命令（npx/uvx）时才清空，避免误伤用户自定义配置
-        old_commands = {'npx', 'uvx'}
-        if rec.get('command') in old_commands and not rec.get('enabled'):
+
+    def _migrate(data: dict) -> None:
+        if data.get(_COMMAND_CLEAR_KEY):
+            return
+        for sid in preset_ids:
+            stored = data.get(sid)
+            if not isinstance(stored, dict):
+                continue
+            # Only clear untouched, disabled legacy presets; custom commands remain.
+            if stored.get('command') not in {'npx', 'uvx'} or stored.get('enabled'):
+                continue
+            rec = dict(stored)
             rec['command'] = None
             rec['args'] = []
+            rec[_CONFIG_REVISION_KEY] = _config_revision(rec) + 1
             rec['note'] = next(
                 (p['note'] for p in _PRESETS if p['id'] == sid),
                 rec.get('note', ''),
             )
-            updated[sid] = rec
-    _store.update(updated)
+            data[sid] = rec
+        data[_COMMAND_CLEAR_KEY] = _now()
+
+    if not _store.get(_COMMAND_CLEAR_KEY):
+        _store.mutate(_migrate)
 
 
 def _servers() -> dict[str, dict]:
@@ -244,9 +259,16 @@ def _get_server_or_404(sid: str) -> dict:
     return rec
 
 
+def _config_revision(rec: dict) -> int:
+    """Return the persisted configuration generation, tolerating legacy records."""
+    value = rec.get(_CONFIG_REVISION_KEY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
 def _redact_env(rec: dict) -> dict:
     """返回服务器记录的脱敏副本：env 只保留键名，不暴露真实密钥值。"""
     redacted = dict(rec)
+    redacted.pop(_CONFIG_REVISION_KEY, None)
     env = redacted.get('env')
     if isinstance(env, dict):
         redacted['env'] = {k: '' for k in env}
@@ -290,27 +312,34 @@ def _decrypt_env(rec: dict) -> dict[str, str]:
             plain[key] = value
             migrated = True
     if migrated:
-        rec = dict(rec)
-        rec['env'] = _encrypt_env(env)
         sid = rec.get('id')
         if sid:
-            _store.set(sid, rec)
+            def _migrate_current(data: dict) -> None:
+                current = data.get(sid)
+                if not isinstance(current, dict):
+                    return
+                current_env = current.get('env')
+                if not isinstance(current_env, dict):
+                    return
+                secured_env = _encrypt_env(current_env)
+                if secured_env == current_env:
+                    return
+                updated = dict(current)
+                updated['env'] = secured_env
+                data[sid] = updated
+
+            # Only replace the current env field. Rewriting the stale record passed
+            # here could roll back a concurrent configuration update.
+            _store.mutate(_migrate_current)
     return plain
 
 
 def _delete_key(key: str) -> None:
-    """JsonStore 无公开 delete，整读重写移除指定键（带锁，失败退化为墓碑）。"""
-    data = _store.all()
-    if key not in data:
-        return
-    data.pop(key)
-    write = getattr(_store, '_write', None)
-    lock = getattr(_store, '_lock', None)
-    if callable(write) and lock is not None:
-        with lock:
-            write(data)
-    else:  # 私有结构变化时的兜底：墓碑（读路径已过滤非 dict 值）
-        _store.set(key, None)
+    """Delete one record through the store's atomic mutation boundary."""
+    def _delete(data: dict) -> None:
+        data.pop(key, None)
+
+    _store.mutate(_delete)
 
 
 _CALL_ARGS_LIMIT = 400
@@ -337,9 +366,6 @@ def _redact_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-_CALLS_LOCK = threading.Lock()
-
-
 def _record_call(rec: dict, payload: CallIn, *, ok: bool, mode: str, note: str) -> dict:
     """向 _recent_calls 追加一条调用记录（最新在前，封顶 20 条）。
 
@@ -357,12 +383,14 @@ def _record_call(rec: dict, payload: CallIn, *, ok: bool, mode: str, note: str) 
         'mode': mode,
         'note': note,
     }
-    with _CALLS_LOCK:
-        calls = _store.get(_CALLS_KEY, [])
+    def _prepend(data: dict) -> None:
+        calls = data.get(_CALLS_KEY, [])
         if not isinstance(calls, list):
             calls = []
         calls.insert(0, entry)
-        _store.set(_CALLS_KEY, calls[:_CALLS_CAP])
+        data[_CALLS_KEY] = calls[:_CALLS_CAP]
+
+    _store.mutate(_prepend)
     audit_safe('mcp_tool_call', {
         'server_id': rec.get('id'),
         'tool': payload.tool,
@@ -421,6 +449,148 @@ def _validate_stdio_command(command: str) -> str:
     return resolved
 
 
+_INTERPRETER_LAUNCHER_RE = re.compile(
+    r'^(?:python(?:\d+(?:\.\d+)*)?|py|node|npx|uv|uvx|bun|deno|ruby|perl|php|'
+    r'sh|bash|zsh|fish|pwsh|powershell|cmd)$',
+)
+_INLINE_EXEC_FLAGS = frozenset({
+    '-c', '/c', '/k', '--command', '-command', '-e', '--eval', '-p', '--print',
+    '--call', '-encodedcommand', '-encodedarguments', '-enc', '-ec',
+})
+_CASE_INSENSITIVE_LAUNCHERS = frozenset({'pwsh', 'powershell', 'cmd'})
+_COMBINABLE_INLINE_FLAGS: dict[str, frozenset[str]] = {
+    'sh': frozenset({'c'}),
+    'bash': frozenset({'c'}),
+    'zsh': frozenset({'c'}),
+    'fish': frozenset({'c'}),
+    'node': frozenset({'e', 'p'}),
+    'ruby': frozenset({'e'}),
+    'perl': frozenset({'e'}),
+}
+_PYTHON_COMBINABLE_SHORT_OPTIONS = frozenset('bBdEiIOPqRrsStTuvUx3')
+
+
+def _launcher_name(command: str) -> str:
+    name = os.path.basename((command or '').strip()).lower()
+    for suffix in ('.exe', '.cmd', '.bat', '.com'):
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
+def _python_short_options_execute_inline(token: str) -> bool:
+    """Return whether a Python short-option token contains ``-c``.
+
+    CPython combines known no-value switches (for example ``-I`` and ``-B``).
+    Every other switch consumes the remainder, terminates parsing, or is invalid,
+    so a later ``c`` in that token cannot act as another short option.
+    """
+    if not token.startswith('-') or token.startswith('--'):
+        return False
+    for option in token[1:]:
+        if option == 'c':
+            return True
+        if option not in _PYTHON_COMBINABLE_SHORT_OPTIONS:
+            return False
+    return False
+
+
+def _cmd_token_executes_command(token: str) -> bool:
+    """Return whether one CMD option token contains a ``/c`` or ``/k`` switch."""
+    if not token.startswith('/'):
+        return False
+    # CMD accepts multiple slash-delimited switches in one argv token, so each
+    # segment must be inspected instead of comparing only the complete token.
+    return any(
+        segment.startswith(('c', 'k'))
+        for segment in token.lower().split('/')[1:]
+        if segment
+    )
+
+
+def _validate_stdio_args(command: str, args: list[str] | None) -> None:
+    """Reject direct inline-code switches for allowlisted interpreter launchers.
+
+    An administrator can still deliberately allow an interpreter/package launcher,
+    so the deployment allowlist remains a high-trust RCE boundary. The entire
+    option vector is inspected until an explicit ``--`` boundary because checking
+    only argv[0] is bypassable with harmless-looking leading options.
+    """
+    values = list(args or [])
+    if values and not (command or '').strip():
+        raise ValueError('MCP stdio args 不能在 command 为空时单独配置')
+    if not values or not _INTERPRETER_LAUNCHER_RE.fullmatch(_launcher_name(command)):
+        return
+    launcher = _launcher_name(command)
+    for raw_value in values:
+        token = str(raw_value).strip()
+        if token == '--' and launcher not in _CASE_INSENSITIVE_LAUNCHERS:
+            break
+        if not token:
+            continue
+
+        lowered = token.lower()
+        option = lowered.split('=', 1)[0]
+        case_insensitive = launcher in _CASE_INSENSITIVE_LAUNCHERS
+        option_for_match = option if case_insensitive else token.split('=', 1)[0]
+        inspected_token = lowered if case_insensitive else token
+        has_attached_short_code = any(
+            inspected_token.startswith(prefix) and len(token) > len(prefix)
+            for prefix in ('-c', '/c', '/k', '-e', '-p')
+        )
+        is_python_launcher = launcher == 'py' or launcher.startswith('python')
+        if is_python_launcher:
+            has_combined_inline_flag = _python_short_options_execute_inline(token)
+        else:
+            combined_flags = _COMBINABLE_INLINE_FLAGS.get(launcher, frozenset())
+            short_cluster = token[1:] if re.fullmatch(r'-[A-Za-z]+', token) else ''
+            has_combined_inline_flag = bool(combined_flags.intersection(short_cluster))
+        has_chained_cmd_execution = launcher == 'cmd' and _cmd_token_executes_command(token)
+        if (
+            option_for_match in _INLINE_EXEC_FLAGS
+            or has_attached_short_code
+            or has_combined_inline_flag
+            or has_chained_cmd_execution
+        ):
+            raise ValueError('解释器类 MCP 启动器禁止使用内联代码执行参数')
+
+
+def _normalize_server_config(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate persisted transport fields and return a normalized copy."""
+    normalized = dict(record)
+    raw_url = normalized.get('url')
+    if isinstance(raw_url, str) and raw_url.strip():
+        try:
+            normalized['url'] = validate_external_url(raw_url.strip())
+        except (ValueError, OSError, UnicodeError) as exc:
+            logger.warning(
+                'MCP transport URL rejected by SSRF policy: error_type=%s',
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail='MCP transport URL 未通过 SSRF 防护校验',
+            ) from None
+    elif raw_url is not None:
+        normalized['url'] = None
+
+    try:
+        _validate_stdio_args(
+            str(normalized.get('command') or ''),
+            normalized.get('args') or [],
+        )
+    except ValueError as exc:
+        logger.warning(
+            'MCP stdio arguments rejected: error_type=%s',
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail='MCP stdio 启动参数未通过安全校验',
+        ) from None
+    return normalized
+
+
 def _minimal_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """构造最小子进程环境，并只叠加当前 MCP 记录显式配置的 env。"""
     child = {
@@ -450,11 +620,15 @@ def _require_stdio_execution(rec: dict, *, action: str) -> None:
         )
     try:
         _validate_stdio_command(str(rec.get('command') or ''))
+        _validate_stdio_args(
+            str(rec.get('command') or ''),
+            rec.get('args') or [],
+        )
     except ValueError as exc:
         audit_safe('mcp_stdio_denied', {
             'server_id': rec.get('id'),
             'action': action,
-            'reason': 'command_not_allowed',
+            'reason': 'command_or_args_not_allowed',
         })
         logger.warning(
             'MCP stdio command 校验失败：server_id=%s action=%s error_type=%s',
@@ -731,16 +905,53 @@ def _open_session(rec: dict) -> _StdioRpc:
     return rpc
 
 
-def _mark_error(sid: str, rec: dict, message: str) -> None:
-    rec['status'] = 'error'
-    rec['last_error'] = message
-    _store.set(sid, rec)
+def _update_runtime_state(
+    sid: str,
+    expected_revision: int,
+    *,
+    status: str,
+    last_error: str | None,
+    tools: list | None = None,
+) -> bool:
+    """CAS runtime results so slow operations cannot overwrite newer config.
+
+    Runtime fields are merged into the current record only when its configuration
+    generation still matches the snapshot used to launch the subprocess. A late
+    discovery/call result is otherwise discarded, preserving concurrent updates.
+    """
+    def _apply(data: dict) -> bool:
+        current = data.get(sid)
+        if not isinstance(current, dict) or _config_revision(current) != expected_revision:
+            return False
+        updated = dict(current)
+        updated['status'] = status
+        updated['last_error'] = last_error
+        if tools is not None:
+            updated['tools_cache'] = tools
+            updated['tools_count'] = len(tools)
+            updated['last_discovery_at'] = _now()
+        data[sid] = updated
+        return True
+
+    return bool(_store.mutate(_apply))
 
 
-def _mark_timeout(sid: str, rec: dict, message: str) -> None:
-    rec['status'] = 'timeout'
-    rec['last_error'] = message
-    _store.set(sid, rec)
+def _mark_error(sid: str, expected_revision: int, message: str) -> bool:
+    return _update_runtime_state(
+        sid,
+        expected_revision,
+        status='error',
+        last_error=message,
+    )
+
+
+def _mark_timeout(sid: str, expected_revision: int, message: str) -> bool:
+    return _update_runtime_state(
+        sid,
+        expected_revision,
+        status='timeout',
+        last_error=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -763,11 +974,12 @@ def create_server(payload: ServerIn) -> dict:
     """注册新 MCP 服务器；env 值加密落盘，响应中脱敏。"""
     _ensure_seeded()
     sid = _new_id()
-    data = payload.model_dump()
+    data = _normalize_server_config(payload.model_dump())
     data['env'] = _encrypt_env(data.get('env'))
     rec = {
         'id': sid,
         **data,
+        _CONFIG_REVISION_KEY: 1,
         'created_at': _now(),
         'tools_cache': [],
         'tools_count': 0,
@@ -794,18 +1006,28 @@ def update_server(sid: str, payload: ServerPatch) -> dict:
     ``'unknown'``，``connected``/``error`` 由服务端探测/调用结果写入。
     """
     _ensure_seeded()
-    rec = _get_server_or_404(sid)
     patch = payload.model_dump(exclude_unset=True)
     if 'env' in patch and patch['env'] is not None:
         patch['env'] = _encrypt_env(patch['env'])
-    if {'command', 'args', 'transport'} & patch.keys():
-        rec['status'] = 'unknown'
-        rec['last_error'] = None
-        rec['tools_cache'] = []
-        rec['tools_count'] = 0
-        rec.pop('last_discovery_at', None)
-    rec.update(patch)
-    _store.set(sid, rec)
+
+    def _apply(data: dict) -> dict:
+        stored = data.get(sid)
+        if not isinstance(stored, dict):
+            raise HTTPException(status_code=404, detail=f'MCP 服务器不存在：{sid}')
+        rec = dict(stored)
+        rec.update(patch)
+        rec = _normalize_server_config(rec)
+        rec[_CONFIG_REVISION_KEY] = _config_revision(stored) + 1
+        if {'command', 'args', 'transport', 'url'} & patch.keys():
+            rec['status'] = 'unknown'
+            rec['last_error'] = None
+            rec['tools_cache'] = []
+            rec['tools_count'] = 0
+            rec.pop('last_discovery_at', None)
+        data[sid] = rec
+        return rec
+
+    rec = _store.mutate(_apply)
     audit_safe('mcp_server_updated', {'server_id': sid, 'fields': sorted(patch.keys())})
     return _redact_env(rec)
 
@@ -834,6 +1056,7 @@ def discover_tools(sid: str) -> dict:
     """
     _ensure_seeded()
     rec = _get_server_or_404(sid)
+    expected_revision = _config_revision(rec)
     if not rec.get('enabled'):
         raise HTTPException(
             status_code=403,
@@ -869,22 +1092,32 @@ def discover_tools(sid: str) -> dict:
     except TimeoutError:
         logger.warning('MCP 工具发现超时：server_id=%s', sid, exc_info=True)
         note = '工具发现超时，请稍后重试'
-        _mark_timeout(sid, rec, note)
+        _mark_timeout(sid, expected_revision, note)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'timeout', 'note': note}
     except Exception:  # noqa: BLE001 —— 子进程/协议失败落为 error
         logger.exception('MCP 工具发现失败：server_id=%s', sid)
         note = '工具发现失败，请检查服务器配置或运行状态'
-        _mark_error(sid, rec, note)
+        _mark_error(sid, expected_revision, note)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'error', 'note': note}
 
     tools = result.get('tools') if isinstance(result, dict) else None
     tools = tools if isinstance(tools, list) else []
-    rec['status'] = 'connected'
-    rec['last_error'] = None
-    rec['tools_cache'] = tools
-    rec['tools_count'] = len(tools)
-    rec['last_discovery_at'] = _now()
-    _store.set(sid, rec)
+    state_applied = _update_runtime_state(
+        sid,
+        expected_revision,
+        status='connected',
+        last_error=None,
+        tools=tools,
+    )
+    if not state_applied:
+        return {
+            'server': sid,
+            'transport': transport,
+            'tools': tools,
+            'status': 'stale',
+            'source': 'live',
+            'note': '实时探测已完成，但配置在执行期间发生变化，结果未写入缓存',
+        }
     return {
         'server': sid,
         'transport': transport,
@@ -909,6 +1142,7 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     """
     _ensure_seeded()
     rec = _get_server_or_404(sid)
+    expected_revision = _config_revision(rec)
     if not rec.get('enabled'):
         raise HTTPException(
             status_code=403,
@@ -923,9 +1157,20 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     live_ready = rec.get('transport') == 'stdio' and bool(rec.get('command'))
 
     if not live_ready:
+        # issue #45 (4.2): 保留"不伪装已连接"的诚实性，但 HTTP 状态必须是
+        # 503 —— 返回 200 会让前端把未连接渲染成灰色成功。响应体只保留
+        # plan 与机器可读 reason，不含任何结果字段。
         note = 'MCP 服务器未连接，调用计划已记录'
         _record_call(rec, payload, ok=False, mode='stub', note=note)
-        return {'ok': False, 'mode': 'stub', 'note': note, 'plan': _redact_plan(plan)}
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'ok': False,
+                'reason': 'server_not_connected',
+                'note': note,
+                'plan': _redact_plan(plan),
+            },
+        )
     _require_stdio_execution(rec, action='tool_call')
 
     try:
@@ -937,20 +1182,27 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     except TimeoutError:
         logger.warning('MCP 工具调用超时：server_id=%s tool=%s', sid, payload.tool, exc_info=True)
         note = '真实调用超时，请稍后重试'
-        _mark_timeout(sid, rec, note)
+        _mark_timeout(sid, expected_revision, note)
         _record_call(rec, payload, ok=False, mode='timeout', note=note)
         return {'ok': False, 'mode': 'timeout', 'note': note, 'plan': _redact_plan(plan)}
     except Exception:  # noqa: BLE001
         logger.exception('MCP 工具调用失败：server_id=%s tool=%s', sid, payload.tool)
         note = '真实调用失败，请检查服务器配置或运行状态'
-        _mark_error(sid, rec, note)
+        _mark_error(sid, expected_revision, note)
         _record_call(rec, payload, ok=False, mode='error', note=note)
         return {'ok': False, 'mode': 'error', 'note': note, 'plan': _redact_plan(plan)}
 
-    rec['status'] = 'connected'
-    rec['last_error'] = None
-    _store.set(sid, rec)
-    note = '真实转发成功'
+    state_applied = _update_runtime_state(
+        sid,
+        expected_revision,
+        status='connected',
+        last_error=None,
+    )
+    note = (
+        '真实转发成功'
+        if state_applied
+        else '真实转发成功；配置在执行期间发生变化，连接状态未写回'
+    )
     _record_call(rec, payload, ok=True, mode='live', note=note)
     return {'ok': True, 'mode': 'live', 'server': sid, 'tool': payload.tool, 'result': result, 'note': note}
 

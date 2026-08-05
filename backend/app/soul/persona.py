@@ -7,6 +7,7 @@ from typing import Any
 
 from ..db import get_conn, transaction
 from ..utils.datetime_utils import utc_now_iso_compact
+from .ownership import SoulAccessDenied, configured_actor_id
 
 
 class PersonaStoreError(RuntimeError):
@@ -165,9 +166,10 @@ def update_persona(soul_id: str, **fields) -> dict:
     return get_persona(soul_id) or {}
 
 
-def create_persona(soul_id: str | None = None) -> str:
+def create_persona(soul_id: str | None = None, *, owner_id: str | None = None) -> str:
     """Create a new soul persona and its affect_state row."""
     sid = soul_id or ("soul_" + uuid.uuid4().hex[:12])
+    resolved_owner_id = owner_id or configured_actor_id()
     ts = _now()
     defaults = {
         "name": "枢忆",
@@ -186,12 +188,12 @@ def create_persona(soul_id: str | None = None) -> str:
         with transaction() as conn:
             conn.execute(
                 """INSERT INTO soul_persona(
-                    soul_id, name, core_traits, voice, soul_values,
+                    soul_id, owner_id, name, core_traits, voice, soul_values,
                     self_narrative, baseline_pleasure, baseline_arousal,
                     baseline_dominance, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    sid, defaults["name"], defaults["core_traits"], defaults["voice"],
+                    sid, resolved_owner_id, defaults["name"], defaults["core_traits"], defaults["voice"],
                     defaults["soul_values"], defaults["self_narrative"],
                     defaults["baseline_pleasure"], defaults["baseline_arousal"],
                     defaults["baseline_dominance"], ts, ts,
@@ -204,10 +206,16 @@ def create_persona(soul_id: str | None = None) -> str:
                 (sid, 0.5, 0.4, 0.5, "calm", 0.3, ts),
             )
     except sqlite3.IntegrityError as exc:
-        # transaction() 已 rollback。幂等语义仅限「soul_id 确实已存在」：
-        # 核验持久化行仍在才返回 sid；否则属于真实冲突/坏数据，显式抛错。
-        if get_persona(sid) is not None:
+        # Idempotency is owner-scoped.  Treating any existing soul_id as a
+        # successful create would let a second principal attach to that Soul.
+        row = get_conn().execute(
+            "SELECT owner_id FROM soul_persona WHERE soul_id=?",
+            (sid,),
+        ).fetchone()
+        if row is not None and row["owner_id"] == resolved_owner_id:
             return sid
+        if row is not None:
+            raise SoulAccessDenied(sid) from exc
         raise PersonaStoreError(f"create_persona conflict for soul_id={sid!r}") from exc
     except Exception as exc:
         # 03-#6：不再一律返回 sid 假成功（行可能并未落库），显式抛错。

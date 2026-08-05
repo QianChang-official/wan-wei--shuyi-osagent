@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -65,7 +64,8 @@ def test_put_config_blocks_cloud_metadata_address(tmp_path, monkeypatch):
     def _forbidden(*args, **kwargs):  # pragma: no cover - 被调用即失败
         raise AssertionError("httpx.get 不应被调用（SSRF 应提前拦截）")
 
-    monkeypatch.setattr(httpx, "get", _forbidden)
+    from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(providers_mod, "_probe_pinned_url", _forbidden)
     r = client.put(
         "/platform/providers/configs/lm_studio",
         json={"base_url": "http://169.254.169.254/latest/meta-data"},
@@ -79,9 +79,10 @@ def test_put_config_blocks_cloud_metadata_address(tmp_path, monkeypatch):
 def test_put_config_blocks_private_network_addresses(tmp_path, monkeypatch):
     """保存 base_url 时内网保留段一律拦截。"""
     client = _client(tmp_path)
+    from backend.app.platform_api import providers as providers_mod
     monkeypatch.setattr(
-        httpx,
-        "get",
+        providers_mod,
+        "_probe_pinned_url",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应发起网络请求")),
     )
     for url in ["http://192.168.1.1:8080/v1", "http://10.0.0.5/v1", "http://172.16.3.4/v1"]:
@@ -97,9 +98,10 @@ def test_put_config_blocks_private_network_addresses(tmp_path, monkeypatch):
 def test_put_config_rejects_non_http_scheme(tmp_path, monkeypatch):
     """保存 base_url 时协议白名单仅允许 http/https。"""
     client = _client(tmp_path)
+    from backend.app.platform_api import providers as providers_mod
     monkeypatch.setattr(
-        httpx,
-        "get",
+        providers_mod,
+        "_probe_pinned_url",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应发起网络请求")),
     )
     r = client.put(
@@ -118,8 +120,8 @@ def test_probe_ssrf_still_blocks_malicious_base_url(tmp_path, monkeypatch):
     def _forbidden(*args, **kwargs):  # pragma: no cover - 被调用即失败
         raise AssertionError("httpx.get 不应被调用（SSRF 应提前拦截）")
 
-    monkeypatch.setattr(httpx, "get", _forbidden)
     from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(providers_mod, "_probe_pinned_url", _forbidden)
 
     providers_mod._store.set("lm_studio", {"base_url": "http://169.254.169.254/latest/meta-data"})  # noqa: SLF001
     r = client.post("/platform/providers/test", json={"pid": "lm_studio"}, headers=_HEADERS)
@@ -154,7 +156,8 @@ def test_provider_failures_do_not_expose_exception_details(tmp_path, monkeypatch
     def _fail_probe(*args, **kwargs):
         raise RuntimeError(marker)
 
-    monkeypatch.setattr(httpx, "get", _fail_probe)
+    from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(providers_mod, "_probe_pinned_url", _fail_probe)
     probed = client.post(
         "/platform/providers/test",
         json={"pid": "lm_studio"},
@@ -170,24 +173,30 @@ def test_probe_allows_explicit_loopback_endpoint(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls: list[str] = []
 
-    def _fake_get(url, **kwargs):
-        calls.append(url)
+    def _fake_probe(url, pinned_ip):
+        calls.append((url, pinned_ip))
         return SimpleNamespace(status_code=200)
 
-    monkeypatch.setattr(httpx, "get", _fake_get)
+    from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(providers_mod, "_probe_pinned_url", _fake_probe)
     _put_base_url(client, "ollama_cloud", "http://127.0.0.1:11434")
     r = client.post("/platform/providers/test", json={"pid": "ollama_cloud"}, headers=_HEADERS)
     body = r.json()
     assert body["ok"] is True, body
     assert body["mode"] == "live"
     assert body["status_code"] == 200
-    assert calls == ["http://127.0.0.1:11434"]
+    assert calls == [("http://127.0.0.1:11434", "127.0.0.1")]
 
 
 def test_probe_allows_localhost_alias(tmp_path, monkeypatch):
     """localhost 别名同样豁免。"""
     client = _client(tmp_path)
-    monkeypatch.setattr(httpx, "get", lambda url, **k: SimpleNamespace(status_code=404))
+    from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(
+        providers_mod,
+        "_probe_pinned_url",
+        lambda url, pinned_ip: SimpleNamespace(status_code=404),
+    )
     _put_base_url(client, "lm_studio", "http://localhost:1234/v1")
     r = client.post("/platform/providers/test", json={"pid": "lm_studio"}, headers=_HEADERS)
     body = r.json()
@@ -198,7 +207,12 @@ def test_probe_allows_localhost_alias(tmp_path, monkeypatch):
 def test_probe_default_catalog_loopback_still_works(tmp_path, monkeypatch):
     """未配置时目录默认的 127.0.0.1 端点照常探测（回归保护）。"""
     client = _client(tmp_path)
-    monkeypatch.setattr(httpx, "get", lambda url, **k: SimpleNamespace(status_code=200))
+    from backend.app.platform_api import providers as providers_mod
+    monkeypatch.setattr(
+        providers_mod,
+        "_probe_pinned_url",
+        lambda url, pinned_ip: SimpleNamespace(status_code=200),
+    )
     r = client.post("/platform/providers/test", json={"pid": "lm_studio"}, headers=_HEADERS)
     body = r.json()
     assert body["ok"] is True, body
@@ -229,7 +243,13 @@ def test_oauth_poll_returns_501_without_key(tmp_path):
 
 
 def test_oauth_poll_reports_authorized_when_key_configured(tmp_path):
-    """已通过其他途径配置密钥的，poll 如实报告 authorized（真实状态）。"""
+    """issue #45 P0-2: OAuth poll 未接入真实流程时必须 501，即使有 API key。
+    
+    旧行为：已配置 API key 时 poll 返回 authorized（混淆了 API key 配置与
+    设备码授权两条路径）。新行为：poll 仅报告真实设备码授权状态，无真实
+    endpoint 时统一 501。用户可通过 GET /providers/configs/{pid} 查询
+    API key 配置状态。
+    """
     client = _client(tmp_path)
     r = client.put(
         "/platform/providers/configs/github_copilot",
@@ -237,9 +257,10 @@ def test_oauth_poll_reports_authorized_when_key_configured(tmp_path):
         headers=_HEADERS,
     )
     assert r.status_code == 200, r.text
+    # P0-2: 无真实 OAuth 流程时 poll 必须 501，不得因有 API key 就声称 authorized
     r = client.post("/platform/providers/auth/github_copilot/poll", headers=_HEADERS)
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "authorized"
+    assert r.status_code == 501, r.text
+    assert "未接入真实供应商流程" in r.text
 
 
 def test_oauth_endpoints_reject_non_oauth_provider(tmp_path):

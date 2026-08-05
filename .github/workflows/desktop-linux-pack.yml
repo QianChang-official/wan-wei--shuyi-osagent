@@ -1,0 +1,235 @@
+name: desktop-linux-pack
+
+# 在 Linux runner 上实际打出 deb / rpm 产物。
+# 存在意义：Windows / macOS 开发机上 electron-builder 需要 fpm（Ruby 工具链）
+# 才能生成 deb/rpm，本地通常缺失（表现为 `spawn fpm ENOENT`）。放在 CI 里跑
+# 可以让每次涉及 desktop 打包配置或 electron 版本的改动都得到真实验证，
+# 而不是等到发版当天才发现配置不合法。
+
+on:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "frontend/console-vue/**"
+      - "backend/**"
+      - "reports/production_memory_eval_metrics.json"
+      - ".github/workflows/desktop-linux-pack.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "frontend/console-vue/**"
+      - "backend/**"
+      - "reports/production_memory_eval_metrics.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: |
+            frontend/console-vue/package-lock.json
+            desktop/package-lock.json
+
+      - name: 安装 fpm 与 rpm 工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cpio desktop-file-utils rpm
+          sudo gem install --no-document fpm -v 1.17.0
+          fpm --version
+
+      # electron-builder 打包时会把前端 dist 作为 extraResources 打进产物，
+      # 因此必须先构建前端，否则产物缺页面。
+      - name: 构建前端控制台
+        working-directory: frontend/console-vue
+        run: |
+          npm ci
+          npm run build
+
+      - name: 安装 desktop 依赖
+        working-directory: desktop
+        run: npm ci
+
+      - name: 生成图标资源
+        working-directory: desktop
+        run: |
+          if [ ! -f build/icons/512x512.png ]; then
+            python3 scripts/generate_icons.py
+          fi
+
+      - name: 校验依赖与漏洞基线
+        working-directory: desktop
+        run: |
+          npm ls electron electron-builder tar
+          npm audit --audit-level=high
+
+      - name: 打包 deb + rpm
+        working-directory: desktop
+        run: npx electron-builder --linux deb rpm
+
+      - name: 校验产物
+        working-directory: desktop
+        run: |
+          set -e
+          ls -lh release/*.deb release/*.rpm
+
+          echo "--- deb 元数据 ---"
+          dpkg-deb --info release/*.deb
+
+          echo "--- deb 内的 .desktop 文件 ---"
+          # 验证 linux.desktop.entry 配置真的写进了产物，而非仅通过 schema 校验。
+          # 用 --wildcards 显式开启通配（GNU tar 在从 stdin 读取时默认不展开），
+          # 并先列出路径再取内容，便于 .desktop 落点变化时快速定位。
+          deb_tar=$(mktemp)
+          dpkg-deb --fsys-tarfile release/*.deb > "$deb_tar"
+
+          desktop_path=./usr/share/applications/wanwei-shuyi-desktop.desktop
+          if ! tar -tf "$deb_tar" | grep -qx "$desktop_path"; then
+            echo "::error::deb 内未找到系统级 .desktop 入口"
+            tar -tf "$deb_tar" | grep -i applications || true
+            exit 1
+          fi
+          echo "找到: $desktop_path"
+          tar -xOf "$deb_tar" "$desktop_path" | tee /tmp/app.desktop
+
+          # StartupWMClass 决定桌面环境能否把运行窗口关联到该 .desktop 条目
+          grep -qx 'Name=枢忆·花朝' /tmp/app.desktop \
+            || { echo "::error::.desktop 缺少预期中文名称"; exit 1; }
+          grep -qx 'StartupWMClass=wanwei-shuyi-desktop' /tmp/app.desktop \
+            || { echo "::error::.desktop 的 StartupWMClass 不匹配"; exit 1; }
+
+          metrics_path=./opt/wanwei-shuyi-desktop/resources/reports/production_memory_eval_metrics.json
+          if ! tar -tf "$deb_tar" | grep -qx "$metrics_path"; then
+            echo "::error::deb 内未找到总览页所需的 Arena 指标报告"
+            exit 1
+          fi
+          tar -xOf "$deb_tar" "$metrics_path" \
+            | python3 ../backend/app/memory_arena/metrics_contract.py
+          rm -f "$deb_tar"
+
+          echo "--- deb 维护脚本 ---"
+          control_dir=$(mktemp -d)
+          dpkg-deb -e release/*.deb "$control_dir"
+          sh -n "$control_dir/postinst"
+          sh -n "$control_dir/postrm"
+          grep -qx 'chown root:root "$SANDBOX"' "$control_dir/postinst"
+          grep -qx 'chmod 4755 "$SANDBOX"' "$control_dir/postinst"
+          grep -qx '  ln -s "$COMMAND_TARGET" "$COMMAND_LINK"' "$control_dir/postinst"
+          grep -q 'rm -f /etc/systemd/user/wanwei-shuyi-desktop.service' "$control_dir/postrm"
+          grep -q 'readlink "$COMMAND_LINK"' "$control_dir/postrm"
+          rm -rf "$control_dir"
+
+          echo "--- rpm 元数据 ---"
+          rpm -qip release/*.rpm
+
+          echo "--- rpm 运行时依赖 ---"
+          rpm -qpR release/*.rpm
+          rpm -qlp release/*.rpm \
+            | grep -qx '/opt/wanwei-shuyi-desktop/resources/reports/production_memory_eval_metrics.json' \
+            || { echo "::error::rpm 内未找到总览页所需的 Arena 指标报告"; exit 1; }
+          rpm2cpio release/*.rpm \
+            | cpio -i --quiet --to-stdout "$metrics_path" \
+            | python3 ../backend/app/memory_arena/metrics_contract.py
+
+          echo "--- rpm 维护脚本 ---"
+          rpm -qp --qf '%{POSTIN}\n' release/*.rpm | tee /tmp/rpm-postin
+          rpm -qp --qf '%{POSTUN}\n' release/*.rpm | tee /tmp/rpm-postun
+          grep -q 'chmod 4755 "$SANDBOX"' /tmp/rpm-postin
+          grep -q 'ln -s "$COMMAND_TARGET" "$COMMAND_LINK"' /tmp/rpm-postin
+          grep -q 'rm -f /etc/systemd/user/wanwei-shuyi-desktop.service' /tmp/rpm-postun
+          grep -q 'readlink "$COMMAND_LINK"' /tmp/rpm-postun
+          rm -f /tmp/rpm-postin /tmp/rpm-postun
+
+          echo "--- 产物 SHA-256 ---"
+          (cd release && sha256sum ./*.deb ./*.rpm | tee SHA256SUMS)
+
+          # Ubuntu CI cannot mint a trusted Kylin developer certificate. Keep this status beside
+          # the artifact so it cannot be mistaken for a release-ready package.
+          cat > release/KYLIN-SIGNATURE-STATUS.txt <<'EOF'
+          UNSIGNED_TEST_ARTIFACT
+          This CI package has no Kylin embedded ELF/deb signature.
+          Install and desktop acceptance require a protected signing job with a trusted Kylin developer certificate.
+          EOF
+
+      - name: 隔离验证维护脚本安全边界
+        working-directory: desktop
+        run: |
+          docker run --rm \
+            -e WANWEI_PACKAGING_TEST_CONTAINER=1 \
+            --mount "type=bind,source=$PWD/packaging/linux,target=/package-scripts,readonly" \
+            --mount "type=bind,source=$PWD/tests/test_linux_packaging_lifecycle.sh,target=/test-lifecycle.sh,readonly" \
+            debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 \
+            sh /test-lifecycle.sh
+
+      - name: 实装、升级与卸载 deb
+        working-directory: desktop
+        run: |
+          set -e
+          deb=$(realpath release/*.deb)
+          sudo apt-get install -y "$deb"
+
+          test "$(stat -c '%U:%G %a' /opt/wanwei-shuyi-desktop/chrome-sandbox)" = 'root:root 4755'
+          test "$(readlink /usr/bin/wanwei-shuyi-desktop)" = '/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop'
+          test -f /etc/systemd/user/wanwei-shuyi-desktop.service
+          desktop-file-validate /usr/share/applications/wanwei-shuyi-desktop.desktop
+
+          # 同版本重装会走 dpkg 的 upgrade 生命周期，验证旧 postrm 不会删掉新入口。
+          sudo dpkg -i "$deb"
+          test "$(readlink /usr/bin/wanwei-shuyi-desktop)" = '/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop'
+          test -f /etc/systemd/user/wanwei-shuyi-desktop.service
+
+          sudo apt-get remove -y wanwei-shuyi-desktop
+          test ! -e /opt/wanwei-shuyi-desktop
+          test ! -L /usr/bin/wanwei-shuyi-desktop
+          test ! -e /etc/systemd/user/wanwei-shuyi-desktop.service
+
+      - name: 实装、升级与卸载 rpm
+        working-directory: desktop
+        run: |
+          set -e
+          rpm=$(realpath release/*.rpm)
+          rpm_dir=$(dirname "$rpm")
+          docker run --rm \
+            --mount "type=bind,source=$rpm_dir,target=/packages,readonly" \
+            rockylinux:9-minimal@sha256:305de618a5681ff75b1d608fd22b10f362867dff2f550a4f1d427d21cd7f42b4 \
+            sh -ec '
+              package=$(echo /packages/*.rpm)
+              # 该镜像不带 findutils；rpm 的 %postun 需要 find 做空目录清理，
+              # 这正是 package.json 里 rpm.depends 声明 findutils 的原因。
+              # 真实系统由依赖解析保证，这里手动补上以复现同等前置条件。
+              microdnf -y --nodocs install findutils >/dev/null 2>&1
+              rpm -ivh --nodeps "$package"
+              test "$(stat -c "%U:%G %a" /opt/wanwei-shuyi-desktop/chrome-sandbox)" = "root:root 4755"
+              test "$(readlink /usr/bin/wanwei-shuyi-desktop)" = "/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop"
+              test -f /etc/systemd/user/wanwei-shuyi-desktop.service
+
+              rpm -Uvh --replacepkgs --nodeps "$package"
+              test "$(readlink /usr/bin/wanwei-shuyi-desktop)" = "/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop"
+              test -f /etc/systemd/user/wanwei-shuyi-desktop.service
+
+              rpm -e --nodeps wanwei-shuyi-desktop
+              test ! -e /opt/wanwei-shuyi-desktop
+              test ! -L /usr/bin/wanwei-shuyi-desktop
+              test ! -e /etc/systemd/user/wanwei-shuyi-desktop.service
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-unsigned-test-packages
+          path: |
+            desktop/release/*.deb
+            desktop/release/*.rpm
+            desktop/release/KYLIN-SIGNATURE-STATUS.txt
+            desktop/release/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error

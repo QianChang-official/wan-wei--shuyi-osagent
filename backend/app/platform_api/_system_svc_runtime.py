@@ -68,6 +68,8 @@ def _sandbox_dir() -> Path:
 _VOICE_MAX_BYTES = 12 * 1024 * 1024  # 解码后音频上限 12MB（正文口径见 security/input_limits.py）
 _VOICE_HISTORY_MAX = 200
 _BACKGROUND_IMAGE_MAX_CHARS = 2 * 1024 * 1024  # 背景图 data URL 上限 2MB，防超大 base64 撑爆设置存储
+_BACKGROUND_DATA_MIMES = frozenset({'image/png', 'image/jpeg', 'image/webp', 'image/gif'})
+_BACKGROUND_UNSAFE_CHARS = re.compile(r'["\'()\\<>\r\n]')
 _SANDBOX_TIMEOUT_S = 5
 _SANDBOX_TRUNCATE = 4096
 _LAN_DEFAULT_PORT = int(os.environ.get('WANWEI_PORT') or os.environ.get('PORT') or '8000')
@@ -89,18 +91,76 @@ def _rel_to_root(path: Path) -> str:
         return str(path.resolve())
 
 
+def _background_image_has_expected_magic(mime: str, raw: bytes) -> bool:
+    if mime == 'image/png':
+        return raw.startswith(b'\x89PNG\r\n\x1a\n')
+    if mime == 'image/jpeg':
+        return raw.startswith(b'\xff\xd8\xff')
+    if mime == 'image/gif':
+        return raw.startswith((b'GIF87a', b'GIF89a'))
+    if mime == 'image/webp':
+        return len(raw) >= 12 and raw.startswith(b'RIFF') and raw[8:12] == b'WEBP'
+    return False
+
+
+def _validate_background_image(value: str | None) -> str | None:
+    """Allow only non-scriptable image data URLs or absolute HTTPS URLs."""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return ''
+    if _BACKGROUND_UNSAFE_CHARS.search(normalized):
+        raise ValueError('background_image 包含不安全字符')
+    if normalized.lower().startswith('data:'):
+        header, separator, payload = normalized.partition(',')
+        if not separator or not header.lower().endswith(';base64'):
+            raise ValueError('background_image data URL 必须使用 base64 编码')
+        mime = header[5:-7].lower()
+        if mime not in _BACKGROUND_DATA_MIMES:
+            raise ValueError('background_image 仅允许 PNG/JPEG/WEBP/GIF')
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('background_image base64 数据无效') from None
+        if not _background_image_has_expected_magic(mime, raw):
+            raise ValueError('background_image 内容与声明的图片类型不一致')
+        return normalized
+
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme.lower() != 'https'
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError('background_image 仅允许 HTTPS 绝对 URL 或受限图片 data URL')
+    return normalized
+
+
+def _require_device_action(gear: str, *, action: str) -> None:
+    denied = require_gear(gear, action=action, context={'surface': 'system'})
+    if denied:
+        raise HTTPException(
+            status_code=403,
+            detail='device 档默认禁用，设 WANWEI_DEVICE_GEAR_ENABLED=1 后才允许该系统操作',
+        )
+
+
 # ---------------------------------------------------------------------------
 # 请求模型（全部禁止未知字段）
 # ---------------------------------------------------------------------------
 
 class PowerIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    gear: Literal['device']
     prevent_sleep: bool | None = None
     mode: Literal['display', 'system'] | None = None
 
 
 class SettingsIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    gear: Literal['device']
     theme: Literal['day', 'night', 'auto'] | None = None
     language: Literal['zh-CN', 'en-US'] | None = None
     # data URL 上限 2MB：裸 str 无上限会把数 MB base64 落进 JsonStore 并每次 GET 全量返回
@@ -108,6 +168,11 @@ class SettingsIn(BaseModel):
     background_opacity: float | None = None  # 固定只读：提交即忽略
     autostart: bool | None = None
     petals: bool | None = None
+
+    @field_validator('background_image')
+    @classmethod
+    def _check_background_image(cls, value: str | None) -> str | None:
+        return _validate_background_image(value)
 
 
 class VoiceIn(BaseModel):
@@ -133,6 +198,7 @@ class BrowserRuleUpdate(BaseModel):
 
 class BrowserLaunchIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    gear: Literal['device']
     url: str | None = Field(default=None, max_length=2048)
     profile: Literal['clean'] = 'clean'
 
@@ -193,10 +259,20 @@ def power_get() -> dict:
 
 @router.put('/system/power')
 def power_put(req: PowerIn) -> dict:
-    state = _power_state()
-    for key, value in req.model_dump(exclude_unset=True).items():
-        state[key] = value
-    _sys_store.set('power', state)
+    _require_device_action(req.gear, action='system_power_update')
+    patch = req.model_dump(exclude_unset=True)
+    patch.pop('gear', None)
+
+    def _apply(data: dict) -> dict:
+        stored = data.get('power')
+        stored = stored if isinstance(stored, dict) else {}
+        state = dict(_POWER_DEFAULTS)
+        state.update({key: stored[key] for key in _POWER_DEFAULTS if key in stored})
+        state.update(patch)
+        data['power'] = state
+        return state
+
+    state = _sys_store.mutate(_apply)
     return {**state, 'note': _POWER_NOTE}
 
 
@@ -220,6 +296,11 @@ def _settings_state() -> dict:
     for key in _SETTINGS_DEFAULTS:
         if key in stored:
             state[key] = stored[key]
+    try:
+        state['background_image'] = _validate_background_image(state.get('background_image'))
+    except ValueError:
+        # Legacy/corrupt values are never reflected back into a CSS URL sink.
+        state['background_image'] = None
     state['background_opacity'] = _BACKGROUND_OPACITY_FIXED
     return state
 
@@ -231,11 +312,18 @@ def settings_get() -> dict:
 
 @router.put('/system/settings')
 def settings_put(req: SettingsIn) -> dict:
+    _require_device_action(req.gear, action='system_settings_update')
     payload = req.model_dump(exclude_unset=True)
+    payload.pop('gear', None)
     payload.pop('background_opacity', None)  # 只读字段，PUT 一律忽略
-    stored = _sys_store.get('settings') or {}
-    stored.update(payload)
-    _sys_store.set('settings', stored)
+
+    def _apply(data: dict) -> None:
+        stored = data.get('settings')
+        current = dict(stored) if isinstance(stored, dict) else {}
+        current.update(payload)
+        data['settings'] = current
+
+    _sys_store.mutate(_apply)
     audit_safe('settings_updated', {'fields': sorted(payload.keys())})
     return _settings_state()
 
@@ -474,6 +562,7 @@ def browser_rules_delete(rid: str) -> dict:
 
 @router.post('/system/browser/launch')
 def browser_launch(req: BrowserLaunchIn) -> dict:
+    _require_device_action(req.gear, action='browser_launch')
     rules = _load_rules()
     blocked_domains = sorted({r['domain'] for r in rules if r.get('enabled') and r.get('domain')})
     # host-rules 语法：逗号分隔的多条 MAP 规则（空格串联整规则非法）；

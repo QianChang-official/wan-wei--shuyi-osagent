@@ -2,11 +2,21 @@
 
 Tests core security hardening fixes.
 """
+import logging
 import os
 import sys
 from pathlib import Path
+
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+
+
+def auth_logger_name() -> str:
+    """auth 模块的 logger 名，供 caplog 过滤使用。"""
+    from backend.app.security import auth
+
+    return auth.logger.name
 
 
 def _client(tmp_path: Path, *, api_key: str = "test-key", production: bool = False):
@@ -26,35 +36,59 @@ def _client(tmp_path: Path, *, api_key: str = "test-key", production: bool = Fal
     return TestClient(main_mod.app, raise_server_exceptions=False)
 
 
-def test_production_requires_api_key(tmp_path):
-    """Production mode must fail if WANWEI_API_KEY not set."""
-    os.environ.pop("WANWEI_API_KEY", None)
-    os.environ["WANWEI_PRODUCTION"] = "1"
+def test_production_self_bootstraps_api_key(tmp_path, monkeypatch):
+    """Production mode no longer hard-blocks on a missing key (issue #45 P1).
 
-    with pytest.raises(RuntimeError, match="WANWEI_PRODUCTION=1 requires WANWEI_API_KEY"):
-        from backend.app.security.auth import get_api_key
-        get_api_key()
+    The backend self-bootstraps: a 48-hex key is generated and persisted at
+    the platform default path with 0600 permissions, so any launch method
+    (bare uvicorn, systemd, container) starts up and self-heals.
+    """
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+    # 隔离 APPDATA/XDG_CONFIG_HOME，避免加载已存在的密钥文件干扰测试。
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+
+    from backend.app.security import auth
+
+    # 隔离跨测试的进程内生成缓存，确保本次真实走到「生成+落盘」路径。
+    monkeypatch.setattr(auth, "_AUTO_GENERATED_API_KEY", None)
+
+    key = auth.get_api_key()
+    assert len(key) == 48
+    assert all(c in "0123456789abcdef" for c in key)
+    # 自动生成的 key 必须落盘到平台目录上级，且内容一致（进程内自洽）。
+    persisted = (tmp_path / "api-key").read_text(encoding="utf-8").strip()
+    assert persisted == key
 
 
 @pytest.mark.parametrize("production_value", ["1", "true", "yes", "TRUE"])
-def test_production_truthy_values_require_api_key(monkeypatch, production_value):
+def test_production_truthy_values_self_bootstrap(monkeypatch, tmp_path, production_value):
+    """All production truthy values follow the same self-bootstrap path."""
     monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
     monkeypatch.setenv("WANWEI_PRODUCTION", production_value)
 
     from backend.app.security.auth import get_api_key
 
-    with pytest.raises(RuntimeError, match="WANWEI_PRODUCTION=1 requires WANWEI_API_KEY"):
-        get_api_key()
+    assert len(get_api_key()) == 48
 
 
-def test_production_rejects_short_api_key(monkeypatch):
+def test_production_short_api_key_warns_but_starts(monkeypatch, tmp_path, caplog):
+    """A short explicit key downgrades to a WARNING instead of blocking startup."""
     monkeypatch.setenv("WANWEI_API_KEY", "too-short")
     monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
 
     from backend.app.security.auth import get_api_key
 
-    with pytest.raises(RuntimeError, match="at least 32"):
-        get_api_key()
+    with caplog.at_level(logging.WARNING, logger=auth_logger_name()):
+        assert get_api_key() == "too-short"
+
+    assert any("shorter than" in r.message for r in caplog.records)
 
 
 def test_production_reads_api_key_file(tmp_path, monkeypatch):
@@ -79,18 +113,40 @@ def test_missing_api_key_file_fails_closed(tmp_path, monkeypatch):
         get_api_key()
 
 
-def test_production_app_fails_during_startup_without_api_key(tmp_path, monkeypatch):
+def test_production_app_starts_without_api_key(tmp_path, monkeypatch):
+    """Production startup no longer fails when no API key is provided (issue #45)."""
     monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
     monkeypatch.setenv("WANWEI_PRODUCTION", "true")
+    # encryption 的生产模式硬校验（WANWEI_ENCRYPTION_KEY）是另一条既有安全
+    # 边界，本工单只放开 API key 门槛，不影响它。
+    monkeypatch.setenv("WANWEI_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
+    # 隔离 APPDATA/XDG_CONFIG_HOME，避免加载已存在的密钥文件干扰测试。
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
 
     import importlib
     import backend.app.main as main_mod
 
     importlib.reload(main_mod)
-    with pytest.raises(RuntimeError, match="WANWEI_PRODUCTION=1 requires WANWEI_API_KEY"):
-        with TestClient(main_mod.app):
-            pass
+    # TestClient 的 peer host 是 "testclient"（非回环），故不带 key 仍应
+    # fail-closed 401；本测试的核心断言是「启动不再因缺 API key 抛异常」，
+    # 以及自动生成的 key 可以正常鉴权。
+    with TestClient(main_mod.app, raise_server_exceptions=False) as client:
+        assert client.get("/model-gateway/configs").status_code == 401
+        from backend.app.security import auth
+
+        bootstrap_key = auth._AUTO_GENERATED_API_KEY
+        assert bootstrap_key
+        assert (
+            client.get(
+                "/model-gateway/configs",
+                headers={"X-API-Key": bootstrap_key},
+            ).status_code
+            == 200
+        )
 
 
 def test_protected_get_endpoints_require_auth(tmp_path):

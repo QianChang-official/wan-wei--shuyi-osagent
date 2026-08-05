@@ -529,9 +529,10 @@ def test_space_tree_exception_detail_is_not_exposed(tmp_path, monkeypatch):
     monkeypatch.setattr(spaces, "_run_git", _fail_git)
     r = client.get(f"/platform/spaces/{pid}/tree", headers=h)
 
-    assert r.status_code == 200, r.text
-    assert r.json()["source"] == "simulated"
-    assert r.json()["note"] == "git 读取失败，已回退模拟"
+    # issue #45 P0-6：git 失败如实 502（不再回退模拟三态），
+    # 且响应体不得泄露 stderr/异常细节。
+    assert r.status_code == 502, r.text
+    assert r.json()["detail"]["error"] == "git_read_failed"
     assert marker not in r.text
 
 

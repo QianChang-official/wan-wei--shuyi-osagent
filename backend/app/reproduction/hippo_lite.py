@@ -12,12 +12,21 @@ def _content_text(cap: dict) -> str:
     return str(content).lower()
 
 
-def _list_safe_capsules(limit: int) -> list[dict]:
-    return [redact_capsule_for_output(cap) for cap in list_capsules(limit) if cap]
+def _list_safe_capsules(
+    limit: int,
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> list[dict]:
+    if owner_id is None and soul_id is None:
+        capsules = list_capsules(limit)
+    else:
+        capsules = list_capsules(limit, owner_id=owner_id, soul_id=soul_id)
+    return [redact_capsule_for_output(cap) for cap in capsules if cap]
 
 
-def graph() -> dict:
-    capsules = _list_safe_capsules(200)
+def graph(*, owner_id: str | None = None, soul_id: str | None = None) -> dict:
+    capsules = _list_safe_capsules(200, owner_id=owner_id, soul_id=soul_id)
     nodes = [
         {
             "id": cap["capsule_id"],
@@ -60,8 +69,17 @@ def _build_edge_map(edges: list[dict]) -> dict:
     return edge_map
 
 
-def _seed_scores(nodes: list[dict], terms: list[str]) -> dict:
-    capsule_lookup = {cap["capsule_id"]: cap for cap in _list_safe_capsules(200)}
+def _seed_scores(
+    nodes: list[dict],
+    terms: list[str],
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict:
+    capsule_lookup = {
+        cap["capsule_id"]: cap
+        for cap in _list_safe_capsules(200, owner_id=owner_id, soul_id=soul_id)
+    }
     seed_scores = {}
     for node in nodes:
         text = _content_text(capsule_lookup.get(node["id"], {}))
@@ -85,12 +103,22 @@ def _spread_one_hop(frontier: dict, edge_map: dict) -> dict:
     return next_frontier
 
 
-def recall(req: HippoRecallIn) -> dict:
-    g = graph()
+def recall(
+    req: HippoRecallIn,
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict:
+    g = graph(owner_id=owner_id, soul_id=soul_id)
     nodes = g["nodes"]
     edge_map = _build_edge_map(g["edges"])
     terms = [part.lower() for part in req.query.split() if part.strip()]
-    seed_scores = _seed_scores(nodes, terms)
+    seed_scores = _seed_scores(
+        nodes,
+        terms,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
     scores = dict(seed_scores)
     frontier = dict(seed_scores)
     for hop in range(max(0, min(req.hops, 4))):

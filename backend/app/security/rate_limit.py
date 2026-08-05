@@ -218,8 +218,23 @@ def _client_ip(request: Request) -> str:
     )
 
 
+def _is_loopback(ip: str) -> bool:
+    """Whether an IP (after trusted-proxy resolution) is a loopback address."""
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return ip.lower() == "localhost"
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests that exceed the per-IP token-bucket budget with HTTP 429."""
+    """Reject requests that exceed the per-IP token-bucket budget with HTTP 429.
+
+    PF-6 (issue #45): loopback-origin requests are exempt from rate limiting.
+    The conservative per-IP budget was tuned for the simulated era where
+    every path was local; once real outbound calls land, a local automation
+    loop must not be throttled by its own machine's address. Non-loopback
+    sources keep the full limiting surface.
+    """
 
     def __init__(self, app, limiter: RateLimiter | None = None) -> None:
         super().__init__(app)
@@ -229,7 +244,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if self._limiter.limit_for(path, method=request.method) is not None:
             ip = _client_ip(request)
-            if not self._limiter.allow(ip, path, method=request.method):
+            if not _is_loopback(ip) and not self._limiter.allow(ip, path, method=request.method):
                 return JSONResponse(
                     {"detail": "Rate limit exceeded. Retry later."},
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,

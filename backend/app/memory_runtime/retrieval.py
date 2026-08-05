@@ -66,7 +66,35 @@ def _match_query(q: str) -> str:
     return " OR ".join(f'"{part}"' for part in parts) if parts else q
 
 
-def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None):
+def _scope_sql(
+    *,
+    owner_id: str | None,
+    soul_id: str | None,
+    table_alias: str = "capsule",
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if owner_id is not None:
+        clauses.append(f"json_extract({table_alias}.provenance, '$.owner_id')=?")
+        params.append(owner_id)
+    if soul_id is not None:
+        clauses.append(
+            f"(json_extract({table_alias}.provenance, '$.soul_id')=? "
+            f"OR json_extract({table_alias}.provenance, '$.soul_id') IS NULL)"
+        )
+        params.append(soul_id)
+    return (" AND ".join(clauses), params)
+
+
+def _fts_rows(
+    conn,
+    q: str,
+    limit: int,
+    *,
+    failed_collection: str | None = None,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+):
     try:
         failed_join = ""
         params: list[Any] = []
@@ -77,6 +105,9 @@ def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None)
                  AND ref.provider=? AND ref.collection_name=? AND ref.status='index_failed'
             """
             params.extend((PROVIDER, failed_collection))
+        scope_sql, scope_params = _scope_sql(owner_id=owner_id, soul_id=soul_id)
+        scope_clause = f" AND {scope_sql}" if scope_sql else ""
+        params.extend(scope_params)
         params.extend((_match_query(q), limit))
         return conn.execute(
             f"""
@@ -85,7 +116,9 @@ def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None)
             JOIN memory_capsules_v2 AS capsule
               ON capsule.capsule_id=memory_capsules_v2_fts.capsule_id
             {failed_join}
-            WHERE memory_capsules_v2_fts MATCH ?
+            WHERE 1=1
+              {scope_clause}
+              AND memory_capsules_v2_fts MATCH ?
               AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
               AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
             LIMIT ?
@@ -99,7 +132,15 @@ def _fts_rows(conn, q: str, limit: int, *, failed_collection: str | None = None)
         return []
 
 
-def _substring_rows(conn, q: str, limit: int, *, failed_collection: str | None = None):
+def _substring_rows(
+    conn,
+    q: str,
+    limit: int,
+    *,
+    failed_collection: str | None = None,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+):
     terms = _zh_terms(q)
     if not terms:
         return []
@@ -113,7 +154,10 @@ def _substring_rows(conn, q: str, limit: int, *, failed_collection: str | None =
              AND ref.provider=? AND ref.collection_name=? AND ref.status='index_failed'
         """
         params.extend((PROVIDER, failed_collection))
+    scope_sql, scope_params = _scope_sql(owner_id=owner_id, soul_id=soul_id)
+    scope_clause = f" AND {scope_sql}" if scope_sql else ""
     params.extend(f"%{term}%" for term in terms)
+    params.extend(scope_params)
     params.append(limit)
     return conn.execute(
         f"""
@@ -122,18 +166,40 @@ def _substring_rows(conn, q: str, limit: int, *, failed_collection: str | None =
         WHERE ({clauses})
           AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
           AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
+          {scope_clause}
         ORDER BY capsule.updated_at DESC LIMIT ?
         """,
         params,
     ).fetchall()
 
 
-def _fts_candidate_ids(q: str, *, limit: int, failed_collection: str | None = None) -> list[str]:
+def _fts_candidate_ids(
+    q: str,
+    *,
+    limit: int,
+    failed_collection: str | None = None,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> list[str]:
     conn = get_conn()
-    rows = _fts_rows(conn, q, limit, failed_collection=failed_collection)
+    rows = _fts_rows(
+        conn,
+        q,
+        limit,
+        failed_collection=failed_collection,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
     if _has_cjk(q):
         seen = {r["capsule_id"] for r in rows}
-        for row in _substring_rows(conn, q, limit, failed_collection=failed_collection):
+        for row in _substring_rows(
+            conn,
+            q,
+            limit,
+            failed_collection=failed_collection,
+            owner_id=owner_id,
+            soul_id=soul_id,
+        ):
             if row["capsule_id"] not in seen:
                 rows.append(row)
                 seen.add(row["capsule_id"])
@@ -170,12 +236,25 @@ def _affective_score(cap: dict[str, Any]) -> float:
     return min(1.0, max(0.0, intensity))
 
 
-def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def search_capsules_with_status(
+    q: str,
+    *,
+    top_k: int = 5,
+    high_risk: bool = False,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     native_rows, status = native_candidates(q, top_k=top_k * 4)
+    scoped_search = owner_id is not None or soul_id is not None
     native_scores: dict[str, float] = {}
     fts_fallback_ids: set[str] = set()
     if native_rows is None:
-        candidate_ids = _fts_candidate_ids(q, limit=top_k * 4)
+        candidate_ids = _fts_candidate_ids(
+            q,
+            limit=top_k * 4,
+            owner_id=owner_id,
+            soul_id=soul_id,
+        )
     else:
         candidate_ids = []
         for capsule_id, raw_score in native_rows:
@@ -188,13 +267,19 @@ def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = Fal
         failed_collection = None
         if status.get("native_index", {}).get("failed"):
             failed_collection = status.get("collection")
-        for capsule_id in _fts_candidate_ids(q, limit=top_k * 4, failed_collection=failed_collection):
+        for capsule_id in _fts_candidate_ids(
+            q,
+            limit=top_k * 4,
+            failed_collection=failed_collection,
+            owner_id=owner_id,
+            soul_id=soul_id,
+        ):
             if capsule_id not in native_scores:
                 candidate_ids.append(capsule_id)
                 fts_fallback_ids.add(capsule_id)
 
     # Batch-fetch all candidates in a single query (avoids N+1).
-    by_id = get_capsules_batch(candidate_ids)
+    by_id = get_capsules_batch(candidate_ids, owner_id=owner_id, soul_id=soul_id)
     accessed_at = now()
     scored: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     updates: list[tuple[str, dict[str, Any]]] = []
@@ -213,7 +298,11 @@ def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = Fal
         cap["retrieval_score"] = round(score, 4)
         cap["retrieval_backend"] = "fts_fallback" if capsule_id in fts_fallback_ids else status["backend"]
         if capsule_id in fts_fallback_ids:
-            cap["retrieval_fallback_reason"] = "native_index_failed_capsule"
+            cap["retrieval_fallback_reason"] = (
+                "native_scope_supplement"
+                if scoped_search and failed_collection is None
+                else "native_index_failed_capsule"
+            )
         elif status.get("fallback_reason") and status["backend"] == "fts_fallback":
             cap["retrieval_fallback_reason"] = status["fallback_reason"]
         scored.append((capsule_id, cap, state))
@@ -235,7 +324,20 @@ def search_capsules_with_status(q: str, *, top_k: int = 5, high_risk: bool = Fal
     return out, status
 
 
-def search_capsules(q: str, *, top_k: int = 5, high_risk: bool = False) -> list[dict[str, Any]]:
+def search_capsules(
+    q: str,
+    *,
+    top_k: int = 5,
+    high_risk: bool = False,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Compatibility wrapper for internal callers that expect only result rows."""
-    results, _ = search_capsules_with_status(q, top_k=top_k, high_risk=high_risk)
+    results, _ = search_capsules_with_status(
+        q,
+        top_k=top_k,
+        high_risk=high_risk,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
     return results

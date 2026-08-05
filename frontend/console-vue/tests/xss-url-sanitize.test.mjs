@@ -14,9 +14,11 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const researchPath = path.join(root, 'src/views/ResearchAdoptionView.vue')
 const settingsPath = path.join(root, 'src/views/platform/SettingsView.vue')
+const knowledgePath = path.join(root, 'src/views/platform/KnowledgeView.vue')
 
 const research = await readFile(researchPath, 'utf8')
 const settings = await readFile(settingsPath, 'utf8')
+const knowledge = await readFile(knowledgePath, 'utf8')
 
 test('ResearchAdoptionView: source_urls 经 safeSourceUrl 协议白名单后才进 :href', () => {
   // 模板不得再裸绑 url；须绑消毒函数
@@ -43,4 +45,9 @@ test('SettingsView: 校验发生在 style.textContent 赋值之前（顺序契�
   assert.ok(guardIdx > 0, '未找到守卫语句')
   assert.ok(sinkIdx > 0, '未找到 style 注入 sink')
   assert.ok(guardIdx < sinkIdx, '守卫必须在写入 <style> 之前')
+})
+
+test('KnowledgeView: 搜索标题仅通过 Vue 文本插值渲染', () => {
+  assert.match(knowledge, /<h3 class="hit-title">\{\{\s*hit\.title\s*\}\}<\/h3>/)
+  assert.doesNotMatch(knowledge, /class="hit-title"[^>]*v-html/)
 })

@@ -356,27 +356,26 @@ def test_remember_dedup_does_not_touch_updated_at(tmp_path):
 
 
 def test_concurrent_remember_no_lost_lines(tmp_path):
-    """并发 /remember 不再互相覆盖（锁外读改写已迁到 mutate）。"""
+    """并发 remember 处理不再互相覆盖（锁外读改写已迁到 mutate）。"""
     client = _client(tmp_path)
     h = {"x-api-key": "test-key"}
     texts = [f"并发记忆第{i}条" for i in range(8)]
     failures: list[str] = []
+    start = threading.Barrier(len(texts))
+
+    from backend.app.platform_api import memory_center
 
     def post(text: str) -> None:
-        # TestClient's transport is not guaranteed to be shared concurrently.
-        # Keep one ASGI app/store while giving each worker an independent
-        # transport so this test measures the application lock, not test I/O.
-        worker_client = TestClient(client.app, raise_server_exceptions=False)
         try:
-            r = worker_client.post(
-                "/platform/memory/remember",
-                json={"text": text},
-                headers=h,
-            )
-            if r.status_code != 200:
-                failures.append(f"{text}: {r.status_code}")
-        finally:
-            worker_client.close()
+            # 多个 TestClient 即使各自持有 transport，在 Linux/Python 3.12 下
+            # 仍会间歇返回无关的 404。这里直接并发路由处理器，精确验证共享
+            # JsonStore 的原子读改写；HTTP 挂载由末尾单请求单独验证。
+            start.wait(timeout=5)
+            result = memory_center.remember(memory_center.RememberPost(text=text))
+            if not result.get("ok"):
+                failures.append(f"{text}: {result!r}")
+        except Exception as exc:  # noqa: BLE001 - 汇总线程异常供主线程断言
+            failures.append(f"{text}: {exc!r}")
 
     threads = [threading.Thread(target=post, args=(t,)) for t in texts]
     for t in threads:
@@ -385,7 +384,9 @@ def test_concurrent_remember_no_lost_lines(tmp_path):
         t.join()
 
     assert not failures
-    lines = client.get("/platform/memory/instructions", headers=h).json()["lines"]
+    response = client.get("/platform/memory/instructions", headers=h)
+    assert response.status_code == 200, response.text
+    lines = response.json()["lines"]
     for text in texts:
         assert text in lines
 

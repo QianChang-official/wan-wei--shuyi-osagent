@@ -21,11 +21,24 @@ def execution_mode_for(risk_class: str) -> str:
     return {"low": "advisory_mode", "medium": "advisory_mode", "high": "supervised_mode", "critical": "read_only_mode"}[risk_class]
 
 
-def run_command_loop(*, goal: str, scene: str = "general", top_k: int = 5) -> dict[str, Any]:
+def run_command_loop(
+    *,
+    goal: str,
+    scene: str = "general",
+    top_k: int = 5,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
     task_id = "task_" + uuid.uuid4().hex[:12]
     risk_class = classify_risk(goal)
     high_risk = risk_class in {"high", "critical"}
-    memories = search_capsules(goal, top_k=top_k, high_risk=high_risk)
+    memories = search_capsules(
+        goal,
+        top_k=top_k,
+        high_risk=high_risk,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
     evidence_cards = [build_evidence_card(m, used_for="planning") for m in memories]
     confirmation_points = []
     if risk_class == "high":

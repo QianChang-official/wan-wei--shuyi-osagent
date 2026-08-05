@@ -112,14 +112,15 @@ def test_chat_rejects_reserved_namespace_agent_id(client, monkeypatch):
             headers=H,
         )
         assert r.status_code == 404, (reserved, r.text)
-    # 正常 agent 不受影响
+    # 正常 agent 不受影响：不因保留命名空间误判 404。
+    # 无网关配置时 chat 如实 502（issue #45 P0-3），这里只断言未被 404 拦截。
     aid = _make_agent(client)
     r = client.post(
         "/platform/agents/chat",
         json={"message": "你好", "agent_id": aid},
         headers=H,
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code != 404, r.text
 
 
 def test_agent_crud_is_scoped_to_api_key_owner(client, monkeypatch):
@@ -166,7 +167,8 @@ def test_legacy_agent_without_owner_id_remains_visible(client, monkeypatch):
     listed = client.get("/platform/agents", headers=H).json()["items"]
     assert aid in {item["id"] for item in listed}
     r = client.post("/platform/agents/chat", json={"agent_id": aid, "message": "hi"}, headers=H)
-    assert r.status_code == 200, r.text
+    # legacy agent 对已鉴权调用方可见：不 404（无网关时 chat 如实 502，P0-3）。
+    assert r.status_code != 404, r.text
     # 响应不得泄露 owner_id 字段
     assert "owner_id" not in client.get(f"/platform/agents/{aid}", headers=H).json()
 
@@ -465,7 +467,13 @@ def test_finalize_run_annotates_actual_provider(client, monkeypatch):
 
 
 def test_chat_consumes_memory_instructions(client, isolated_db):
-    """记忆指令注入 system_prompt（纯函数级，绕开网关 502）。"""
+    """issue #45 P0-3: 改为直测纯函数 _compose_system_prompt。
+
+    P0-3 删除 mock 网关后，/platform/agents/chat 在无网关配置时如实 502，
+    原本经端点断言 system_prompt 的写法已不可行。而 _compose_system_prompt
+    是纯函数（只读记忆库组装提示词，不碰网关），记忆注入这一被测行为
+    完整落在它内部，因此直测它既保住断言强度又不依赖网关。
+    """
     agents_mod = _agents_mod()
 
     r = client.post(
@@ -484,7 +492,7 @@ def test_chat_consumes_memory_instructions(client, isolated_db):
 
 
 def test_chat_memory_injection_empty_when_no_instructions(client, isolated_db):
-    """无记忆指令时如实 empty（纯函数级，绕开网关 502）。"""
+    """无记忆指令时 _compose_system_prompt 如实标注 empty（同上，绕开网关）。"""
     agents_mod = _agents_mod()
 
     system_prompt, status = agents_mod._compose_system_prompt(  # noqa: SLF001

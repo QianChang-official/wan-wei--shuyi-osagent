@@ -267,7 +267,8 @@ def test_scheduler_tick_fires_due_flow(client):
     assert len(fired) == 1
     final = _wait_done(fired[0])
     assert final['triggered_by'] == 'schedule'
-    assert final['simulated'] is True
+    # P0-5: 真实触发 simulated=False（模拟态只能由显式模拟入口写入）。
+    assert final['simulated'] is False
     assert final['done'] is True and final['status'] == 'done'
     assert stored['id'] == flow['id']
 
@@ -307,8 +308,9 @@ def test_ai_edit_declares_full_rebuild(client):
     r = client.post('/automation/flows/ai-edit', json={'instruction': '每天7点抓取科技新闻并写入记忆'})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body['engine'] == 'mock'
+    assert body['engine'] == 'rule'
     assert body['edit_mode'] == 'full_rebuild'
+    assert '规则解析' in body['note']
     flow = _create_flow(client, steps=_steps(1))
     r = client.post('/automation/flows/ai-edit', json={
         'flow_id': flow['id'], 'instruction': '每天7点抓取科技新闻',
@@ -371,7 +373,7 @@ def test_run_conflict_when_already_running(client):
     r = client.post(f"/automation/flows/{flow['id']}/run")
     assert r.status_code == 202, r.text
     run = r.json()
-    assert run['done'] is False and run['simulated'] is True
+    assert run['done'] is False and run['simulated'] is False
     assert run['triggered_by'] == 'manual'
     r2 = client.post(f"/automation/flows/{flow['id']}/run")
     assert r2.status_code == 409, r2.text
@@ -424,7 +426,8 @@ def test_run_view_backfills_done_and_simulated(client, store_dir):
         'step_results': [], 'started_at': '2026-01-01T00:01:00+08:00',
     })
     r = client.get('/automation/runs/run_legacy_done')
-    assert r.json()['done'] is True and r.json()['simulated'] is True
+    # P0-5: 旧记录无 simulated 字段时回填 False（真实触发默认为非模拟）。
+    assert r.json()['done'] is True and r.json()['simulated'] is False
     r = client.get('/automation/runs/run_legacy_running')
     assert r.json()['done'] is False
     r = client.get('/automation/runs')

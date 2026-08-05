@@ -18,8 +18,8 @@ desktop/
 │   └── preload.js       # 安全桥：暴露 window.wanweiDesktop 给 Web 端
 ├── build/icons/         # 16~512 像素多尺寸图标（PNG）
 ├── packaging/linux/
-│   ├── postinst.sh      # 安装后刷新 desktop/图标/沙箱权限
-│   ├── postrm.sh        # 卸载后刷新缓存
+│   ├── postinst.sh      # 安装后配置命令入口、desktop/图标缓存与沙箱权限
+│   ├── postrm.sh        # 卸载后清理命令入口、服务、空安装目录并刷新缓存
 │   ├── systemd/         # systemd --user 服务
 │   └── autostart/       # XDG autostart 模板
 ├── scripts/
@@ -89,8 +89,8 @@ npm run pack:deb
 # 安装
 sudo dpkg -i release/wanwei-shuyi-desktop_0.11.0_amd64.deb
 
-# 使用虚拟显示启动（无图形桌面环境也适用）
-timeout 60 xvfb-run --auto-servernum /opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop --no-sandbox
+# 使用虚拟显示启动（无图形桌面环境也适用，并验证安装后的 setuid 沙箱）
+timeout 60 xvfb-run --auto-servernum /opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop
 ```
 
 启动日志中应能看到后端 `/health` 200、前端 `/console/` 200、各 API 资源加载成功。浏览器可访问 `http://127.0.0.1:<port>/console/`。
@@ -108,6 +108,7 @@ sudo apt --fix-broken install -y
 安装后：
 - 程序主体在 `/opt/wanwei-shuyi-desktop/`
 - 可执行文件 `/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop`
+- 命令行入口 `/usr/bin/wanwei-shuyi-desktop`
 - `.desktop` 入口 `/usr/share/applications/wanwei-shuyi-desktop.desktop`
 - 图标在 `/usr/share/icons/hicolor/` 各尺寸目录
 - 可选 systemd 服务 `/etc/systemd/user/wanwei-shuyi-desktop.service`
@@ -121,17 +122,18 @@ sudo rpm -i release/wanwei-shuyi-desktop-0.11.0.x86_64.rpm
 ### 4.3 启动方式
 
 1. **图形界面**：开始菜单 → 「枢忆·花朝」
-2. **命令行**：`/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop`
+2. **命令行**：`wanwei-shuyi-desktop`（实际程序位于 `/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop`）
 3. **系统服务（可选）**：
 
    ```bash
+   systemctl --user daemon-reload
    systemctl --user enable --now wanwei-shuyi-desktop
    ```
 
 ### 4.4 首次启动
 
 首次启动会：
-1. 在 `~/.config/wanwei-shuyi-desktop/venv/` 创建 Python 虚拟环境；
+1. 在 `~/.config/wanwei-shuyi-desktop/venv/` 创建 Python 虚拟环境；依赖哈希变化或关键原生扩展导入失败时自动重建，避免复用不可执行的旧环境；
 2. 安装后端依赖（`pip install -r backend/requirements.txt`）；
 3. 生成 48 位本地 API Key；
 4. 启动后端并加载 Web 控制台窗口。
@@ -146,7 +148,7 @@ sudo rpm -i release/wanwei-shuyi-desktop-0.11.0.x86_64.rpm
 http://127.0.0.1:<port>/console/
 ```
 
-`port` 在首次启动时自动选择空闲端口（通常是 8010）。若通过系统托盘「在浏览器中打开 Web 端」可直接跳转。
+`port` 在每次启动时由操作系统分配空闲端口。通过系统托盘「在浏览器中打开 Web 端」可直接跳转，无需猜测端口。
 
 ## 六、桌面特性
 
@@ -161,7 +163,7 @@ http://127.0.0.1:<port>/console/
 | 单实例 | `app.requestSingleInstanceLock` | 重复点击仅唤醒已运行实例 |
 | 防睡眠（v0.11.0） | `powerSaveBlocker` | `app`（仅阻止系统挂起）/ `display`（连同屏幕常亮）两档，托盘可切，保证长时编排运行期间机器不睡 |
 | 局域网手机控制（v0.11.0） | 后端 `127.0.0.1 ↔ 0.0.0.0` 热重启切换 | 自动优选私有网段 IPv4 生成手机访问地址，配合 `/mobile` 页面与 LAN token 构成「手机伴侣」通道 |
-| 浮动工作区小窗（v0.11.0） | 无边框置顶 `BrowserWindow`（420×640） | 跳过任务栏，加载 `/console/#/mobile?floating=1`，随时唤起/销毁 |
+| 浮动工作区小窗（v0.11.0） | 无边框置顶 `BrowserWindow`（420×640） | 从托盘显示/隐藏；托盘勾选跟随真实可见/最小化状态并可恢复既有窗口。加载 `/console/#/mobile?floating=1`，顶部保留拖动区，按钮与输入框保持正常交互。首次使用需在手机伴侣面板完成配对；同一桌面会话会复用配对状态 |
 
 ## 七、环境变量
 
@@ -181,19 +183,22 @@ sudo apt remove wanwei-shuyi-desktop
 sudo rpm -e wanwei-shuyi-desktop
 ```
 
-用户数据目录 `~/.config/wanwei-shuyi-desktop/` 默认保留，内含记忆数据库；如需彻底清理请手动删除。
+卸载会移除自有的 `/usr/bin/wanwei-shuyi-desktop` 命令入口、
+`/etc/systemd/user/wanwei-shuyi-desktop.service` 和空的安装目录，但默认保留用户数据目录
+`~/.config/wanwei-shuyi-desktop/`（内含记忆数据库）；如需彻底清理请手动删除。
 
 ## 九、常见问题
 
 ### 9.1 沙箱启动失败
 
-某些容器或特殊内核环境缺少 Electron 沙箱支持，可临时绕过：
+安装后的 `chrome-sandbox` 应为 `root:root` 且权限为 `4755`：
 
 ```bash
-/opt/wanwei-shuyi-desktop/wanwei-shuyi-desktop --no-sandbox
+stat -c '%U:%G %a' /opt/wanwei-shuyi-desktop/chrome-sandbox
 ```
 
-生产部署建议通过 `postinst.sh` 设置 `chrome-sandbox` 的 `setuid` 权限。
+不满足时应重新安装软件包并检查 `postinst` 错误。`--no-sandbox` 只允许在隔离、
+一次性的诊断环境临时使用，不能作为安装验收或生产启动方式。
 
 ### 9.2 后端依赖安装慢
 
@@ -206,7 +211,7 @@ export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 9.3 端口被占用
 
-主进程会自动选择空闲端口，无需手动配置。若需要固定端口，可修改 `src/main.js` 中的 `findFreePortSync()` 回退值。
+主进程通过 `findFreePort()` 让操作系统分配空闲端口，无需手动配置。当前端口可通过系统托盘「在浏览器中打开 Web 端」直接获取。
 
 ### 9.4 麒麟 VNC 虚拟机中测试
 

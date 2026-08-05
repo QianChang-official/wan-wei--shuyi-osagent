@@ -1,8 +1,15 @@
 from ..memory_runtime.capsule_store import list_capsules
 
 
-def tiers() -> dict:
-    capsules = [cap for cap in list_capsules(100) if cap]
+def tiers(*, owner_id: str | None = None, soul_id: str | None = None) -> dict:
+    if owner_id is None and soul_id is None:
+        capsules = [cap for cap in list_capsules(100) if cap]
+    else:
+        capsules = [
+            cap
+            for cap in list_capsules(100, owner_id=owner_id, soul_id=soul_id)
+            if cap
+        ]
     active = [cap["capsule_id"] for cap in capsules if cap.get("state", {}).get("lifecycle") == "active"]
     archival = [cap["capsule_id"] for cap in capsules if cap.get("state", {}).get("lifecycle") in {"deprecated", "forgotten"}]
     working = active[:5]

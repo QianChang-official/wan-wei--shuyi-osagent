@@ -10,15 +10,51 @@ process.env.WANWEI_DESKTOP_TEST_EXPORTS = '1';
 const TEST_API_KEY = 'test-api-key-0123456789abcdef0123456789abcdef';
 
 const assert = require('node:assert');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
 const SRC_DIR = path.join(__dirname, '..', 'src');
+const { recoverBackendEnvBackup, swapBackendEnv } = require('../src/backend_env');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wanwei-w13-'));
 
 let exposedApi = null;
+const browserWindows = [];
+
+class BrowserWindowStub extends EventEmitter {
+  constructor(options) {
+    super();
+    this.options = options;
+    this.destroyed = false;
+    this.visible = true;
+    this.minimized = false;
+    this.restoreCalls = 0;
+    this.webContents = {
+      on: () => {},
+      setWindowOpenHandler: () => {},
+    };
+    browserWindows.push(this);
+  }
+
+  isDestroyed() { return this.destroyed; }
+  isVisible() { return this.visible; }
+  isMinimized() { return this.minimized; }
+  setAlwaysOnTop() {}
+  loadURL(url) { this.url = url; }
+  focus() {}
+  show() { this.visible = true; this.emit('show'); }
+  hide() { this.visible = false; this.emit('hide'); }
+  minimize() { this.minimized = true; this.emit('minimize'); }
+  restore() { this.minimized = false; this.restoreCalls += 1; this.emit('restore'); }
+  destroy() {
+    this.destroyed = true;
+    this.visible = false;
+    this.emit('closed');
+  }
+}
+
 const electronStub = {
   app: {
     isPackaged: false,
@@ -31,7 +67,7 @@ const electronStub = {
     whenReady: () => ({ then: () => {} }),
     setLoginItemSettings: () => {},
   },
-  BrowserWindow: class {},
+  BrowserWindow: BrowserWindowStub,
   Tray: class {},
   Menu: { buildFromTemplate: () => ({}) },
   Notification: class { static isSupported() { return false; } },
@@ -147,6 +183,32 @@ async function t(name, fn) {
     }
   });
 
+  await t('浮动工作区托盘状态跟随真实窗口生命周期', () => {
+    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
+    assert.match(src, /label: '显示浮动工作区'/, '托盘缺少浮动工作区入口');
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), false);
+
+    assert.strictEqual(main.setFloatingWorkspace(true), true);
+    const win = browserWindows.at(-1);
+    assert.ok(win, '应创建浮动窗口');
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), true);
+
+    win.minimize();
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), false, '最小化后托盘应显示未勾选');
+    assert.strictEqual(main.setFloatingWorkspace(true), true);
+    assert.strictEqual(win.restoreCalls, 1, '重新显示时应先恢复最小化窗口');
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), true);
+
+    win.hide();
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), false, '隐藏后托盘应显示未勾选');
+    main.setFloatingWorkspace(true);
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), true, '托盘应恢复既有隐藏窗口');
+
+    assert.strictEqual(main.setFloatingWorkspace(false), false);
+    assert.strictEqual(win.isDestroyed(), true);
+    assert.strictEqual(main.isFloatingWorkspaceVisible(), false);
+  });
+
   await t('10-#6 sandbox=true 显式开启，密钥改经受信 IPC 同步通道', () => {
     const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
     assert.ok(!src.includes('读不到'), '乱码注释「以读不到」应已清除');
@@ -232,6 +294,68 @@ async function t(name, fn) {
     fs.writeFileSync(m, '2025-01-01T00:00:00.000Z');
     assert.strictEqual(main.depsMarkerMatches(m, 'a'.repeat(64)), false, '旧时间戳格式应判失效');
     assert.strictEqual(main.depsMarkerMatches(path.join(tmp, 'nope'), 'x'), false, 'marker 缺失应判失效');
+  });
+
+  await t('麒麟缓存 venv 原生扩展导入探针', () => {
+    const python = process.platform === 'win32' ? 'python' : 'python3';
+    assert.strictEqual(main.isBackendEnvHealthy(python, 'pass'), true, '可用解释器应通过探针');
+    assert.strictEqual(
+      main.isBackendEnvHealthy(python, 'raise SystemExit(7)'),
+      false,
+      '导入失败必须使缓存 venv 失效',
+    );
+    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
+    assert.ok(src.includes('import pydantic_core') && src.includes('import uvicorn'),
+      '探针应覆盖原生扩展与实际启动所需的 uvicorn 依赖');
+    assert.ok(src.includes('"-m", "uvicorn", "app.main:app"'),
+      '探针应使用与正式后端相同的模块入口');
+    assert.ok(src.includes('socket.create_connection(("127.0.0.1", port)'),
+      '探针应确认 uvicorn 已真实绑定 loopback 端口');
+    assert.ok(src.includes('"--lifespan", "off"'),
+      '探针不得在预检阶段触碰用户数据库生命周期');
+    assert.ok(src.includes('.staging-${process.pid}-${Date.now()}'),
+      '重建应先写入独立 staging venv');
+    assert.ok(src.includes('await swapBackendEnv(VENV_DIR, stagingDir, logLine)'),
+      '新环境通过健康检查后才应替换当前 venv');
+    assert.ok(src.includes('await recoverBackendEnvBackup(VENV_DIR, logLine)'),
+      '交换中断后应在下一次启动恢复最后一个可用 venv');
+    assert.ok(!src.includes('await fsp.rm(VENV_DIR, { recursive: true, force: true })'),
+      '重建失败时不得先删除最后一个可用 venv');
+  });
+
+  await t('麒麟缓存 venv staging 交换与失败恢复', async () => {
+    const successRoot = fs.mkdtempSync(path.join(tmp, 'venv-success-'));
+    const successVenv = path.join(successRoot, 'venv');
+    const successStaging = path.join(successRoot, 'staging');
+    fs.mkdirSync(successVenv);
+    fs.mkdirSync(successStaging);
+    fs.writeFileSync(path.join(successVenv, 'state'), 'old');
+    fs.writeFileSync(path.join(successStaging, 'state'), 'new');
+
+    await swapBackendEnv(successVenv, successStaging);
+    assert.strictEqual(fs.readFileSync(path.join(successVenv, 'state'), 'utf8'), 'new');
+    assert.strictEqual(fs.existsSync(`${successVenv}.previous`), false);
+
+    const failureRoot = fs.mkdtempSync(path.join(tmp, 'venv-failure-'));
+    const failureVenv = path.join(failureRoot, 'venv');
+    fs.mkdirSync(failureVenv);
+    fs.writeFileSync(path.join(failureVenv, 'state'), 'last-known-good');
+
+    await assert.rejects(() => swapBackendEnv(failureVenv, path.join(failureRoot, 'missing')));
+    assert.strictEqual(
+      fs.readFileSync(path.join(failureVenv, 'state'), 'utf8'),
+      'last-known-good',
+      'staging 激活失败后应恢复旧 venv',
+    );
+
+    const recoveryRoot = fs.mkdtempSync(path.join(tmp, 'venv-recovery-'));
+    const recoveryVenv = path.join(recoveryRoot, 'venv');
+    fs.mkdirSync(`${recoveryVenv}.previous`);
+    fs.writeFileSync(path.join(`${recoveryVenv}.previous`, 'state'), 'interrupted-swap');
+
+    await recoverBackendEnvBackup(recoveryVenv);
+    assert.strictEqual(fs.readFileSync(path.join(recoveryVenv, 'state'), 'utf8'), 'interrupted-swap');
+    assert.strictEqual(fs.existsSync(`${recoveryVenv}.previous`), false);
   });
 
   await t('10-#13 maintainer 非占位邮箱', () => {

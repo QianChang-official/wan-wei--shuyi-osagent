@@ -214,6 +214,9 @@ test('MobileView: token 不滞留地址栏 + 共享状态映射 + 浮动窗补�
   assert.equal(code.includes('STATUS_LABELS'), false, '残留私有状态映射')
   assert.ok(code.includes('isFloating'), '未识别 floating 浮动窗模式')
   assert.ok(code.includes('submitManualToken'), '缺手动粘贴令牌入口')
+  assert.match(code, /v-if="isFloating" class="floating-titlebar"/, '无边框浮动窗缺专用拖动区')
+  assert.match(code, /-webkit-app-region:\s*drag/, '浮动窗拖动区未启用 Electron app-region')
+  assert.match(code, /-webkit-app-region:\s*no-drag/, '浮动窗交互控件未排除拖动捕获')
 })
 
 test('HelpView: 本机反馈可查看/导出/复制（08-#38）', async () => {

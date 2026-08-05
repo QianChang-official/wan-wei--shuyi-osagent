@@ -5,10 +5,12 @@ class MemoryEventIn(BaseModel):
     source_type: str
     scene: str='general'
     content: dict[str, Any]
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 class ForgetPreviewIn(BaseModel):
     instruction: str
     scope: Literal['current_user']='current_user'
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 class ForgetConfirmIn(BaseModel):
     forget_request_id: str
@@ -31,11 +33,13 @@ class CapsuleWriteIn(BaseModel):
     production_context: dict[str, Any] | None = None
     alignment_metadata: dict[str, Any] | None = None
     relation_edges: list[dict[str, Any]] | None = None
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 class CommandLoopIn(BaseModel):
     goal: str
     scene: str = 'general'
     top_k: int = Field(default=5, ge=1, le=50)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 class ReflectionIn(BaseModel):
     task_id: str
@@ -46,6 +50,7 @@ class ReflectionIn(BaseModel):
     new_preferences: list[dict[str, Any]] = Field(default_factory=list)
     new_knowledge: list[dict[str, Any]] = Field(default_factory=list)
     new_risks: list[dict[str, Any]] = Field(default_factory=list)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 # v0.11 Soul Awakening schemas
 class SoulConnectIn(BaseModel):

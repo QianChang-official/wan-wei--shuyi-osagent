@@ -353,7 +353,7 @@ async function togglePower() {
   powerBusy.value = true
   const next = powerKnown.value ? !preventSleep.value : true
   try {
-    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next })
+    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next, gear: 'device' })
     const v = normalizePower(res)
     preventSleep.value = v ?? next
     powerKnown.value = true
@@ -450,7 +450,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mobile-view">
+  <div class="mobile-view" :class="{ 'mobile-view--floating': isFloating }">
+    <div v-if="isFloating" class="floating-titlebar" aria-hidden="true">
+      <span class="floating-titlebar-handle"></span>
+      <span>宛委·枢忆</span>
+    </div>
+
     <!-- ══ 配对门禁：校验中 / 失败整页 ══ -->
     <div v-if="phase !== 'paired'" class="gate">
       <div class="gate-card">
@@ -619,6 +624,37 @@ onBeforeUnmount(() => {
   max-width: 560px;
   margin: 0 auto;
   padding: 4px 10px 108px; /* 底部留白给固定操作栏 */
+}
+
+/* 无边框浮动窗口需要显式拖动区；交互控件必须保持可点击、可输入。 */
+.floating-titlebar {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  height: 32px;
+  margin: -4px -10px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--card-solid) 92%, transparent);
+  color: var(--ink-muted);
+  font-family: var(--font-kai);
+  font-size: 11px;
+  letter-spacing: 2px;
+  user-select: none;
+  cursor: move;
+  -webkit-app-region: drag;
+}
+.floating-titlebar-handle {
+  width: 22px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--gold-line);
+}
+.mobile-view--floating :is(button, input, textarea, select, a, [role='button']) {
+  -webkit-app-region: no-drag;
 }
 
 /* ── 配对门禁（整页） ── */

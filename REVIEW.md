@@ -107,7 +107,7 @@ operations are gated by explicit module-level checks rather than a global disabl
 
 ## Frontend and Generated Distribution
 
-- The canonical frontend build uses `npm ci`, Node `20.20.2`, TypeScript, and Vite.
+- The canonical frontend build uses `npm ci`, Node `22.23.2`, TypeScript, and Vite.
   Source changes that affect the console must include the corresponding committed
   `frontend/console-vue/dist` output.
 - The production build must be deterministic: two builds from the same source and

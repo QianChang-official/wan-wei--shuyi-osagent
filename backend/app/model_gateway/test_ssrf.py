@@ -153,7 +153,17 @@ def test_model_gateway_dry_run_does_not_require_network():
     assert out.status == "ok"
 
 
-def test_model_gateway_real_smoke_rejects_blocked_provider():
-    # local_mock is not allowed real smoke; should not make network call
-    out = run_provider_test(ModelGatewayTestIn(provider="local_mock", dry_run=False))
-    assert out.status == "blocked_in_alpha"
+def test_model_gateway_real_smoke_rejects_unknown_provider():
+    """未知 provider 的真实 smoke 必须被拒，且不得发起网络调用。
+
+    issue #45 (4.1): 原载体 ``local_mock`` 是 mock provider，已随
+    ``local://memoryops/mock-model`` 一并删除，故它现在如实返回
+    ``not_found``。本测试的意图——"不在册的 provider 不得走真实链路"——
+    不变，改用一个确定不存在的 provider 名承载。
+    """
+    out = run_provider_test(
+        ModelGatewayTestIn(provider="definitely_not_a_provider", dry_run=False)
+    )
+    # 关键是被拒绝且不含成功语义，而非具体拒绝码。
+    assert out.status in ("not_found", "blocked_in_alpha")
+    assert out.status != "ok"

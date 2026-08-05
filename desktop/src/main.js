@@ -21,6 +21,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const netNode = require('node:net');
 const os = require('node:os');
+const { recoverBackendEnvBackup, swapBackendEnv } = require('./backend_env');
 
 // ---------------------------------------------------------------- constants
 const APP_NAME = '枢忆·花朝';
@@ -125,13 +126,11 @@ async function ensureApiKey() {
   return key;
 }
 
-function findPython() {
+function findAvailableSystemPython() {
   if (process.env.WANWEI_DESKTOP_PYTHON) return process.env.WANWEI_DESKTOP_PYTHON;
-  const venvPy = path.join(VENV_DIR, 'bin', 'python3');
-  if (fs.existsSync(venvPy)) return venvPy;
-  for (const cand of ['python3', 'python3.12', 'python3.11', 'python3.10']) {
-    const r = spawnSync(cand, ['--version'], { stdio: 'ignore' });
-    if (r.status === 0) return cand;
+  for (const candidate of ['python3', 'python3.12', 'python3.11', 'python3.10']) {
+    const versionCheck = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
+    if (versionCheck.status === 0) return candidate;
   }
   return 'python3';
 }
@@ -143,33 +142,133 @@ function depsMarkerMatches(marker, reqHash) {
   catch { return false; }
 }
 
-/** 首次运行：创建 venv 并安装后端依赖（带桌面通知反馈）
- *  .deps-ok marker 记录 requirements.txt 的 SHA-256；内容变化即重装，避免应用升级后跑旧依赖 */
+const BACKEND_RUNTIME_PROBE = `
+import socket
+import subprocess
+import sys
+import time
+
+from cryptography.fernet import Fernet
+import fastapi
+import pydantic_core
+import uvicorn
+
+backend_dir = sys.argv[1]
+with socket.socket() as probe_socket:
+    probe_socket.bind(("127.0.0.1", 0))
+    port = probe_socket.getsockname()[1]
+
+# Exercise the same module entry point and socket binding as the real backend.
+# Lifespan is disabled so a preflight check never mutates the user's database.
+process = subprocess.Popen(
+    [
+        sys.executable,
+        "-m", "uvicorn", "app.main:app",
+        "--app-dir", backend_dir,
+        "--host", "127.0.0.1",
+        "--port", str(port),
+        "--no-proxy-headers",
+        "--lifespan", "off",
+    ],
+    cwd=backend_dir,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+
+started = False
+try:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"uvicorn preflight exited with code {process.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                started = True
+                break
+        except OSError:
+            time.sleep(0.05)
+    if not started:
+        raise RuntimeError("uvicorn preflight did not bind its loopback port")
+finally:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+`;
+
+const BACKEND_RUNTIME_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * 验证缓存 venv 的原生扩展仍可被当前系统加载。麒麟执行控制或系统升级后，
+ * requirements 哈希可能未变，但旧 wheel 的本地安全元数据已失效；只看 marker
+ * 会让应用永久卡在启动失败循环。
+ */
+function isBackendEnvHealthy(python, probe = BACKEND_RUNTIME_PROBE) {
+  const result = spawnSync(python, ['-c', probe, BACKEND_DIR], {
+    cwd: BACKEND_DIR,
+    stdio: 'ignore',
+    timeout: BACKEND_RUNTIME_PROBE_TIMEOUT_MS,
+  });
+  return !result.error && result.status === 0;
+}
+
+/**
+ * 首次运行：创建 venv 并安装后端依赖（带桌面通知反馈）。.deps-ok marker 记录
+ * requirements.txt 的 SHA-256；内容变化或运行时探针失败时完整重建，避免应用
+ * 升级或麒麟安全元数据变化后继续复用损坏的原生扩展。
+ */
 async function ensureBackendEnv(notify) {
+  await recoverBackendEnvBackup(VENV_DIR, logLine);
   const venvPy = path.join(VENV_DIR, 'bin', 'python3');
   const marker = path.join(VENV_DIR, '.deps-ok');
   const req = path.join(BACKEND_DIR, 'requirements.txt');
   const reqHash = crypto.createHash('sha256').update(await fsp.readFile(req)).digest('hex');
-  if (fs.existsSync(venvPy) && fs.existsSync(marker) && depsMarkerMatches(marker, reqHash)) {
-    return venvPy;   // 依赖指纹未变，跳过重装
+  const cachedEnvExists = fs.existsSync(venvPy);
+  const cachedEnvMatchesRequirements =
+    cachedEnvExists && fs.existsSync(marker) && depsMarkerMatches(marker, reqHash);
+  if (cachedEnvMatchesRequirements) {
+    if (isBackendEnvHealthy(venvPy)) {
+      return venvPy;
+    }
+    logLine('cached venv runtime preflight failed; rebuilding environment ...');
+  } else if (cachedEnvExists) {
+    logLine('requirements.txt 哈希变化或 marker 失效，重建后端依赖 ...');
   }
-  if (fs.existsSync(venvPy)) logLine('requirements.txt 已变化或 marker 失效，重装后端依赖 ...');
 
   notify('正在初始化运行环境', '首次启动需要创建 Python 虚拟环境并安装依赖，约需 1-3 分钟。');
-  const sysPy = findPython();
-  if (!fs.existsSync(venvPy)) {
-    logLine('creating venv ...');
-    const r0 = spawnSync(sysPy, ['-m', 'venv', VENV_DIR], { stdio: 'inherit' });
+  const sysPy = findAvailableSystemPython();
+  const stagingDir = `${VENV_DIR}.staging-${process.pid}-${Date.now()}`;
+  const stagingPy = path.join(stagingDir, 'bin', 'python3');
+  const stagingMarker = path.join(stagingDir, '.deps-ok');
+  await fsp.rm(stagingDir, { recursive: true, force: true });
+  logLine('creating venv ...');
+  try {
+    const r0 = spawnSync(sysPy, ['-m', 'venv', stagingDir], { stdio: 'inherit' });
     if (r0.status !== 0) throw new Error('python3 -m venv 失败，请确认已安装 python3-venv');
-  }
 
-  const pip = path.join(VENV_DIR, 'bin', 'pip');
-  logLine('pip install -r requirements.txt ...');
-  const r = spawnSync(pip, ['install', '--disable-pip-version-check', '-r', req],
-    { stdio: 'inherit', env: { ...process.env, PIP_INDEX_URL: process.env.PIP_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple' } });
-  if (r.status !== 0) throw new Error('后端依赖安装失败，详见 ' + LOG_FILE);
-  await fsp.writeFile(marker, reqHash);
-  return venvPy;
+    const pip = path.join(stagingDir, 'bin', 'pip');
+    logLine('pip install -r requirements.txt ...');
+    const r = spawnSync(pip, ['install', '--disable-pip-version-check', '-r', req],
+      { stdio: 'inherit', env: { ...process.env, PIP_INDEX_URL: process.env.PIP_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple' } });
+    if (r.status !== 0) throw new Error('后端依赖安装失败，详见 ' + LOG_FILE);
+    if (!isBackendEnvHealthy(stagingPy)) {
+      throw new Error('后端依赖安装后运行时预检失败，详见 ' + LOG_FILE);
+    }
+    await fsp.writeFile(stagingMarker, reqHash);
+    await swapBackendEnv(VENV_DIR, stagingDir, logLine);
+    return path.join(VENV_DIR, 'bin', 'python3');
+  } catch (error) {
+    try {
+      await fsp.rm(stagingDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      logLine(`staging 后端环境清理失败：${cleanupError.message}`);
+    }
+    throw error;
+  }
 }
 
 function startBackend(python, host = '127.0.0.1') {
@@ -369,11 +468,22 @@ function setPreventSleep(enable, mode) {
 }
 
 // ------------------------------------------------------ floating workspace
+function isFloatingWorkspaceVisible() {
+  return !!(
+    floatingWin
+    && !floatingWin.isDestroyed()
+    && floatingWin.isVisible()
+    && !floatingWin.isMinimized()
+  );
+}
+
 function setFloatingWorkspace(show) {
   if (show) {
     if (floatingWin && !floatingWin.isDestroyed()) {
+      if (floatingWin.isMinimized()) floatingWin.restore();
       floatingWin.show();
       floatingWin.focus();
+      refreshTray();
       return true;
     }
     floatingWin = new BrowserWindow({
@@ -401,14 +511,24 @@ function setFloatingWorkspace(show) {
       return { action: 'deny' };
     });
     guardNavigation(floatingWin.webContents);
-    floatingWin.on('closed', () => { floatingWin = null; });
+    const createdWindow = floatingWin;
+    for (const event of ['show', 'hide', 'minimize', 'restore']) {
+      createdWindow.on(event, refreshTray);
+    }
+    createdWindow.on('closed', () => {
+      if (floatingWin === createdWindow) floatingWin = null;
+      refreshTray();
+    });
     floatingWin.loadURL(`http://127.0.0.1:${backendPort}/console/#/mobile?floating=1`);
     logLine('floating workspace shown');
+    refreshTray();
     return true;
   }
-  if (floatingWin && !floatingWin.isDestroyed()) floatingWin.destroy();
+  const windowToClose = floatingWin;
   floatingWin = null;
+  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.destroy();
   logLine('floating workspace hidden');
+  refreshTray();
   return false;
 }
 
@@ -495,7 +615,7 @@ function createTray() {
   });
 }
 
-/** 重建托盘菜单（防睡眠勾选 / LAN 状态变化后联动刷新） */
+/** 重建托盘菜单（防睡眠、浮窗可见性与 LAN 状态变化后联动刷新） */
 function refreshTray() {
   if (!tray || tray.isDestroyed()) return;
   const openInBrowser = `http://127.0.0.1:${backendPort}/console/`;
@@ -506,6 +626,9 @@ function refreshTray() {
     { label: '任务期间阻止睡眠', type: 'checkbox', checked: getPreventSleep().enabled,
       sublabel: preventSleepMode === 'display' ? '含屏幕常亮' : '仅阻止系统挂起',
       click: (item) => setPreventSleep(item.checked, preventSleepMode) },
+    { label: '显示浮动工作区', type: 'checkbox',
+      checked: isFloatingWorkspaceVisible(),
+      click: (item) => setFloatingWorkspace(item.checked) },
     { label: lanState.enabled ? '局域网手机控制：已开启' : '局域网手机控制：已关闭', enabled: false },
   ];
   if (lanState.enabled && lanState.url) {
@@ -738,5 +861,8 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
     createThrottle,
     decodeFileBuffer,
     depsMarkerMatches,
+    isBackendEnvHealthy,
+    isFloatingWorkspaceVisible,
+    setFloatingWorkspace,
   };
 }

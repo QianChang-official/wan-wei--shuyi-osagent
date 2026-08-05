@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键环境安装：创建 backend/.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 22+、npm 10+）。
+# 一键环境安装：创建 backend/.venv、安装依赖、构建前端 dist（要求 Python 3.10+、Node 22.12+、npm 10+）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,10 +11,10 @@ PYTHON="${WANWEI_BOOTSTRAP_PYTHON:-python3}"
   echo "Python 3.10 or newer is required." >&2
   exit 1
 }
-command -v node >/dev/null || { echo "Node.js 22 or newer is required." >&2; exit 1; }
+command -v node >/dev/null || { echo "Node.js 22.12 or newer is required." >&2; exit 1; }
 command -v npm >/dev/null || { echo "npm 10 or newer is required." >&2; exit 1; }
-node -e 'const major=Number(process.versions.node.split(".")[0]); process.exit(major >= 22 ? 0 : 1)' || {
-  echo "Node.js 22 or newer is required." >&2
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' || {
+  echo "Node.js 22.12 or newer is required." >&2
   exit 1
 }
 npm --version | awk -F. '{exit ($1 >= 10 ? 0 : 1)}' || {

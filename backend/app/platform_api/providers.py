@@ -7,7 +7,8 @@
 - GET    /providers/configs            全部配置（api_key 脱敏只回尾 4 位）
 - PUT    /providers/configs/{pid}      新建/更新配置（api_key Fernet 加密落盘）
 - DELETE /providers/configs/{pid}      删除配置
-- POST   /providers/test               连通性测试（local 真实探测，其余 stub）
+- POST   /providers/test               连通性测试（local 真实探测；云端复用
+                                      model_gateway 真实 OpenAI 兼容探测，issue #45 4.5）
 - GET    /providers/aux                辅助模型配置
 - PUT    /providers/aux                更新辅助模型配置
 - POST   /providers/auth/{pid}/begin   OAuth 设备授权开始（真实流程未接入，如实 501）
@@ -24,7 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -33,7 +34,7 @@ from pydantic import BaseModel
 from app.platform_api.guards import audit_safe
 from app.platform_api.store import JsonStore
 from app.security import encryption
-from app.security.ssrf import SSRFError, validate_external_url
+from app.security.ssrf import SSRFError, resolve_external_url, validate_external_url
 from app.utils.datetime_utils import utc_now_iso
 
 router = APIRouter(tags=['providers'])
@@ -491,14 +492,38 @@ def _masked_config(pid: str, record: Optional[dict[str, Any]]) -> dict[str, Any]
 
 
 def _remove_config(pid: str) -> bool:
-    """JsonStore 无原生 delete，在同一锁内完成读-改-写覆写实现删除。"""
-    with _store._lock:  # noqa: SLF001 —— 读改写收成单锁，消除两次获锁的竞态窗口
-        data = _store._read()  # noqa: SLF001 —— 与 _write 配套的内部原语
+    """JsonStore 锁内删除配置，返回删除前是否存在。"""
+    def _remove(data: dict) -> bool:
         if pid not in data:
             return False
         data.pop(pid, None)
-        _store._write(data)  # noqa: SLF001 —— 复用同一文件的线程安全落盘
-    return True
+        return True
+
+    return _store.mutate(_remove)
+
+
+def _probe_pinned_url(url: str, pinned_ip: str) -> httpx.Response:
+    """Connect to the validated IP while preserving the original HTTP/TLS host."""
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ''
+    hostname_ascii = hostname.encode('idna').decode('ascii')
+    pinned_host = f'[{pinned_ip}]' if ':' in pinned_ip else pinned_ip
+    original_host = f'[{hostname_ascii}]' if ':' in hostname_ascii else hostname_ascii
+    if parsed.port is not None:
+        pinned_host = f'{pinned_host}:{parsed.port}'
+        original_host = f'{original_host}:{parsed.port}'
+    pinned_url = urlunsplit((parsed.scheme, pinned_host, parsed.path, parsed.query, ''))
+    extensions = {'sni_hostname': hostname_ascii} if parsed.scheme == 'https' else None
+
+    # trust_env=False prevents a proxy from replacing the validated destination.
+    # httpcore consumes sni_hostname for certificate verification against the
+    # original host even though the TCP connection is pinned to the resolved IP.
+    with httpx.Client(timeout=3.0, follow_redirects=False, trust_env=False) as client:
+        return client.get(
+            pinned_url,
+            headers={'Host': original_host},
+            extensions=extensions,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -520,12 +545,12 @@ def list_configs() -> list[dict[str, Any]]:
 @router.put('/providers/configs/{pid}')
 def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
-    record = dict(_store.get(pid) or {})
-
+    patch: dict[str, Any] = {}
+    clear_api_key = False
     if body.api_key is not None:
         if body.api_key.strip():
             try:
-                record['api_key_encrypted'] = encryption.encrypt(body.api_key.strip())
+                patch['api_key_encrypted'] = encryption.encrypt(body.api_key.strip())
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     'Provider credential encryption failed: pid=%s error_type=%s',
@@ -539,10 +564,9 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
                 ) from None
         else:
             # 显式传空串 = 清除已存密钥
-            record.pop('api_key_encrypted', None)
+            clear_api_key = True
     if body.base_url is not None:
         new_url = body.base_url.strip()
-        record['base_url'] = new_url
         # SSRF 写入即拒：用户显式修改 base_url（非空且非目录默认值）时先做校验
         if new_url and new_url != meta['base_url']:
             try:
@@ -560,18 +584,28 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
                     status_code=422,
                     detail='base_url 未通过 SSRF 防护校验',
                 ) from None
+        patch['base_url'] = new_url
     if body.model is not None:
-        record['model'] = body.model.strip()
+        patch['model'] = body.model.strip()
     if body.enabled is not None:
-        record['enabled'] = bool(body.enabled)
+        patch['enabled'] = bool(body.enabled)
     if body.extra is not None:
-        record['extra'] = body.extra
-    record.setdefault('base_url', meta['base_url'])
-    record.setdefault('model', meta['models'][0] if meta['models'] else '')
-    record.setdefault('enabled', False)
-    record['updated_at'] = utc_now_iso()
+        patch['extra'] = body.extra
 
-    _store.set(pid, record)
+    def _apply(data: dict) -> dict[str, Any]:
+        stored = data.get(pid)
+        record = dict(stored) if isinstance(stored, dict) else {}
+        if clear_api_key:
+            record.pop('api_key_encrypted', None)
+        record.update(patch)
+        record.setdefault('base_url', meta['base_url'])
+        record.setdefault('model', meta['models'][0] if meta['models'] else '')
+        record.setdefault('enabled', False)
+        record['updated_at'] = utc_now_iso()
+        data[pid] = record
+        return record
+
+    record = _store.mutate(_apply)
     audit_safe('provider_config_updated', {
         'pid': pid,
         'has_api_key': bool(record.get('api_key_encrypted')),
@@ -607,7 +641,10 @@ def test_provider(body: TestIn) -> dict[str, Any]:
         # SSRF 防护：base_url 用户可控，先过协议白名单 + 内网/元数据地址拦截；
         # 仅显式配置的本机回环地址（Ollama / LM Studio）豁免。
         try:
-            validate_external_url(base_url, allowlist=_LOCAL_PROBE_ALLOWLIST)
+            normalized_url, pinned_ip = resolve_external_url(
+                base_url,
+                allowlist=_LOCAL_PROBE_ALLOWLIST,
+            )
         except SSRFError as exc:
             logger.warning(
                 'Provider probe rejected by SSRF policy: pid=%s error_type=%s',
@@ -622,7 +659,7 @@ def test_provider(body: TestIn) -> dict[str, Any]:
             }
         started = time.perf_counter()
         try:
-            resp = httpx.get(base_url, timeout=3.0, follow_redirects=False)
+            resp = _probe_pinned_url(normalized_url, pinned_ip)
             latency_ms = int((time.perf_counter() - started) * 1000)
             return {
                 'ok': True,
@@ -650,13 +687,49 @@ def test_provider(body: TestIn) -> dict[str, Any]:
     if not _decrypt_key(record):
         return {'ok': False, 'pid': body.pid, 'reason': '未配置密钥'}
 
-    # 密钥就绪：真实连通性测试留待后续版本，当前诚实返回 stub
-    return {
-        'ok': True,
-        'pid': body.pid,
-        'mode': 'stub',
-        'note': '密钥已配置。真实云端连通性测试尚未启用，当前为模拟通过。',
-    }
+    # 云端：复用 model_gateway 的真实 OpenAI-compatible 探测（4.5）。
+    # 与 /model-gateway/test 走同一套 pinned-IP SSRF 防护与超时，
+    # 不再各写一份「模拟通过」的假成功。
+    from app.model_gateway.service import probe_openai_compatible
+
+    base_url = (record.get('base_url') or meta['base_url']).rstrip('/')
+    model = record.get('model') or (meta['models'][0] if meta['models'] else '')
+    api_key = _decrypt_key(record)
+    started = time.perf_counter()
+    try:
+        status, latency_ms, preview = probe_openai_compatible(
+            base_url, api_key, model,
+        )
+        if status != 'ok':
+            return {
+                'ok': False,
+                'pid': body.pid,
+                'mode': 'live',
+                'reason': f'云端探测失败（{status}），请检查端点/模型与密钥权限',
+            }
+        return {
+            'ok': True,
+            'pid': body.pid,
+            'mode': 'live',
+            'latency_ms': latency_ms,
+            'note': f'云端连通正常（真实探测），模型：{model}',
+            'response_preview': preview[:80],
+        }
+    except Exception as exc:  # noqa: BLE001 —— 网络/SSRF/队列异常统一归为不可达
+        logger.warning(
+            'Cloud provider probe failed: pid=%s error_type=%s',
+            body.pid,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return {
+            'ok': False,
+            'pid': body.pid,
+            'mode': 'live',
+            'latency_ms': elapsed,
+            'reason': '云端服务不可达或未通过 SSRF 防护校验',
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -670,21 +743,29 @@ def get_aux() -> dict[str, Any]:
 
 @router.put('/providers/aux')
 def put_aux(body: AuxIn) -> dict[str, Any]:
-    current = get_aux()
+    patch: dict[str, Any] = {}
     if body.pid is not None:
         pid = body.pid.strip()
         if pid:  # 允许空串清除
             meta = _get_provider_meta(pid)
             if not meta.get('aux_capable'):
                 raise HTTPException(status_code=400, detail=f'{meta["name"]} 不支持作为辅助模型')
-        current['pid'] = pid
+        patch['pid'] = pid
     if body.model is not None:
-        current['model'] = body.model.strip()
+        patch['model'] = body.model.strip()
     if body.enabled is not None:
-        current['enabled'] = bool(body.enabled)
+        patch['enabled'] = bool(body.enabled)
     if body.purpose is not None:
-        current['purpose'] = body.purpose.strip() or _AUX_DEFAULT['purpose']
-    _store.set(_AUX_KEY, current)
+        patch['purpose'] = body.purpose.strip() or _AUX_DEFAULT['purpose']
+
+    def _apply(data: dict) -> dict[str, Any]:
+        stored = data.get(_AUX_KEY)
+        current = {**_AUX_DEFAULT, **(stored if isinstance(stored, dict) else {})}
+        current.update(patch)
+        data[_AUX_KEY] = current
+        return current
+
+    current = _store.mutate(_apply)
     return current
 
 
@@ -721,7 +802,6 @@ def auth_poll(pid: str) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
     if 'oauth' not in meta.get('auth_modes', []):
         raise HTTPException(status_code=400, detail=f'{meta["name"]} 不支持 OAuth 授权')
-    # 已通过其他途径完成授权并配置密钥：这是可核实的真实状态
-    if _decrypt_key(_store.get(pid) or {}):
-        return {'status': 'authorized', 'stub': False}
+    # P0-2: 无真实 device authorization endpoint 时，status 只能来自真实
+    # 设备码轮询结果；begin 已 501，poll 必须同样 501，不得声称 authorized。
     raise HTTPException(status_code=501, detail=_OAUTH_NOT_IMPLEMENTED)

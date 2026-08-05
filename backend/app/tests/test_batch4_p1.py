@@ -159,8 +159,10 @@ def test_mcp_record_call_masks_sensitive_arguments(tmp_path, mcp_store):
             },
         },
     )
-    assert r.status_code == 200, f"call 应走 stub 成功路径：{r.status_code} {r.text}"
-    body = r.json()
+    # issue #45 (4.2): 未连接的 MCP 调用改为 503（不再以 200 渲染成灰色成功），
+    # plan 移到 detail 内。本测试的被测行为是脱敏，与状态码无关。
+    assert r.status_code == 503, f"call 未连接应 503：{r.status_code} {r.text}"
+    body = r.json()["detail"]
     # stub 响应的 plan 也不回显敏感值
     assert "sk-should-never-be-stored" not in json.dumps(body, ensure_ascii=False)
     assert "hunter2" not in json.dumps(body, ensure_ascii=False)
@@ -191,7 +193,8 @@ def test_mcp_record_call_truncates_oversized_arguments(tmp_path, mcp_store):
         headers=h,
         json={"tool": "dump", "arguments": {"payload": "x" * 5000}},
     )
-    assert r.status_code == 200, f"call 应走 stub 成功路径：{r.status_code} {r.text}"
+    # issue #45 (4.2): 未连接 -> 503；本测试的被测行为是参数截断落库，与状态码无关。
+    assert r.status_code == 503, f"call 未连接应 503：{r.status_code} {r.text}"
     stored = _read_store(tmp_path, "mcp_servers")
     args = stored["_recent_calls"][0]["arguments"]
     assert args.get("_truncated") is True

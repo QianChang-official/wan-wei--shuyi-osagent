@@ -167,7 +167,7 @@ function togglePetals() {
 async function persistSettings(patch: Record<string, unknown>) {
   savingKey.value = Object.keys(patch)[0] ?? ''
   try {
-    await apiPut('/system/settings', patch)
+    await apiPut('/system/settings', { ...patch, gear: 'device' })
     settingsOffline.value = false
   } catch {
     settingsOffline.value = true
@@ -283,7 +283,7 @@ async function togglePreventSleep() {
   preventSleep.value = next
   try { window.wanweiDesktop?.setPreventSleep?.(next) } catch { /* ignore */ }
   try {
-    await apiPut('/system/power', { prevent_sleep: next })
+    await apiPut('/system/power', { prevent_sleep: next, gear: 'device' })
     settingsOffline.value = false
   } catch {
     settingsOffline.value = true

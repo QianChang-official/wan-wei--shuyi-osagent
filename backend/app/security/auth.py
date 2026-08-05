@@ -1,22 +1,33 @@
 """API key authentication with fail-closed security.
 
 - WANWEI_API_KEY env variable sets the API key.
-- WANWEI_API_KEY_FILE points to a file containing the key.
-- Fallback: platform default path ($WANWEI_PLATFORM_DIR/../api-key or
-  XDG_CONFIG_HOME/wanwei-shuyi-desktop/api-key); if missing, a fresh key
-  is generated (secrets.token_hex(24)) and persisted with 0600 perms.
-  Any launch method (uvicorn direct, systemd, container) self-bootstraps.
-- Loopback requests may bypass the key when WANWEI_HOST=127.0.0.1
-  (disable with WANWEI_REQUIRE_KEY_ON_LOOPBACK=1). Non-loopback stays
-  fail-closed.
+- Resolution order is self-bootstrapping (issue #45, P1):
+  1. ``WANWEI_API_KEY`` env var;
+  2. ``WANWEI_API_KEY_FILE`` file;
+  3. platform default path (``$WANWEI_PLATFORM_DIR/../api-key`` or
+     ``XDG_CONFIG_HOME/wanwei-shuyi-desktop/api-key``, where the desktop
+     shell persists its generated key);
+  4. when all sources are missing, auto-generate ``secrets.token_hex(24)``
+     and persist it at the platform default path with 0600 permissions.
+- ``WANWEI_PRODUCTION`` no longer hard-blocks startup on a missing/short key:
+  the auto-generated 48-hex key satisfies the previous strength requirement
+  by construction; a short explicit key only downgrades to a WARNING log.
+- Loopback exemption (P1-3/4): when ``WANWEI_HOST`` is a loopback address and
+  the request peer is 127.0.0.1/::1 with no ``X-Forwarded-For`` header, the
+  API key is not required, unless ``WANWEI_REQUIRE_KEY_ON_LOOPBACK=1``.
+  Non-loopback binding stays fail-closed and logs a WARNING at startup.
 - Uses constant-time comparison to prevent timing attacks.
 - Protects sensitive GET endpoints (audit logs, memory search, workflow runs).
 """
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import logging
 import os
 import secrets
+import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -24,9 +35,37 @@ from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+
 logger = logging.getLogger(__name__)
 
 MIN_PRODUCTION_API_KEY_LENGTH = 32
+# blake2b 要求 salt 恰为 16 字节；"wanwei-owner-v1!" 恰好 16 字节。
+_ACTOR_ID_SALT = b"wanwei-owner-v1!"
+
+
+@lru_cache(maxsize=1024)
+def actor_id_from_api_key(api_key: str) -> str:
+    """Derive the stable, non-reversible owner ID shared by protected APIs.
+
+    Valid API keys are high-entropy values and repeat across requests. Caching
+    avoids paying the KDF cost on every authenticated Soul, memory, and agent
+    operation while retaining the existing identifier.
+
+    PF-1 (issue #45): single-machine single-user deployments do not need an
+    offline-brute-force-resistant KDF. Replacing scrypt (n=2^14, r=8,
+    maxmem=64MB per miss) with blake2b cuts the per-miss cost from ~100ms to
+    microseconds, and maxsize is raised to 1024 so a multi-key rotation no
+    longer thrashes the cache.
+    """
+    normalized = api_key.strip()
+    if not normalized:
+        raise ValueError("api_key must not be empty")
+    digest = hashlib.blake2b(
+        normalized.encode("utf-8"),
+        digest_size=12,
+        salt=_ACTOR_ID_SALT,
+    ).digest()
+    return "api_" + digest.hex()
 
 
 def is_production_mode() -> bool:
@@ -34,76 +73,151 @@ def is_production_mode() -> bool:
     return os.getenv("WANWEI_PRODUCTION", "").strip().lower() in {"1", "true", "yes"}
 
 
-def _platform_dir() -> Path:
-    """Resolve platform data dir (same logic as platform_api.store)."""
-    base = os.environ.get("WANWEI_PLATFORM_DIR", "").strip()
-    if base:
-        return Path(base)
-    # Fall back to XDG config home when the platform dir is not set.
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    if xdg:
-        return Path(xdg) / "wanwei-shuyi-desktop"
-    home = Path.home()
-    return home / ".config" / "wanwei-shuyi-desktop"
+def _platform_api_key_paths() -> list[Path]:
+    """Platform default API-key file candidates, in priority order.
+
+    Mirrors the desktop shell's persistence location so any launch method
+    (bare uvicorn, systemd, container) reuses the key the desktop generated.
+    """
+    candidates: list[Path] = []
+    platform_dir = os.environ.get("WANWEI_PLATFORM_DIR", "").strip()
+    if platform_dir:
+        candidates.append(Path(platform_dir).resolve().parent / "api-key")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        if appdata:
+            candidates.append(Path(appdata) / "wanwei-shuyi-desktop" / "api-key")
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        base = Path(xdg) if xdg else Path.home() / ".config"
+        candidates.append(base / "wanwei-shuyi-desktop" / "api-key")
+    return candidates
 
 
-def _default_key_file_path() -> Path:
-    """Default key file location: platform dir's parent / api-key."""
-    platform_dir = _platform_dir()
-    candidate = platform_dir.parent / "api-key"
-    # If platform dir is under XDG config home, keep the file next to it.
-    if str(platform_dir).endswith("wanwei-shuyi-desktop"):
-        candidate = platform_dir / "api-key"
-    return candidate
+def _load_platform_api_key() -> str | None:
+    for path in _platform_api_key_paths():
+        try:
+            if path.is_file():
+                key = path.read_text(encoding="utf-8").strip()
+                if key:
+                    return key
+        except OSError:
+            continue
+    return None
 
 
-def _bootstrap_key_file(path: Path) -> str:
-    """Generate a fresh key, persist it 0600, and return it."""
-    key = secrets.token_hex(24)  # 48 hex chars, meets strength requirements
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(key + "\n", encoding="utf-8")
-        path.chmod(0o600)
-        logger.warning("Self-bootstrapped API key file at %s", path)
-    except OSError as exc:
-        logger.warning("Could not persist self-bootstrapped API key (%s); using in-memory key.", exc)
-    return key
+def _persist_platform_api_key(key: str) -> Path | None:
+    """Persist an auto-generated key at the platform default path (0600).
+
+    Persistence failure must never block startup: the key is still returned
+    in-memory (self-healing per process) and the failure is logged.
+    """
+    for path in _platform_api_key_paths():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(key + "\n", encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except OSError:
+                # Windows 上 chmod 仅只读位有效；尽力而为，不构成权限保证。
+                pass
+            return path
+        except OSError as exc:
+            logger.warning(
+                "unable to persist auto-generated API key to %s: %s",
+                path,
+                exc,
+            )
+            continue
+    return None
+
+
+_AUTO_GENERATED_API_KEY: str | None = None
+
+
+def _auto_generate_api_key() -> str:
+    """Generate a 48-hex key and cache it for the process lifetime.
+
+    The in-process cache is what keeps verification self-consistent: without
+    it every ``_verify_api_key`` call would derive a fresh key and all
+    authentication would fail.
+    """
+    global _AUTO_GENERATED_API_KEY
+    if _AUTO_GENERATED_API_KEY is None:
+        key = secrets.token_hex(24)
+        _persist_platform_api_key(key)
+        _AUTO_GENERATED_API_KEY = key
+    return _AUTO_GENERATED_API_KEY
 
 
 def get_api_key() -> str:
-    """Get API key with fail-closed security and self-bootstrap fallback."""
+    """Get API key with fail-closed security and self-bootstrapping.
+
+    Resolution order: env var -> ``WANWEI_API_KEY_FILE`` -> platform default
+    path -> auto-generate + persist (0600). Any launch method therefore
+    self-heals instead of silently falling back to a public dev constant.
+    """
     key = os.getenv("WANWEI_API_KEY")
     if key is not None:
         key = key.strip()
-    key_file = os.getenv("WANWEI_API_KEY_FILE")
-    if not key and key_file:
-        try:
-            key = Path(key_file).read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError("Unable to read WANWEI_API_KEY_FILE.") from exc
 
     if not key:
-        # Fallback: platform default path (already-present file from desktop).
-        default_path = _default_key_file_path()
-        if default_path.exists():
+        key_file = os.getenv("WANWEI_API_KEY_FILE")
+        if key_file:
             try:
-                key = default_path.read_text(encoding="utf-8").strip()
+                key = Path(key_file).read_text(encoding="utf-8").strip()
             except OSError as exc:
-                logger.warning("Could not read default API key file %s: %s", default_path, exc)
+                raise RuntimeError("Unable to read WANWEI_API_KEY_FILE.") from exc
 
     if not key:
-        # Self-bootstrap: generate and persist a fresh key.
-        key = _bootstrap_key_file(_default_key_file_path())
+        key = _load_platform_api_key()
 
-    if is_production_mode():
-        if len(key) < MIN_PRODUCTION_API_KEY_LENGTH:
-            # Downgrade to warning: auto-generated 48-hex keys satisfy strength.
-            logger.warning(
-                "API key length %d is below the %d-char production guideline.",
-                len(key), MIN_PRODUCTION_API_KEY_LENGTH,
-            )
+    if not key:
+        key = _auto_generate_api_key()
+
+    if len(key) < MIN_PRODUCTION_API_KEY_LENGTH:
+        logger.warning(
+            "WANWEI_API_KEY is shorter than %d characters; use a stronger "
+            "key for any non-loopback deployment.",
+            MIN_PRODUCTION_API_KEY_LENGTH,
+        )
 
     return key
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def _is_loopback_bound() -> bool:
+    """Whether ``WANWEI_HOST`` binds a loopback address (default 127.0.0.1)."""
+    host = os.getenv("WANWEI_HOST", "127.0.0.1").strip().lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _loopback_exempt_enabled() -> bool:
+    """Loopback exemption is on unless explicitly disabled."""
+    return os.getenv("WANWEI_REQUIRE_KEY_ON_LOOPBACK", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def warn_if_exposed_bind() -> None:
+    """Log a WARNING when the backend binds beyond loopback (P1-4)."""
+    if not _is_loopback_bound():
+        logger.warning(
+            "WANWEI_HOST=%s is not a loopback address: the API is exposed "
+            "beyond this machine and API-key auth is enforced for all clients.",
+            os.getenv("WANWEI_HOST", "127.0.0.1"),
+        )
+
 
 _PUBLIC_PATHS = {
     "/health",
@@ -158,8 +272,12 @@ def is_public_path(path: str) -> bool:
 
 
 def _is_protected_get(method: str, path: str) -> bool:
-    """Fail-closed: 除显式公开路径外，所有 GET 均要求鉴权。"""
-    if method != "GET":
+    """Fail-closed: 除显式公开路径外，所有 GET/HEAD 均要求鉴权。
+
+    HEAD 是无响应体的 GET，Starlette 会为声明了 GET 的路由自动接受 HEAD。
+    若不一并纳入保护判定，HEAD 请求会同时绕过鉴权与保护性 GET 限流。
+    """
+    if method not in {"GET", "HEAD"}:
         return False
     return not _is_public_path(path)
 
@@ -177,23 +295,20 @@ def _verify_api_key(provided_key: str | None) -> bool:
         return False
 
 
-def _is_loopback_request(request: Request) -> bool:
-    """True when the request originates from the loopback interface.
+def _request_is_loopback_exempt(request: Request) -> bool:
+    """回环免密判定（P1-3）。
 
-    即插即用（Issue #45 P1-3）的关键：本机回环视为信任边界，单机桌面
-    场景无需密钥仪式。可用 WANWEI_REQUIRE_KEY_ON_LOOPBACK=1 强制回环
-    也校验密钥（多用户主机上同机其他账号可访问后端时的显式关闭项）。
+    仅当同时满足：明确绑定回环、对端为回环、无代理头、未显式关闭免密。
+    任一条件不满足都回到 fail-closed 鉴权路径。
     """
-    if os.getenv("WANWEI_REQUIRE_KEY_ON_LOOPBACK", "").strip().lower() in {"1", "true", "yes"}:
+    if not _loopback_exempt_enabled():
         return False
-    host = os.getenv("WANWEI_HOST", "").strip().lower()
-    # 只有明确绑定回环时才放行；绑 0.0.0.0 或未设置一律 fail-closed。
-    if host not in {"127.0.0.1", "localhost", "::1"}:
+    if not _is_loopback_bound():
         return False
-    client_host = getattr(request, "client", None)
-    if client_host is None:
+    if request.headers.get("x-forwarded-for"):
+        # 存在代理头时 client.host 不可信，不得免密。
         return False
-    return client_host.host in {"127.0.0.1", "::1", "localhost"}
+    return _is_loopback_host(request.client.host if request.client else None)
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -201,17 +316,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if _is_public_path(request.url.path):
             return await call_next(request)
 
-        # Issue #45 P1-3: 本机回环免密（仅当 WANWEI_HOST 明确绑回环时）。
-        if _is_loopback_request(request):
-            return await call_next(request)
-
-        # Check if auth required: 写方法 或 任何非公开 GET
+        # Check if auth required: 写方法 或 任何非公开 GET/HEAD
         needs_auth = (
             request.method in _WRITE_METHODS or
             _is_protected_get(request.method, request.url.path)
         )
 
-        if needs_auth:
+        if needs_auth and not _request_is_loopback_exempt(request):
             header_key = request.headers.get("x-api-key")
             if not _verify_api_key(header_key):
                 return JSONResponse(

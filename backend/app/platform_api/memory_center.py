@@ -297,11 +297,19 @@ def _read_sessions_raw() -> list[dict[str, Any]]:
 
 
 def _normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
+    """规范化会话条目（04-#07：int() 强转加容错，防脏数据 500）。"""
+    # turns 允许数值与字符串数字，非法值默认 0
+    turns_raw = raw.get('turns', 0) or 0
+    try:
+        turns = int(turns_raw)
+    except (ValueError, TypeError, OverflowError):
+        turns = 0
+
     return {
         'id': str(raw.get('id', '')),
         'title': str(raw.get('title', '') or '未命名会话'),
         'agent': raw.get('agent'),
-        'turns': int(raw.get('turns', 0) or 0),
+        'turns': turns,
         'archived': bool(raw.get('archived', False)),
         'pinned': bool(raw.get('pinned', False)),
         'updated_at': str(raw.get('updated_at', '')),

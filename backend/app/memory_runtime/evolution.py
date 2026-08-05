@@ -5,23 +5,45 @@ from ..audit.service import record
 from .capsule_store import get_capsule, update_capsule, write_capsule, dumps, now
 
 
-def reinforce(capsule_id: str, amount: float = 0.1) -> dict[str, Any]:
-    cap = get_capsule(capsule_id)
+def reinforce(
+    capsule_id: str,
+    amount: float = 0.1,
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
+    cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise ValueError(f"Capsule not found: {capsule_id}")
     st = cap["state"]
     st["lifecycle"] = "reinforced" if st.get("lifecycle") == "active" else st.get("lifecycle", "candidate")
     st["importance_score"] = min(1.0, float(st.get("importance_score", 0.5)) + amount)
     st["retention_score"] = min(1.0, float(st.get("retention_score", 0.5)) + amount)
-    return update_capsule(capsule_id, state=st)
+    return update_capsule(
+        capsule_id,
+        state=st,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
 
 
-def deprecate(capsule_id: str, reason: str = "misleading") -> dict[str, Any]:
-    cap = get_capsule(capsule_id)
+def deprecate(
+    capsule_id: str,
+    reason: str = "misleading",
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
+    cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise ValueError(f"Capsule not found: {capsule_id}")
     st = cap["state"]; st["lifecycle"] = "deprecated"; st["deprecation_reason"] = reason
-    return update_capsule(capsule_id, state=st)
+    return update_capsule(
+        capsule_id,
+        state=st,
+        owner_id=owner_id,
+        soul_id=soul_id,
+    )
 
 
 def conflict_mark(capsule_id: str, reason: str = "conflict") -> dict[str, Any]:
@@ -52,7 +74,13 @@ def supersede(old_capsule_id: str, *, new_content: dict[str, Any], memory_class:
     return update_capsule(new["capsule_id"], state=st)
 
 
-def reflect_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def reflect_task(
+    task_id: str,
+    payload: dict[str, Any],
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, Any]:
     actions = []
     
     # 04-#03: Batch-fetch all candidate capsules to avoid N+1 queries.
@@ -69,20 +97,33 @@ def reflect_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     
     if all_ids:
         from .capsule_store import get_capsules_batch
-        caps_by_id = get_capsules_batch(all_ids)
+        caps_by_id = get_capsules_batch(
+            all_ids,
+            owner_id=owner_id,
+            soul_id=soul_id,
+        )
         
         for cid in helpful_ids:
             if cid in caps_by_id:
-                reinforce(cid)
+                reinforce(cid, owner_id=owner_id, soul_id=soul_id)
                 actions.append({"action": "reinforce", "capsule_id": cid})
         
         for cid in misleading_ids:
             if cid in caps_by_id:
-                deprecate(cid)
+                deprecate(cid, owner_id=owner_id, soul_id=soul_id)
                 actions.append({"action": "deprecate", "capsule_id": cid})
     
     for risk in payload.get("new_risks", []):
-        res = write_capsule(memory_class="risk", content=risk, source_type="eval", scene="coding", task_type="reflection", risk_class="medium")
+        res = write_capsule(
+            memory_class="risk",
+            content=risk,
+            source_type="eval",
+            scene="coding",
+            task_type="reflection",
+            risk_class="medium",
+            owner_id=owner_id,
+            soul_id=soul_id,
+        )
         actions.append({"action": "promote", "capsule_id": res["capsule_id"], "memory_class": "risk"})
     reflection_id = "refl_" + uuid.uuid4().hex[:12]
     full = {**payload, "evolution_actions": actions}

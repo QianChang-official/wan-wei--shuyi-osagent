@@ -5,24 +5,25 @@
   "private": true,
   "description": "宛委·枢忆 OSAgent 秘府控制台 — 麒麟 Linux 桌面客户端（Electron 封装，Web 业务代码零改动）",
   "main": "src/main.js",
+  "desktopName": "wanwei-shuyi-desktop.desktop",
   "author": "WanWei Shuyi Team",
   "license": "Mulan-PSL-2.0",
   "homepage": "https://document.kylinos.cn/document/center",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/test_fix_w13_desktop.cjs",
+    "test": "node --test tests/test_fix_w13_desktop.cjs tests/test_linux_packaging.cjs",
     "pack:dir": "electron-builder --dir",
     "pack:deb": "bash scripts/build-linux.sh deb",
     "pack:rpm": "bash scripts/build-linux.sh rpm",
     "pack:all": "bash scripts/build-linux.sh all"
   },
   "engines": {
-    "node": ">= 22.0.0",
+    "node": ">= 22.12.0",
     "npm": ">= 10"
   },
   "devDependencies": {
-    "electron": "^33.4.0",
-    "electron-builder": "^25.1.8"
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "cn.wanwei.shuyi.console",
@@ -46,18 +47,21 @@
       "icon": "build/icons",
       "maintainer": "WanWei Shuyi Team",
       "vendor": "WanWei Shuyi Team",
+      "syncDesktopName": true,
       "synopsis": "枢忆·花朝 秘府控制台",
       "description": "宛委·枢忆 MemoryOps Autopilot Platform 的麒麟桌面客户端。内嵌 FastAPI 后端与 Vue3 控制台，与 Web 端共享同一套业务代码。",
       "desktop": {
-        "Name": "枢忆·花朝",
-        "Name[zh_CN]": "枢忆·花朝",
-        "GenericName": "MemoryOps Console",
-        "GenericName[zh_CN]": "秘府控制台",
-        "Comment": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
-        "Comment[zh_CN]": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
-        "Categories": "Utility;Development;",
-        "Terminal": "false",
-        "StartupWMClass": "wanwei-shuyi-desktop"
+        "entry": {
+          "Name": "枢忆·花朝",
+          "Name[zh_CN]": "枢忆·花朝",
+          "GenericName": "MemoryOps Console",
+          "GenericName[zh_CN]": "秘府控制台",
+          "Comment": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
+          "Comment[zh_CN]": "宛委·枢忆 OSAgent 秘府控制台桌面客户端",
+          "Categories": "Utility;Development;",
+          "Terminal": "false",
+          "StartupWMClass": "wanwei-shuyi-desktop"
+        }
       }
     },
     "deb": {
@@ -84,7 +88,8 @@
         "nss",
         "libXScrnSaver",
         "libXtst",
-        "xdg-utils"
+        "xdg-utils",
+        "findutils"
       ],
       "afterInstall": "packaging/linux/postinst.sh",
       "afterRemove": "packaging/linux/postrm.sh"
@@ -114,6 +119,10 @@
       {
         "from": "../frontend/console-vue/dist",
         "to": "frontend/console-vue/dist"
+      },
+      {
+        "from": "../reports/production_memory_eval_metrics.json",
+        "to": "reports/production_memory_eval_metrics.json"
       }
     ]
   }

@@ -153,7 +153,7 @@ jobs:
             --tmpfs /data:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
             --cap-drop ALL --security-opt no-new-privileges \
             -e WANWEI_API_KEY=ci-container-key-with-32-characters \
-            -e WANWEI_ENCRYPTION_KEY=IeQBV9ljyRcqr54MRKtTRXp3XTx8SRnX_hH1WpXVE90= \
+            -e WANWEI_ENCRYPTION_KEY="$(python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
             -p 127.0.0.1:8010:8010 wanwei-shuyi:ci
           for _ in {1..60}; do
             if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=2).read()"; then
