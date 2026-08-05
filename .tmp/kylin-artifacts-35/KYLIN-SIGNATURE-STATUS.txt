@@ -1,3 +1,0 @@
-UNSIGNED_TEST_ARTIFACT
-This CI package has no Kylin embedded ELF/deb signature.
-Install and desktop acceptance require a protected signing job with a trusted Kylin developer certificate.
