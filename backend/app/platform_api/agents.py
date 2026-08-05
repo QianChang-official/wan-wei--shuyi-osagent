@@ -688,7 +688,7 @@ def _new_run(
         'provider_pid': agent.get('provider_pid', ''),
         'model': agent.get('model', ''),
         'status': 'queued',
-        'engine': 'mock',
+        'engine': 'pending',
         'steps': _build_steps(kind, orchestration, members, resolved_gear),
         'cursor': 0,
         'result': '',
@@ -800,11 +800,16 @@ async def _finalize_run(rid: str) -> None:
             f'{gateway_text}\n\n—— 以上由模型网关真实生成'
             f'（engine=gateway，provider={provider_used}）。'
         )
+        run['status'] = 'done'
     else:
-        run['engine'] = 'mock'
+        # Issue #45 P0-3：网关不可用 → 明确失败，绝不 mock 假成功。
+        run['engine'] = 'gateway'
         run['provider_used'] = None
-        run['result'] = _mock_result(run)
-    run['status'] = 'done'
+        run['status'] = 'failed'
+        run['error'] = (
+            'model gateway unavailable: no provider configured or upstream '
+            'request failed (engine=gateway, no fallback mock)'
+        )
     run['updated_at'] = _now()
     run['finished_at'] = _now()
     _runs.set(rid, run)
@@ -1076,7 +1081,19 @@ async def chat(body: ChatIn, request: Request):
     goal = body.goal if body.goal is not None else (agent or {}).get('goal', '')
     # 系统提示真实消费记忆指令（与 /context-size 同源）；注入状态如实标注
     system_prompt, memory_injection = _compose_system_prompt(agent or {}, depth, gear)
-    reply = _mock_chat_reply(body.message, agent, depth, gear, goal, body.attachments)
+    # Issue #45 P0-3：对话必须走真实网关；网关不可用 → 502，不 mock 假成功。
+    prompt = (
+        f'{system_prompt}\n\n'
+        f'用户：{body.message}\n'
+        f'请给出简洁的中文回复。'
+    )
+    gateway_text, provider_used = await _try_gateway(prompt)
+    if not gateway_text:
+        raise HTTPException(
+            status_code=502,
+            detail='model gateway unavailable: no provider configured or upstream request failed',
+        )
+    reply = gateway_text
     context_chars = (
         len(system_prompt) + len(body.message) + len(goal or '')
         + sum(len(a.name) + len(a.mime) + 8 for a in body.attachments)
@@ -1096,7 +1113,8 @@ async def chat(body: ChatIn, request: Request):
         step['needs_review'] = False
     run.update({
         'status': 'done', 'cursor': len(run['steps']), 'result': reply,
-        'engine': 'mock', 'updated_at': now, 'finished_at': now,
+        'engine': 'gateway', 'provider_used': provider_used,
+        'updated_at': now, 'finished_at': now,
         'system_prompt': system_prompt, 'memory_injection': memory_injection,
     })
     _runs.set(run['id'], run)
@@ -1106,7 +1124,8 @@ async def chat(body: ChatIn, request: Request):
         'run_id': run['id'],
         'depth': depth,
         'gear': gear,
-        'engine': 'mock',
+        'engine': 'gateway',
+        'provider_used': provider_used,
         'agent_id': body.agent_id,
         'memory_injection': memory_injection,
     }
