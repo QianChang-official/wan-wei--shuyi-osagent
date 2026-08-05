@@ -1079,9 +1079,13 @@ async def chat(body: ChatIn, request: Request):
     )
     gateway_text, provider_used = await _try_gateway(prompt)
     if not gateway_text:
+        # Issue #45 P0-3 / DoD-2：机器可读 error 枚举，不产出模型口吻文本。
         raise HTTPException(
             status_code=502,
-            detail='model gateway unavailable: no provider configured or upstream request failed',
+            detail={
+                'error': 'gateway_unavailable',
+                'reason': 'no provider configured or upstream request failed',
+            },
         )
     reply = gateway_text
     context_chars = (
