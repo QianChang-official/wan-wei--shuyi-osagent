@@ -448,57 +448,6 @@ def _mock_step_detail(run: dict, step: dict) -> str:
     )
 
 
-def _mock_result(run: dict) -> str:
-    steps = run.get('steps', [])
-    done = [s for s in steps if s.get('status') == 'done']
-    names = '、'.join(s.get('name', '') for s in done) or '（无）'
-    gear_label = WORK_GEARS.get(run.get('gear', ''), run.get('gear', ''))
-    depth_label = THINK_DEPTH_LABELS.get(run.get('depth', ''), run.get('depth', ''))
-    return (
-        f'【任务结论】「{run.get("task", "")[:60]}」已完成（模拟引擎）。\n'
-        f'【编排】{run.get("kind", "solo")} ｜ 档位 {gear_label} ｜ 深度 {depth_label}\n'
-        f'【过程摘要】已执行步骤：{names}，共 {len(done)} 步。\n'
-        f'【结果】目标达成度评估为良好；产物为结构化中文结论（本段文本）。\n'
-        f'【后续建议】1) 接入真实模型网关后可复跑对比；2) 人工审查链路保持开启。'
-    )
-
-
-def _mock_chat_reply(
-    message: str,
-    agent: dict | None,
-    depth: str,
-    gear: str,
-    goal: str,
-    attachments: list[Attachment],
-) -> str:
-    name = (agent or {}).get('name', '通用智能体')
-    role = (agent or {}).get('role', '通用协作角色')
-    depth_label = THINK_DEPTH_LABELS.get(depth, depth)
-    gear_label = WORK_GEARS.get(gear, gear)
-    n = _depth_steps(depth)
-    ideas = [
-        f'先厘清「{message[:30]}」的真实诉求与约束，再给出可执行路径',
-        '将问题拆为信息收集、方案设计、落地验证三段推进',
-        '对关键不确定点先行假设并标注置信度，后续用证据修正',
-        '对齐当前目标与权限面，避免越权操作与范围蔓延',
-    ][:n]
-    idea_lines = '\n'.join(f'{i + 1}. {idea}' for i, idea in enumerate(ideas))
-    attach_line = ''
-    if attachments:
-        listing = '、'.join(f'{a.name or "附件"}({a.mime or "unknown"})' for a in attachments)
-        attach_line = f'\n【附件】已收到 {len(attachments)} 个附件：{listing}（当前仅登记元信息，未读取内容）。'
-    goal_line = f'\n【目标对齐】{goal}' if goal else ''
-    return (
-        f'【{name}｜{role}】已收到你的消息。\n'
-        f'【任务理解】{message[:80]}{"……" if len(message) > 80 else ""}\n'
-        f'【思考深度】{depth_label} ｜ 【工作档位】{gear_label}\n'
-        f'【执行思路】\n{idea_lines}\n'
-        f'【下一步】确认方向后，可发起编排运行（run）进入 plan/act/reflect 流程；'
-        f'关键步骤将按档位{("提交人工审查" if gear == "human_review" else "自动推进")}。'
-        f'{goal_line}{attach_line}'
-    )
-
-
 # ---------------------------------------------------------------- 网关尝试（配置就绪才真实调用）
 
 def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | None:
