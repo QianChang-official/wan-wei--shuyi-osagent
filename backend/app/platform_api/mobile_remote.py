@@ -11,6 +11,7 @@
 6. DELETE /platform/mobile/{file_id}         删除文件
 """
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -127,6 +128,8 @@ def _ts_of(row: dict) -> float:
 # ---------------------------------------------------------------------------
 
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent / 'uploads'
+# 合法 file_id 形态：上传时由服务端生成的 file_<12位小写hex>
+_FILE_ID_RE = re.compile(r'^file_[0-9a-f]{12}$')
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -204,14 +207,23 @@ def _file_path_from_db(file_id: str) -> Path:
     路径完全由服务端生成（_UPLOAD_DIR / file_id），file_id 是上传时生成的
     file_<hex> 格式——不存在的 ID 直接 404，从根上杜绝路径穿越。
     """
-    if not file_id:
+    # 第一道：格式白名单——只接受上传时生成的 file_<12位小写hex>
+    if not file_id or not _FILE_ID_RE.fullmatch(file_id):
         raise HTTPException(400, '非法文件 ID')
+
+    # 第二道：DB 元数据白名单——不存在的 ID 直接 404
     conn = get_conn()
     _file_meta_table(conn)
     row = conn.execute('SELECT 1 FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
     if row is None:
         raise HTTPException(404, '文件不存在')
-    return _UPLOAD_DIR / file_id
+
+    # 第三道：路径规范化 + 前缀归属校验，确保结果落在 _UPLOAD_DIR 内
+    base = _UPLOAD_DIR.resolve()
+    dest = (base / file_id).resolve()
+    if dest.parent != base:
+        raise HTTPException(400, '非法文件 ID')
+    return dest
 
 
 @router.get('/{file_id}/content')
