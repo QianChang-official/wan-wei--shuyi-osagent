@@ -211,16 +211,20 @@ def _file_path_from_db(file_id: str) -> Path:
     if not file_id or not _FILE_ID_RE.fullmatch(file_id):
         raise HTTPException(400, '非法文件 ID')
 
-    # 第二道：DB 元数据白名单——不存在的 ID 直接 404
+    # 第二道：DB 元数据白名单——把服务端存储的 file_id 取回来用于拼路径，
+    # 请求里的字符串只作为查询参数，绝不参与路径构造（taint 在此断链）。
     conn = get_conn()
     _file_meta_table(conn)
-    row = conn.execute('SELECT 1 FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
+    row = conn.execute('SELECT file_id FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
     if row is None:
         raise HTTPException(404, '文件不存在')
+    stored_id = str(row[0])
 
-    # 第三道：路径规范化 + 前缀归属校验，确保结果落在 _UPLOAD_DIR 内
+    # 第三道：对服务端取回的值再确认形态，并做前缀归属校验
+    if not _FILE_ID_RE.fullmatch(stored_id):
+        raise HTTPException(400, '非法文件 ID')
     base = _UPLOAD_DIR.resolve()
-    dest = (base / file_id).resolve()
+    dest = (base / stored_id).resolve()
     if dest.parent != base:
         raise HTTPException(400, '非法文件 ID')
     return dest
