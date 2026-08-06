@@ -143,7 +143,20 @@ def _ts_of(row: dict) -> float:
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent / 'uploads'
 # 合法 file_id 形态：上传时由服务端生成的 file_<12位小写hex>
 _FILE_ID_RE = re.compile(r'^file_[0-9a-f]{12}$')
-_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_upload_dir() -> Path:
+    """惰性创建上传目录。
+
+    导入期不要碰文件系统：只读根文件系统的加固容器里 mkdir 会抛
+    OSError，导致 platform_api 自动发现把本模块记为失败模块，
+    /health/ready 直接 not_ready（503）。改为首次真正上传时才建。
+    """
+    try:
+        _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(503, f'上传目录不可写：{type(exc).__name__}') from exc
+    return _UPLOAD_DIR
 
 
 def _file_meta_table(conn):
@@ -169,7 +182,7 @@ async def upload_file(
     if len(data) > 50 * 1024 * 1024:
         raise HTTPException(413, '文件超过 50MB 限制')
 
-    dest = _UPLOAD_DIR / file_id
+    dest = _ensure_upload_dir() / file_id
     dest.write_bytes(data)
 
     conn = get_conn()
