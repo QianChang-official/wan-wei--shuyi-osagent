@@ -198,21 +198,26 @@ def list_files(limit: int = Query(50, ge=1, le=200)):
     }
 
 
-def _resolve_safe(file_id: str) -> Path:
-    """把 file_id 解析为上传目录内的安全路径，防路径穿越（../../etc/passwd）。"""
-    if not file_id or '/' in file_id or '\\' in file_id or '..' in file_id:
+def _file_path_from_db(file_id: str) -> Path:
+    """从 DB 元数据取文件路径（白名单模式）：file_id 必须在 mobile_files 表里存在。
+
+    路径完全由服务端生成（_UPLOAD_DIR / file_id），file_id 是上传时生成的
+    file_<hex> 格式——不存在的 ID 直接 404，从根上杜绝路径穿越。
+    """
+    if not file_id:
         raise HTTPException(400, '非法文件 ID')
-    dest = (_UPLOAD_DIR / file_id).resolve()
-    root = _UPLOAD_DIR.resolve()
-    if not dest.is_relative_to(root):
-        raise HTTPException(400, '非法文件 ID')
-    return dest
+    conn = get_conn()
+    _file_meta_table(conn)
+    row = conn.execute('SELECT 1 FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, '文件不存在')
+    return _UPLOAD_DIR / file_id
 
 
 @router.get('/{file_id}/content')
 def read_file_content(file_id: str):
     """读取文件内容（AI 读取入口；文本直接返回，二进制返回 base64）。"""
-    dest = _resolve_safe(file_id)
+    dest = _file_path_from_db(file_id)
     if not dest.exists():
         raise HTTPException(404, '文件不存在')
     data = dest.read_bytes()
@@ -232,12 +237,12 @@ def read_file_content(file_id: str):
 @router.delete('/{file_id}')
 async def delete_file(file_id: str):
     """删除文件。"""
-    conn = get_conn()
-    _file_meta_table(conn)
-    dest = _resolve_safe(file_id)
+    dest = _file_path_from_db(file_id)
     if not dest.exists():
         raise HTTPException(404, '文件不存在')
     dest.unlink()
+    conn = get_conn()
+    _file_meta_table(conn)
     conn.execute('DELETE FROM mobile_files WHERE file_id=?', (file_id,))
     conn.commit()
     record('file_delete', {'file_id': file_id})

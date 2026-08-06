@@ -133,10 +133,10 @@ def test_delete_file(tmp_path):
 
 
 def test_path_traversal_blocked(tmp_path):
-    """路径穿越防护：file_id 含 ../ 或路径分隔符必须被拒（读/删都不行）。"""
+    """路径穿越防护：file_id 必须先存在于 DB 白名单（../ 等非法 ID 一律 404/400）。"""
     client = _client(tmp_path)
 
-    # 读：../../etc/passwd → 400（handler 校验）或 404（路由层先挡）都算安全拒绝
+    # 读：../../etc/passwd → 404（DB 无此 ID，路径从未进入文件系统）
     r = client.get('/platform/mobile/..%2F..%2Fetc%2Fpasswd/content', headers=HEADERS)
     assert r.status_code in (400, 404), r.text
 
