@@ -53,6 +53,12 @@ async def _append_event(event: dict) -> None:
 @router.get('/events')
 async def realtime_events(
     since: float = Query(0, description='只推送 ts > since 的事件（秒时间戳）'),
+    max_idle: float = Query(
+        0,
+        ge=0,
+        le=300,
+        description='空闲多少秒后主动收流（0=永久保持长连接；测试或短轮询客户端可设小值）',
+    ),
 ):
     """SSE 实时事件流。
 
@@ -73,6 +79,7 @@ async def realtime_events(
         sub = asyncio.Event()
         async with _BUS_LOCK:
             _SUBSCRIBERS.add(sub)
+        idle = 0.0
         try:
             while True:
                 sub.clear()
@@ -83,6 +90,12 @@ async def realtime_events(
                     for e in latest[-5:]:
                         yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
+                    idle += 25
+                    # max_idle > 0 时（测试/短轮询客户端）空闲到点就正常收流，
+                    # 避免调用方阻塞在永不结束的长连接上；默认 0 = 永久保持。
+                    if max_idle and idle >= max_idle:
+                        yield "event: stream_end\ndata: {\"reason\": \"idle_timeout\"}\n\n"
+                        return
                     yield ": keepalive\n\n"  # 心跳，防代理断连
         finally:
             async with _BUS_LOCK:

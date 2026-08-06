@@ -166,7 +166,10 @@ def test_sse_stream_emits_upload_event(tmp_path):
 
     # 再连 SSE：backlog 机制会补发 ts > 0 的缓冲事件（收到即断开）
     received: list[str] = []
-    with client.stream('GET', '/platform/mobile/events?since=0', headers=HEADERS) as r:
+    # max_idle=1：服务端空闲后主动收流，TestClient 不会阻塞在永不结束的长连接上
+    with client.stream(
+        'GET', '/platform/mobile/events?since=0&max_idle=1', headers=HEADERS
+    ) as r:
         assert r.status_code == 200
         for line in r.iter_lines():
             if line.startswith('event:'):
