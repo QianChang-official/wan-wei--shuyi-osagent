@@ -198,10 +198,21 @@ def list_files(limit: int = Query(50, ge=1, le=200)):
     }
 
 
+def _resolve_safe(file_id: str) -> Path:
+    """把 file_id 解析为上传目录内的安全路径，防路径穿越（../../etc/passwd）。"""
+    if not file_id or '/' in file_id or '\\' in file_id or '..' in file_id:
+        raise HTTPException(400, '非法文件 ID')
+    dest = (_UPLOAD_DIR / file_id).resolve()
+    root = _UPLOAD_DIR.resolve()
+    if not dest.is_relative_to(root):
+        raise HTTPException(400, '非法文件 ID')
+    return dest
+
+
 @router.get('/{file_id}/content')
 def read_file_content(file_id: str):
     """读取文件内容（AI 读取入口；文本直接返回，二进制返回 base64）。"""
-    dest = _UPLOAD_DIR / file_id
+    dest = _resolve_safe(file_id)
     if not dest.exists():
         raise HTTPException(404, '文件不存在')
     data = dest.read_bytes()
@@ -223,7 +234,7 @@ async def delete_file(file_id: str):
     """删除文件。"""
     conn = get_conn()
     _file_meta_table(conn)
-    dest = _UPLOAD_DIR / file_id
+    dest = _resolve_safe(file_id)
     if not dest.exists():
         raise HTTPException(404, '文件不存在')
     dest.unlink()

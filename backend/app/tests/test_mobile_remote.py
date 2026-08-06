@@ -132,6 +132,27 @@ def test_delete_file(tmp_path):
     assert not any(it['file_id'] == fid for it in listed['items'])
 
 
+def test_path_traversal_blocked(tmp_path):
+    """路径穿越防护：file_id 含 ../ 或路径分隔符必须被拒（读/删都不行）。"""
+    client = _client(tmp_path)
+
+    # 读：../../etc/passwd → 400（handler 校验）或 404（路由层先挡）都算安全拒绝
+    r = client.get('/platform/mobile/..%2F..%2Fetc%2Fpasswd/content', headers=HEADERS)
+    assert r.status_code in (400, 404), r.text
+
+    # 删除：带路径分隔符 → 同上
+    r = client.delete('/platform/mobile/..%2Fsecret.txt', headers=HEADERS)
+    assert r.status_code in (400, 404), r.text
+
+    # 正常 ID 仍工作（上传+读取不受影响）
+    up = client.post(
+        '/platform/mobile/upload',
+        headers=HEADERS,
+        files={'file': ('mobile_test_safe.txt', io.BytesIO('safe'.encode()), 'text/plain')},
+    ).json()
+    assert client.get(f"/platform/mobile/{up['file_id']}/content", headers=HEADERS).status_code == 200
+
+
 def test_sse_stream_emits_upload_event(tmp_path):
     """SSE 流能收到 file_upload 事件（backlog 补发机制：先上传产生事件，再连 SSE 收到重放）。"""
     client = _client(tmp_path)
