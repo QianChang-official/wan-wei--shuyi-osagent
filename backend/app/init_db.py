@@ -4,7 +4,11 @@ from .utils.datetime_utils import utc_now_iso_compact
 
 VECTOR_GENERATION_FENCING_MIGRATION = "vector_generation_fencing_v1"
 SOUL_OWNERSHIP_MIGRATION = "soul_owner_scope_v1"
-TIER_MIGRATION_NAME = "memory_tier_column_v1"
+TIER_UNIFICATION_MIGRATION = "memory_tier_unify_v1"
+# Legacy migration name from the first #56 MVP iteration. It added a redundant
+# ``tier`` column next to the pre-existing ``memory_tier`` column; kept here so
+# the unification migration can detect and fold back databases that applied it.
+LEGACY_TIER_COLUMN_MIGRATION = "memory_tier_column_v1"
 
 
 def migrate_legacy_vector_refs(conn) -> bool:
@@ -266,7 +270,7 @@ def main():
     migrate_legacy_vector_refs(conn)
     _migrate_soul_awakening(conn)
     _migrate_soul_ownership(conn)
-    _migrate_tier_column(conn)
+    _migrate_tier_unification(conn)
     conn.commit(); print('initialized')
 
 
@@ -538,14 +542,30 @@ def _migrate_soul_ownership(conn) -> None:
         raise
 
 
-def _migrate_tier_column(conn) -> None:
-    """Add 'tier' column to memory_capsules_v2 for memory tier management (#56).
-    
-    Migration strategy:
-    - Default all existing capsules to 'working' tier
-    - Create index on (tier, lifecycle) for efficient filtering
-    
-    Corresponds to GitHub issue #56: 短期/中期记忆自动流转机制
+def _migrate_tier_unification(conn) -> None:
+    """Unify tier storage on the pre-existing ``memory_tier`` column and create
+    the tier-transition audit table (#56).
+
+    Background:
+    - ``memory_capsules_v2.memory_tier`` already exists (added by an earlier
+      migration, default ``'working'``) and is the column ``write_capsule``
+      populates on every insert.
+    - The first #56 MVP iteration introduced a second, redundant ``tier``
+      column (migration ``memory_tier_column_v1``). One copy of that migration
+      also created ``idx_capsule_tier(tier, lifecycle)`` which references
+      ``lifecycle`` — a JSON key inside the ``state`` column, not a real
+      column — so it fails on a fresh database.
+
+    This migration (``memory_tier_unify_v1``):
+    1. If the legacy ``tier`` column exists, folds its non-default values into
+       ``memory_tier`` and then drops the legacy column (SQLite >= 3.35; on
+       older SQLite the column is left in place but simply unused).
+    2. Drops the possibly mis-shaped ``idx_capsule_tier`` index and creates a
+       correct one on ``memory_tier``.
+    3. Creates ``tier_transition_log`` — the audit trail for every
+       promote/demote, manual or automatic.
+
+    对应 GitHub issue #56: 短期/中期记忆自动流转机制
     赛题要求(6): 兼容与记忆模块中短期、中期记忆间的数据流转
     """
     conn.execute(
@@ -553,39 +573,71 @@ def _migrate_tier_column(conn) -> None:
     )
     if conn.execute(
         "SELECT 1 FROM memory_schema_migrations WHERE name=?",
-        (TIER_MIGRATION_NAME,),
+        (TIER_UNIFICATION_MIGRATION,),
     ).fetchone():
         return
-    
+
     try:
         conn.execute("BEGIN IMMEDIATE")
-        
+
         # Double-check (race protection)
         if conn.execute(
             "SELECT 1 FROM memory_schema_migrations WHERE name=?",
-            (TIER_MIGRATION_NAME,),
+            (TIER_UNIFICATION_MIGRATION,),
         ).fetchone():
             conn.commit()
             return
-        
-        # Check if 'tier' column already exists (idempotent)
+
         columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_capsules_v2)")}
-        if "tier" not in columns:
+
+        # 1. Fold the legacy ``tier`` column (if any) back into ``memory_tier``.
+        if "tier" in columns:
             conn.execute(
-                "ALTER TABLE memory_capsules_v2 "
-                "ADD COLUMN tier TEXT NOT NULL DEFAULT 'working'"
+                """
+                UPDATE memory_capsules_v2
+                SET memory_tier = tier
+                WHERE tier IS NOT NULL AND tier != 'working'
+                  AND (memory_tier IS NULL OR memory_tier = 'working')
+                """
             )
-        
-        # Create index on tier only (lifecycle is in JSON state field, not a column)
+            try:
+                conn.execute("ALTER TABLE memory_capsules_v2 DROP COLUMN tier")
+            except Exception:
+                # SQLite < 3.35 has no DROP COLUMN; the column stays but is
+                # no longer read or written by any code path.
+                pass
+
+        # 2. Replace the legacy index (wrongly shaped in the first MVP) with a
+        #    correct one on the canonical column.
+        conn.execute("DROP INDEX IF EXISTS idx_capsule_tier")
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_capsule_tier "
-            "ON memory_capsules_v2(tier)"
+            "CREATE INDEX IF NOT EXISTS idx_capsules_v2_memory_tier "
+            "ON memory_capsules_v2(memory_tier)"
         )
-        
+
+        # 3. Audit trail for tier transitions.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tier_transition_log(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                capsule_id TEXT NOT NULL,
+                from_tier TEXT NOT NULL,
+                to_tier TEXT NOT NULL,
+                reason TEXT,
+                trigger_source TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tier_transition_capsule "
+            "ON tier_transition_log(capsule_id, created_at)"
+        )
+
         # Record migration
         conn.execute(
             "INSERT INTO memory_schema_migrations(name, applied_at) VALUES (?,?)",
-            (TIER_MIGRATION_NAME, utc_now_iso_compact()),
+            (TIER_UNIFICATION_MIGRATION, utc_now_iso_compact()),
         )
         conn.commit()
     except Exception:

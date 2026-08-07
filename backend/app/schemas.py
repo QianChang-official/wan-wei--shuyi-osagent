@@ -78,3 +78,14 @@ class SoulDreamIn(BaseModel):
     new_preferences: list[dict[str, Any]] = Field(default_factory=list)
     new_knowledge: list[dict[str, Any]] = Field(default_factory=list)
     new_risks: list[dict[str, Any]] = Field(default_factory=list)
+
+# v0.12 Memory tier management schemas (#56)
+class TierTransitionIn(BaseModel):
+    capsule_id: str = Field(min_length=1, max_length=64)
+    to_tier: Literal['working', 'short_term', 'medium_term', 'long_term']
+    reason: str = Field(default='manual', max_length=256)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+class TierAutoFlowIn(BaseModel):
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+    limit: int = Field(default=500, ge=1, le=5000)

@@ -1,0 +1,45 @@
+{
+  "case_id": "tier_promotion_lifecycle",
+  "title": "记忆分层流转端到端：写入 → 召回 → 反思 → 晋升 short_term（#56）",
+  "description": "验证赛题要求(6)的短/中期记忆流转：workflow 完成（reflect helpful）后，被复用的记忆自动从 working 层晋升 short_term 层。",
+  "sessions": [
+    {
+      "session_id": "s1_write_experience",
+      "write_capsules": [
+        {
+          "memory_class": "experience",
+          "content": {
+            "task_id": "task_tier_001",
+            "goal": "在麒麟端侧部署前检查 embedding SDK 可用性",
+            "outcome": "success",
+            "lessons": "native SDK 未就绪时必须降级 FTS fallback，且降级路径要写入 native_index.reason 便于审计"
+          },
+          "source_type": "eval",
+          "scene": "deployment",
+          "task_type": "execution"
+        }
+      ],
+      "expect_lifecycle": "active",
+      "description": "写入一条部署经验记忆，初始 tier 应为 working（由 write_capsule 默认）"
+    },
+    {
+      "session_id": "s2_recall_same_goal",
+      "command_goal": "麒麟端侧部署前如何检查 embedding SDK",
+      "expect_memory_classes": ["experience"],
+      "expect_evidence_cards": true,
+      "description": "相同目标再次到来，应召回 s1 的经验记忆"
+    },
+    {
+      "session_id": "s3_reflect_promotes_tier",
+      "reflect": {
+        "task_id": "task_tier_002",
+        "goal_achieved": true,
+        "helpful_memories": [],
+        "misleading_memories": [],
+        "new_risks": []
+      },
+      "expect_tier_promotion": true,
+      "description": "反思确认记忆 helpful（helpful_memories 由 runner 从 s2 召回结果回填），workflow 完成回调应把该记忆从 working 晋升 short_term"
+    }
+  ]
+}

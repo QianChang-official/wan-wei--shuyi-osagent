@@ -107,11 +107,33 @@ def reflect_task(
             if cid in caps_by_id:
                 reinforce(cid, owner_id=owner_id, soul_id=soul_id)
                 actions.append({"action": "reinforce", "capsule_id": cid})
-        
+
         for cid in misleading_ids:
             if cid in caps_by_id:
                 deprecate(cid, owner_id=owner_id, soul_id=soul_id)
                 actions.append({"action": "deprecate", "capsule_id": cid})
+
+        # #56: workflow/任务完成回调——本轮被判定 helpful 的记忆从 working 层
+        # 晋升 short_term，让「用得上的记忆」自动进入短期待复用区。
+        # 局部 import 避免模块级耦合（tier_manager 依赖 capsule_store）。
+        if helpful_ids:
+            from .tier_manager import promote_capsules_for_workflow
+
+            tier_results = promote_capsules_for_workflow(
+                helpful_ids,
+                reason="workflow_reflection",
+                owner_id=owner_id,
+                soul_id=soul_id,
+            )
+            promoted = [r for r in tier_results if r.get("changed")]
+            if promoted:
+                actions.append(
+                    {
+                        "action": "tier_promote",
+                        "to_tier": "short_term",
+                        "capsule_ids": [r["capsule_id"] for r in promoted],
+                    }
+                )
     
     for risk in payload.get("new_risks", []):
         res = write_capsule(

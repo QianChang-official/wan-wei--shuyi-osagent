@@ -256,7 +256,21 @@ def _run_session(
         sess_r['reflection'] = _summarize_reflection_result(r_out)
 
     _append_write_assertions(result, sess, last_write)
+    _append_tier_assertions(result, sess, r_out)
     return sess_r, last_command_result
+
+
+def _append_tier_assertions(result: dict, sess: dict, r_out: dict | None) -> None:
+    """#56: 断言 reflection 触发了 tier 晋升（workflow 完成回调 hook）。"""
+    if not sess.get('expect_tier_promotion'):
+        return
+    sid = sess['session_id']
+    actions = (r_out or {}).get('evolution_actions', [])
+    triggered = any(a.get('action') == 'tier_promote' for a in actions)
+    _add_assertion(
+        result, 'tier_promotion_triggered', sid, triggered,
+        actual='tier_promote' if triggered else 'none',
+    )
 
 
 # ---------------------------------------------------------------------------

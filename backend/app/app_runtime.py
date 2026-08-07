@@ -20,7 +20,7 @@ from .operations.observability import ObservabilityMiddleware, metrics
 from .schemas import (
     MemoryEventIn, ForgetPreviewIn, ForgetConfirmIn, CapsuleWriteIn,
     CommandLoopIn, ReflectionIn, SoulConnectIn, SoulChatIn,
-    SoulPersonaUpdateIn, SoulDreamIn,
+    SoulPersonaUpdateIn, SoulDreamIn, TierTransitionIn, TierAutoFlowIn,
 )
 from .db import close_all, get_conn, transaction
 from .memory_runtime.policy_gate import evaluate_policy
@@ -38,6 +38,14 @@ from .memory_runtime.evidence import build_evidence_card
 from .kylin_sdk.native import get_native_sdk
 from .memory_runtime.command_loop import run_command_loop
 from .memory_runtime.evolution import reflect_task
+from .memory_runtime.tier_manager import (
+    get_tier_stats,
+    list_capsules_by_tier,
+    run_auto_flow,
+    tier_demote,
+    tier_promote,
+    transition_history,
+)
 from .memory_arena.metrics_contract import arena_metrics_validation_error
 from .platform.service import list_modules, module_summary
 from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
@@ -1652,6 +1660,112 @@ def v2_reflection(req: ReflectionIn, request: Request = None):
         req.model_dump(),
         owner_id=soul_scope.owner_id if soul_scope else None,
         soul_id=soul_scope.soul_id if soul_scope else None,
+    )
+
+# v0.12 Memory tier management endpoints (#56)
+# 赛题要求(6): 兼容与记忆模块中短期、中期记忆间的数据流转。
+# 注意: '/memory/tier/stats' 必须注册在 '/memory/tier/{tier}' 之前，
+# 否则 "stats" 会被路径参数吞掉。
+@app.get('/memory/tier/stats')
+def tier_stats(soul_id: str | None = None, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    return {
+        'tiers': get_tier_stats(
+            owner_id=soul_scope.owner_id if soul_scope else None,
+            soul_id=soul_scope.soul_id if soul_scope else None,
+        )
+    }
+
+@app.get('/memory/tier/history/{capsule_id}')
+def tier_history(capsule_id: str, limit: int = Query(default=50, ge=1, le=200)):
+    return {'capsule_id': capsule_id, 'items': transition_history(capsule_id, limit=limit)}
+
+@app.get('/memory/tier/{tier}')
+def tier_list(
+    tier: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    try:
+        items = list_capsules_by_tier(
+            tier,
+            limit=limit,
+            offset=offset,
+            owner_id=soul_scope.owner_id if soul_scope else None,
+            soul_id=soul_scope.soul_id if soul_scope else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': 'invalid_tier', 'message': str(exc)})
+    return {'tier': tier, 'items': [_public_capsule(item) for item in items]}
+
+@app.post('/memory/tier/promote')
+def tier_promote_endpoint(req: TierTransitionIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
+    try:
+        return tier_promote(
+            req.capsule_id,
+            req.to_tier,
+            req.reason,
+            owner_id=soul_scope.owner_id if soul_scope else None,
+            soul_id=soul_scope.soul_id if soul_scope else None,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if 'not found' in message:
+            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message})
+        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message})
+
+@app.post('/memory/tier/demote')
+def tier_demote_endpoint(req: TierTransitionIn, request: Request = None):
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
+    try:
+        return tier_demote(
+            req.capsule_id,
+            req.to_tier,
+            req.reason,
+            owner_id=soul_scope.owner_id if soul_scope else None,
+            soul_id=soul_scope.soul_id if soul_scope else None,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if 'not found' in message:
+            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message})
+        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message})
+
+@app.post('/memory/tier/auto-flow')
+def tier_auto_flow_endpoint(req: TierAutoFlowIn, request: Request = None):
+    """手动触发一轮自动流转（tier_lifecycle_scheduler 的单次 tick）。
+
+    后台调度器复用同一入口；规则见 tier_manager.run_auto_flow 文档串。
+    """
+    soul_scope = _owned_soul_scope(
+        request,
+        req.soul_id,
+        allow_internal_unscoped=True,
+    )
+    return run_auto_flow(
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+        limit=req.limit,
     )
 
 @app.get('/audit/logs')

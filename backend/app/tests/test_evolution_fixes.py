@@ -100,13 +100,19 @@ def test_reflect_task_batch_fetch_reduces_queries(isolated_db):
         },
     )
     
-    # 验证 actions 记录正确
+    # 验证 actions 记录正确（#56 起 reflect 还会追加 tier_promote 聚合动作，
+    # 这里只对核心 reinforce/deprecate 动作过滤计数）
     actions = result["evolution_actions"]
-    assert len(actions) == 3
+    core_actions = [a for a in actions if a["action"] in {"reinforce", "deprecate"}]
+    assert len(core_actions) == 3
     assert {"action": "reinforce", "capsule_id": cap_a} in actions
     assert {"action": "reinforce", "capsule_id": cap_b} in actions
     assert {"action": "deprecate", "capsule_id": cap_c} in actions
-    
+
+    # #56: helpful 记忆应被 workflow 完成回调晋升到 short_term
+    tier_actions = [a for a in actions if a["action"] == "tier_promote"]
+    assert tier_actions and set(tier_actions[0]["capsule_ids"]) == {cap_a, cap_b}
+
     # 验证实际状态变更
     assert cs.get_capsule(cap_a)["state"]["lifecycle"] == "reinforced"
     assert cs.get_capsule(cap_b)["state"]["lifecycle"] == "reinforced"
@@ -128,13 +134,18 @@ def test_reflect_task_skips_nonexistent_capsules(isolated_db):
         },
     )
     
-    # 只有真实存在的 capsule 被处理
+    # 只有真实存在的 capsule 被处理（#56 起 reflect 对 helpful 记忆追加
+    # tier_promote 聚合动作，核心 reinforce/deprecate 动作过滤后计数）
     actions = result["evolution_actions"]
-    assert len(actions) == 1
-    assert actions[0] == {"action": "reinforce", "capsule_id": cap_real}
-    
-    # ghost capsule 被跳过，不在 actions 里
-    ghost_ids = [a["capsule_id"] for a in actions]
+    core_actions = [a for a in actions if a["action"] in {"reinforce", "deprecate"}]
+    assert len(core_actions) == 1
+    assert core_actions[0] == {"action": "reinforce", "capsule_id": cap_real}
+
+    # ghost capsule 被跳过，不在任何动作里
+    ghost_ids = [a.get("capsule_id") for a in actions if "capsule_id" in a]
+    ghost_ids += [
+        cid for a in actions for cid in a.get("capsule_ids", [])
+    ]
     assert "cap_ghost_1" not in ghost_ids
     assert "cap_ghost_2" not in ghost_ids
 
