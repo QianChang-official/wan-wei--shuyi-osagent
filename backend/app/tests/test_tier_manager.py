@@ -57,7 +57,7 @@ def _set_state(capsule_id: str, **fields) -> None:
             conn.execute(
                 f"UPDATE memory_capsules_v2 SET state=json_set(state, '{key}', ?) "
                 "WHERE capsule_id=?",
-                (value if not isinstance(value, str) else value, capsule_id),
+                (value, capsule_id),
             )
 
 
@@ -352,3 +352,79 @@ def test_list_capsules_by_tier_and_stats(isolated_db):
 
     with pytest.raises(ValueError, match="Invalid tier"):
         list_capsules_by_tier("not_a_tier")
+
+
+# ------------------------------------------- review hardening (#63 kilo)
+
+def test_transition_writes_audit_in_same_transaction(isolated_db):
+    """tier 变更与 audit 行同事务提交（双通道不脱节）。"""
+    capsule_id = _make_capsule("audit same-tx")
+    tier_promote(capsule_id, to_tier="short_term", reason="audit check")
+
+    row = get_conn().execute(
+        "SELECT payload FROM audit_logs WHERE event_type='tier_transition' "
+        "ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None, "audit_logs 应存在 tier_transition 记录"
+    payload = json.loads(row["payload"])
+    assert payload["capsule_id"] == capsule_id
+    assert payload["from_tier"] == "working"
+    assert payload["to_tier"] == "short_term"
+
+
+def test_get_tier_stats_surfaces_unknown_tier(isolated_db, caplog):
+    """未知 tier 值必须保留在统计中（不静默丢弃）并记 warning。"""
+    capsule_id = _make_capsule("corrupted tier")
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE memory_capsules_v2 SET memory_tier='corrupted_tier' WHERE capsule_id=?",
+            (capsule_id,),
+        )
+
+    with caplog.at_level("WARNING", logger="backend.app.memory_runtime.tier_manager"):
+        stats = get_tier_stats()
+    assert stats["corrupted_tier"] == 1, "未知 tier 应单列计数而非被吞掉"
+    assert any("corrupted_tier" in r.message for r in caplog.records)
+
+
+def test_workflow_promote_system_error_is_distinguishable(isolated_db, monkeypatch, caplog):
+    """系统级故障标记为 system_error:{Type} 并记日志，与业务拒绝可区分。"""
+    from backend.app.memory_runtime import tier_manager as tm
+
+    capsule_id = _make_capsule("system failure path")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(tm, "get_capsule", boom)
+    with caplog.at_level("WARNING", logger="backend.app.memory_runtime.tier_manager"):
+        results = promote_capsules_for_workflow([capsule_id])
+
+    assert results[0]["changed"] is False
+    assert results[0]["reason"] == "system_error:RuntimeError"
+    assert any("workflow tier promote failed" in r.message for r in caplog.records)
+
+
+def test_tier_history_api_requires_visible_capsule(isolated_db, monkeypatch):
+    """history 端点：不可见/不存在的 capsule 返回 404，不泄露流转元数据。"""
+    from fastapi.testclient import TestClient
+    from backend.app import main as main_module
+
+    monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+    monkeypatch.setenv("WANWEI_API_KEY", "tier-history-test-key")
+    capsule_id = _make_capsule("history api target")
+    tier_promote(capsule_id, to_tier="short_term", reason="setup")
+
+    with TestClient(main_module.app) as client:
+        headers = {"X-API-Key": "tier-history-test-key"}
+        ok = client.get(f"/memory/tier/history/{capsule_id}", headers=headers)
+        missing = client.get("/memory/tier/history/cap_ghost", headers=headers)
+        no_auth = client.get(f"/memory/tier/history/{capsule_id}")
+
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["capsule_id"] == capsule_id
+    assert len(body["items"]) == 1
+    assert body["items"][0]["to_tier"] == "short_term"
+    assert missing.status_code == 404
+    assert no_auth.status_code in (401, 403)

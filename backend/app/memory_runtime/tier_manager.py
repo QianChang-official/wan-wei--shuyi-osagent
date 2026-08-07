@@ -16,13 +16,16 @@ Tier 流转顺序: working → short_term → medium_term → long_term（可跳
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..db import get_conn, transaction
-from ..audit.service import record
+from ..audit.service import record, record_in_transaction
 from .capsule_store import get_capsule, now
+
+logger = logging.getLogger(__name__)
 
 VALID_TIERS = ("working", "short_term", "medium_term", "long_term")
 _TIER_RANK = {tier: rank for rank, tier in enumerate(VALID_TIERS)}
@@ -88,14 +91,21 @@ def _transition(
     trigger_source: str,
     owner_id: str | None,
     soul_id: str | None,
+    prefetched: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shared implementation for promote/demote.
 
     单事务完成: 读取当前 tier（带 owner/soul 作用域）→ 方向与幂等校验 →
-    更新 memory_tier → 写 tier_transition_log → audit record。
+    更新 memory_tier → 写 tier_transition_log → audit 行同事务落库。
+
+    ``prefetched``: 调用方已按作用域过滤查询出的 capsule 数据（至少含
+    ``memory_tier``），传入后跳过内部 get_capsule 重查——``run_auto_flow``
+    批量场景借此避免每条一次冗余 round-trip。
     """
     _validate_tier(to_tier)
-    cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
+    cap = prefetched if prefetched is not None else get_capsule(
+        capsule_id, owner_id=owner_id, soul_id=soul_id
+    )
     if not cap:
         raise ValueError(f"Capsule {capsule_id} not found")
 
@@ -136,16 +146,19 @@ def _transition(
             """,
             (capsule_id, from_tier, to_tier, reason, trigger_source, ts),
         )
-    record(
-        "tier_transition",
-        {
-            "capsule_id": capsule_id,
-            "from_tier": from_tier,
-            "to_tier": to_tier,
-            "reason": reason,
-            "trigger_source": trigger_source,
-        },
-    )
+        # 审计行与业务更新同事务提交：任一失败整体回滚，
+        # 保证「tier 变更 ⇔ 审计记录」双通道不脱节。
+        record_in_transaction(
+            conn,
+            "tier_transition",
+            {
+                "capsule_id": capsule_id,
+                "from_tier": from_tier,
+                "to_tier": to_tier,
+                "reason": reason,
+                "trigger_source": trigger_source,
+            },
+        )
     return {
         "capsule_id": capsule_id,
         "from_tier": from_tier,
@@ -165,6 +178,7 @@ def tier_promote(
     *,
     owner_id: str | None = None,
     soul_id: str | None = None,
+    prefetched: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Promote a capsule to a higher tier (working → … → long_term, 可跳档).
 
@@ -180,6 +194,7 @@ def tier_promote(
         trigger_source=trigger_source,
         owner_id=owner_id,
         soul_id=soul_id,
+        prefetched=prefetched,
     )
 
 
@@ -191,6 +206,7 @@ def tier_demote(
     *,
     owner_id: str | None = None,
     soul_id: str | None = None,
+    prefetched: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Demote a capsule to a lower tier（长时间未访问/空间回收/过期清理）。
 
@@ -206,6 +222,7 @@ def tier_demote(
         trigger_source=trigger_source,
         owner_id=owner_id,
         soul_id=soul_id,
+        prefetched=prefetched,
     )
 
 
@@ -218,7 +235,9 @@ def promote_capsules_for_workflow(
 ) -> list[dict[str, Any]]:
     """workflow 完成回调：把本轮用到的 working 层 capsule 批量晋升 short_term。
 
-    已是更高 tier 的 capsule 保持不动；单条失败不影响其余（跳过并记录原因）。
+    已是更高 tier 的 capsule 保持不动；单条业务失败（not_found 等）不影响
+    其余。系统级异常（DB 故障等）记 warning 日志并以
+    ``system_error:{类型名}`` 标记，与业务拒绝可区分。
     """
     results: list[dict[str, Any]] = []
     for cid in capsule_ids:
@@ -241,10 +260,20 @@ def promote_capsules_for_workflow(
                     trigger_source="workflow_callback",
                     owner_id=owner_id,
                     soul_id=soul_id,
+                    prefetched=cap,
                 )
             )
-        except Exception as exc:  # 单条失败不阻断批量回调
+        except ValueError as exc:  # 业务校验失败：非法参数/状态，正常记入结果
             results.append({"capsule_id": cid, "changed": False, "reason": f"error:{exc}"})
+        except Exception as exc:  # 系统级故障：留日志，类型名可见，不阻断批量
+            logger.warning("workflow tier promote failed for %s: %s", cid, exc)
+            results.append(
+                {
+                    "capsule_id": cid,
+                    "changed": False,
+                    "reason": f"system_error:{type(exc).__name__}",
+                }
+            )
     return results
 
 
@@ -376,6 +405,8 @@ def run_auto_flow(
             continue
         direction, to_tier, reason = decision
         mover = tier_promote if direction == "promote" else tier_demote
+        # 传入本轮已按作用域过滤查出的数据，跳过 _transition 内部重查，
+        # 避免批量场景下每条一次冗余 round-trip。
         result = mover(
             cap["capsule_id"],
             to_tier,
@@ -383,6 +414,7 @@ def run_auto_flow(
             trigger_source="auto_flow",
             owner_id=owner_id,
             soul_id=soul_id,
+            prefetched=cap,
         )
         (promoted if direction == "promote" else demoted).append(result)
 
@@ -450,7 +482,12 @@ def get_tier_stats(
     owner_id: str | None = None,
     soul_id: str | None = None,
 ) -> dict[str, int]:
-    """各 tier 的 capsule 计数（调试/监控用）。"""
+    """各 tier 的 capsule 计数（调试/监控用）。
+
+    合法 tier 固定出现在结果中（缺省 0）；若数据里混入未知 tier 值
+    （损坏/手改库），以原值单列计数并记 warning——宁可监控数字看起来
+    异常，也不静默丢弃掩盖数据完整性问题。
+    """
     scope_sql = ""
     params: list[Any] = []
     if owner_id is not None:
@@ -473,7 +510,10 @@ def get_tier_stats(
     ).fetchall()
     stats = {tier: 0 for tier in VALID_TIERS}
     for row in rows:
-        stats[row["tier"]] = row["n"]
+        tier = row["tier"]
+        if tier not in VALID_TIERS:
+            logger.warning("get_tier_stats: unknown memory_tier value %r (%d rows)", tier, row["n"])
+        stats[tier] = row["n"]
     return stats
 
 

@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Path as ApiPath
 from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, get_api_key, is_production_mode
@@ -1681,7 +1682,26 @@ def tier_stats(soul_id: str | None = None, request: Request = None):
     }
 
 @app.get('/memory/tier/history/{capsule_id}')
-def tier_history(capsule_id: str, limit: int = Query(default=50, ge=1, le=200)):
+def tier_history(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    # 与其他 tier 端点同一口径：先做 soul/owner 作用域解析，
+    # 再校验目标 capsule 在调用方作用域内可见，否则 404（不暴露存在性）。
+    soul_scope = _owned_soul_scope(
+        request,
+        soul_id,
+        allow_internal_unscoped=True,
+    )
+    cap = get_capsule(
+        capsule_id,
+        owner_id=soul_scope.owner_id if soul_scope else None,
+        soul_id=soul_scope.soul_id if soul_scope else None,
+    )
+    if not cap:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
     return {'capsule_id': capsule_id, 'items': transition_history(capsule_id, limit=limit)}
 
 @app.get('/memory/tier/{tier}')
