@@ -24,6 +24,7 @@ def request(
     method: str = "GET",
     body: dict | None = None,
     request_id: str | None = None,
+    headers_extra: dict[str, str] | None = None,
     timeout: float = 10,
 ) -> tuple[int, dict | str, dict[str, str]]:
     headers = {}
@@ -32,6 +33,8 @@ def request(
         headers["X-API-Key"] = api_key
     if request_id:
         headers["X-Request-ID"] = request_id
+    if headers_extra:
+        headers.update(headers_extra)
     if body is not None:
         headers["Content-Type"] = "application/json"
         payload = json.dumps(body).encode("utf-8")
@@ -73,8 +76,24 @@ def run(base_url: str, api_key: str, timeout: float) -> dict:
     status, console, _ = request(base_url, "/console/", timeout=timeout)
     assert_true(status == 200 and isinstance(console, str) and '<div id="app"></div>' in console, "Vue console is unavailable.")
 
-    status, _, _ = request(base_url, "/audit/logs", timeout=timeout)
-    assert_true(status == 401, "Protected endpoint accepted a missing API key.")
+    # Issue #45 P1-3: 回环免密后，无 key/wrong-key 的回环请求都返回 200（来源即信任）；
+    # 带 X-Forwarded-For（模拟非回环）时密钥校验必须保留 —— 这才是真实的 401 验证路径。
+    status, _, _ = request(
+        base_url,
+        "/audit/logs",
+        api_key="wrong-key",
+        headers_extra={"X-Forwarded-For": "203.0.113.9"},
+        timeout=timeout,
+    )
+    assert_true(status == 401, "Protected endpoint accepted an invalid API key (non-loopback).")
+
+    status, _, _ = request(
+        base_url,
+        "/audit/logs",
+        headers_extra={"X-Forwarded-For": "203.0.113.9"},
+        timeout=timeout,
+    )
+    assert_true(status == 401, "Protected endpoint accepted a missing API key (non-loopback).")
 
     marker = f"wanwei-smoke-{time.time_ns()}"
     status, capsule, _ = request(

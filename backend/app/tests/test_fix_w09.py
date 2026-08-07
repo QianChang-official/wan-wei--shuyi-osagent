@@ -529,10 +529,12 @@ def test_model_gateway_config_single_source(monkeypatch):
 def test_chat_complete_consumes_single_source(monkeypatch):
     import backend.app.main as main_mod
 
+    # issue #45 P0-3/4.1: 删除 local_mock provider，无网关配置时如实失败
     monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_BASE", raising=False)
     monkeypatch.delenv("WANWEI_OPENAI_COMPATIBLE_MODEL", raising=False)
     out = main_mod._chat_complete([{"role": "user", "content": "hi"}])
-    assert out["provider"] == "local_mock"
+    assert out["provider"] == "none"
+    assert out["status"] in ("failed", "provider_error")
 
     monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_BASE", "http://127.0.0.1:1/v1")
     monkeypatch.setenv("WANWEI_OPENAI_COMPATIBLE_MODEL", "w09-unreachable")

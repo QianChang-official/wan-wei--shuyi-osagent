@@ -97,7 +97,14 @@ def test_chat_in_rejects_invalid_depth_and_gear(client):
 # ---------------------------------------------------------------- 04-#7 保留命名空间
 
 
-def test_chat_rejects_reserved_namespace_agent_id(client):
+def test_chat_rejects_reserved_namespace_agent_id(client, monkeypatch):
+    agents_mod = _agents_mod()
+    import app.model_gateway.service as mgw
+
+    async def fake_gateway(prompt, run=None):
+        return "fake gateway reply", "test-provider"
+
+    monkeypatch.setattr(agents_mod, "_try_gateway", fake_gateway)
     for reserved in ("_teams", "_floating"):
         r = client.post(
             "/platform/agents/chat",
@@ -105,14 +112,15 @@ def test_chat_rejects_reserved_namespace_agent_id(client):
             headers=H,
         )
         assert r.status_code == 404, (reserved, r.text)
-    # 正常 agent 不受影响
+    # 正常 agent 不受影响：不因保留命名空间误判 404。
+    # 无网关配置时 chat 如实 502（issue #45 P0-3），这里只断言未被 404 拦截。
     aid = _make_agent(client)
     r = client.post(
         "/platform/agents/chat",
         json={"message": "你好", "agent_id": aid},
         headers=H,
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code != 404, r.text
 
 
 def test_agent_crud_is_scoped_to_api_key_owner(client, monkeypatch):
@@ -140,10 +148,15 @@ def test_agent_crud_is_scoped_to_api_key_owner(client, monkeypatch):
     assert client.get(f"/platform/agents/{aid}", headers=H).status_code == 200
 
 
-def test_legacy_agent_without_owner_id_remains_visible(client):
+def test_legacy_agent_without_owner_id_remains_visible(client, monkeypatch):
     """owner 隔离引入前的存量 agent（无 owner_id 字段）升级后不得集体 404：
     对已鉴权调用方保持可见，新建带 owner 的记录仍按 owner 隔离。"""
     from backend.app.platform_api import agents as agents_mod
+
+    async def fake_gateway(prompt, run=None):
+        return "fake gateway reply", "test-provider"
+
+    monkeypatch.setattr(agents_mod, "_try_gateway", fake_gateway)
 
     aid = _make_agent(client, name="Legacy")
     raw = agents_mod._agents.get(aid)  # noqa: SLF001
@@ -154,7 +167,8 @@ def test_legacy_agent_without_owner_id_remains_visible(client):
     listed = client.get("/platform/agents", headers=H).json()["items"]
     assert aid in {item["id"] for item in listed}
     r = client.post("/platform/agents/chat", json={"agent_id": aid, "message": "hi"}, headers=H)
-    assert r.status_code == 200, r.text
+    # legacy agent 对已鉴权调用方可见：不 404（无网关时 chat 如实 502，P0-3）。
+    assert r.status_code != 404, r.text
     # 响应不得泄露 owner_id 字段
     assert "owner_id" not in client.get(f"/platform/agents/{aid}", headers=H).json()
 
@@ -452,7 +466,16 @@ def test_finalize_run_annotates_actual_provider(client, monkeypatch):
 # ---------------------------------------------------------------- 06-#4 记忆指令注入
 
 
-def test_chat_consumes_memory_instructions(client):
+def test_chat_consumes_memory_instructions(client, isolated_db):
+    """issue #45 P0-3: 改为直测纯函数 _compose_system_prompt。
+
+    P0-3 删除 mock 网关后，/platform/agents/chat 在无网关配置时如实 502，
+    原本经端点断言 system_prompt 的写法已不可行。而 _compose_system_prompt
+    是纯函数（只读记忆库组装提示词，不碰网关），记忆注入这一被测行为
+    完整落在它内部，因此直测它既保住断言强度又不依赖网关。
+    """
+    agents_mod = _agents_mod()
+
     r = client.post(
         "/platform/memory/remember",
         json={"text": "所有回复先用中文思考"},
@@ -460,29 +483,23 @@ def test_chat_consumes_memory_instructions(client):
     )
     assert r.status_code == 200, r.text
 
-    r = client.post(
-        "/platform/agents/chat",
-        json={"message": "你好"},
-        headers=H,
+    system_prompt, status = agents_mod._compose_system_prompt(  # noqa: SLF001
+        {"goal": "测试目标"}, "medium", "sandbox"
     )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["memory_injection"] == "ok"
-    # run 记录内系统提示真实包含指令文本
-    run = client.get(f"/platform/agents/runs/{body['run_id']}", headers=H).json()
-    assert run["memory_injection"] == "ok"
-    assert "中文思考" in run["system_prompt"]
-    assert "用户长期记忆指令" in run["system_prompt"]
+    assert status == "ok"
+    assert "中文思考" in system_prompt
+    assert "用户长期记忆指令" in system_prompt
 
 
-def test_chat_memory_injection_empty_when_no_instructions(client):
-    r = client.post(
-        "/platform/agents/chat",
-        json={"message": "你好"},
-        headers=H,
+def test_chat_memory_injection_empty_when_no_instructions(client, isolated_db):
+    """无记忆指令时 _compose_system_prompt 如实标注 empty（同上，绕开网关）。"""
+    agents_mod = _agents_mod()
+
+    system_prompt, status = agents_mod._compose_system_prompt(  # noqa: SLF001
+        {}, "medium", "sandbox"
     )
-    assert r.status_code == 200, r.text
-    assert r.json()["memory_injection"] == "empty"
+    assert status == "empty"
+    assert "中文思考" not in system_prompt
 
 
 def test_memory_injection_failure_degrades_honestly(client, monkeypatch):

@@ -580,6 +580,7 @@ def test_async_deadline_cancels_future_and_callback_releases_once(monkeypatch):
     with pytest.raises(gateway_service._SmokeDeadlineExceeded):
         asyncio.run(
             gateway_service._run_smoke_in_dedicated_pool_async(
+                "test-provider",
                 "https://model.example/v1",
                 "",
                 "test-model",

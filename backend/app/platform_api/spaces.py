@@ -4,13 +4,15 @@
   任务空间可通过 ``parent_id`` 归属项目空间，删除父空间时级联删除后代空间
   （旧数据无 ``parent_id`` 视为根空间，行为不变）。
 - 主干（main）/ 集成树（tree）/ 栖枝（perch）三态视图：root_path 指向真实
-  git 仓库时用 subprocess 读取真实分支（5 秒超时），否则返回语义化模拟数据
-  并标注 ``source: 'simulated'``。
+  git 仓库时用 subprocess 读取真实分支（5 秒超时）；非仓库返回 400
+  ``not_a_repository``，git 读取失败返回 502 带 stderr 摘要（issue #45 P0-6，
+  不再编造模拟三态）。
 - 自定义 git 提交模板与提交执行：默认 ``dry_run=True`` 只回显将执行的命令；
   真实提交要求工作档位为 ``sandbox`` / ``device``（人工审查档位只预览）。
 - 账号绑定（github / linear）：token 用 Fernet 加密后落盘（复用
   model_gateway 的 ``app.security.encryption`` 密钥模式）；github 绑定后可
-  真实调用 ``api.github.com/user`` 做连通性测试（5 秒超时），linear 为 stub。
+  真实调用 ``api.github.com/user`` 做连通性测试（5 秒超时），linear 走真实
+  GraphQL ``viewer`` 探测（issue #45 P0-1）。
 
 持久化：JsonStore('spaces') 存项目（含提交模板），JsonStore('integrations')
 存账号绑定（密文 token，任何接口均不回显明文）。
@@ -166,38 +168,32 @@ def _is_git_repo(root: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == 'true'
 
 
-def _simulated_tree(project: dict, note: str = '') -> dict:
-    trunk = project.get('default_branch') or 'main'
-    payload = {
-        'project_id': project['id'],
-        'branches': [
-            {'name': trunk, 'role': ROLE_TRUNK},
-            {'name': 'tree', 'role': ROLE_TREE},
-            {'name': 'perch', 'role': ROLE_PERCH},
-        ],
-        'active': trunk,
-        'dirty': 3,
-        'ahead_behind': {
-            'tree': {'ahead': 2, 'behind': 0},
-            'perch': {'ahead': 5, 'behind': 1},
-        },
-        'source': 'simulated',
-    }
-    if note:
-        payload['note'] = note
-    return payload
+class _NotARepository(RuntimeError):
+    """root_path 不是可用 git 仓库 → 400 not_a_repository。"""
+
+
+class _GitReadError(RuntimeError):
+    """git 读取失败 → 502，带 stderr 摘要。"""
+
+    def __init__(self, stderr: str):
+        super().__init__(stderr[:500])
+        self.stderr = stderr
 
 
 def _real_tree(project: dict) -> dict:
-    """读取真实 git 仓库分支；任何失败回退模拟并注明原因。"""
+    """读取真实 git 仓库分支；绝不编造模拟三态（issue #45 P0-6）。
+
+    非仓库抛 ``_NotARepository``；git 命令失败抛 ``_GitReadError``（带
+    stderr 摘要）。调用方负责转为 400 / 502，禁止任何来源的假成功。
+    """
     root = (project.get('root_path') or '').strip()
     trunk = project.get('default_branch') or 'main'
     if not _is_git_repo(root):
-        return _simulated_tree(project, note='root_path 不是可用的 git 仓库，返回模拟三态')
+        raise _NotARepository(root or '<empty>')
     try:
         branch_proc = _run_git(root, ['branch', '--format=%(refname:short)'])
         if branch_proc.returncode != 0:
-            return _simulated_tree(project, note=f'git branch 读取失败：{branch_proc.stderr.strip()[:200]}')
+            raise _GitReadError(branch_proc.stderr.strip())
         real_names = [line.strip() for line in branch_proc.stdout.splitlines() if line.strip()]
 
         active_proc = _run_git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -255,7 +251,7 @@ def _real_tree(project: dict) -> dict:
             type(exc).__name__,
             exc_info=True,
         )
-        return _simulated_tree(project, note='git 读取失败，已回退模拟')
+        raise _GitReadError(str(exc)) from exc
 
 
 def _compile_template_pattern(template_cfg: dict) -> re.Pattern:
@@ -527,7 +523,7 @@ def test_integration(kind: str) -> dict:
     _check_integration_kind(kind)
     stored = _integrations.get(kind)
     if not isinstance(stored, dict) or not stored.get('token_encrypted'):
-        return {'ok': False, 'mode': 'stub', 'note': f'尚未绑定 {kind} 账号，无法测试'}
+        return {'ok': False, 'note': f'尚未绑定 {kind} 账号，无法测试'}
     token = stored['token_encrypted']
     try:
         token = encryption.decrypt(token)
@@ -535,7 +531,7 @@ def test_integration(kind: str) -> dict:
         # 02-#4：旧 base64 明文不再原样返回，视同解密失败走下方显式提示路径
         token = ''
     if not token:
-        return {'ok': False, 'mode': 'stub', 'note': 'token 解密失败（加密密钥可能已变更），请重新绑定'}
+        return {'ok': False, 'note': 'token 解密失败（加密密钥可能已变更），请重新绑定'}
 
     if kind == 'github':
         try:
@@ -560,8 +556,33 @@ def test_integration(kind: str) -> dict:
             )
             return {'ok': False, 'mode': 'live', 'note': 'GitHub 连通性测试失败，请稍后重试'}
 
-    # linear：真实 API 尚未接入，诚实标注 stub
-    return {'ok': True, 'mode': 'stub', 'note': 'linear 连通性测试暂未接入真实 API，当前为模拟通过'}
+    if kind == 'linear':
+        # P0-1: 接入真实 Linear GraphQL viewer 探测；禁止 ok:True 与 stub 共存。
+        try:
+            with httpx.Client(timeout=5) as client:
+                resp = client.post(
+                    'https://api.linear.app/graphql',
+                    headers={
+                        'Authorization': token,
+                        'Content-Type': 'application/json',
+                    },
+                    json={'query': '{ viewer { id name } }'},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                viewer = (data.get('data') or {}).get('viewer') or {}
+                login = viewer.get('name') or viewer.get('id') or 'unknown'
+                return {'ok': True, 'mode': 'live', 'note': f'Linear 连通正常，账号：{login}'}
+            return {'ok': False, 'mode': 'live', 'note': f'Linear 返回 HTTP {resp.status_code}，请检查 token 权限'}
+        except (httpx.RequestError, httpx.TimeoutException, ValueError) as exc:
+            logger.warning(
+                'Linear integration probe failed: error_type=%s',
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return {'ok': False, 'mode': 'live', 'note': 'Linear 连通性测试失败，请稍后重试'}
+
+    raise HTTPException(status_code=501, detail={'error': 'not_implemented', 'reason': f'集成类型 {kind} 未接入'})
 
 
 # ---------------------------------------------------------------- 三态视图
@@ -570,7 +591,25 @@ def test_integration(kind: str) -> dict:
 @router.get('/spaces/{pid}/tree')
 def space_tree(pid: str) -> dict:
     project = _get_project_or_404(pid)
-    return _real_tree(project)
+    try:
+        return _real_tree(project)
+    except _NotARepository as exc:
+        # P0-6: 非 git 仓库不再编造模拟三态，明确 400。
+        raise HTTPException(
+            status_code=400,
+            detail={'error': 'not_a_repository', 'reason': f'root_path（{exc}）不是可用的 git 仓库'},
+        ) from None
+    except _GitReadError as exc:
+        # P0-6: git 失败如实 502。stderr 摘要仅进日志（可能含敏感路径/token），
+        # 响应体给通用 reason，遵守审计「异常 detail 不外泄」约束。
+        logger.warning('Space tree git failure: project_id=%s stderr=%s', pid, exc.stderr or str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail={
+                'error': 'git_read_failed',
+                'reason': 'git 读取失败，请检查仓库路径与 Git 配置',
+            },
+        ) from None
 
 
 # ---------------------------------------------------------------- 提交模板与提交
@@ -727,7 +766,7 @@ def commit_in_space(pid: str, body: CommitIn) -> dict:
         'commands': commands,
         'gear': body.gear,
         'gear_label': gear_label,
-        'source': 'git' if is_repo else 'simulated',
+        'source': 'git' if is_repo else 'not_repository',
     }
 
     if body.dry_run:

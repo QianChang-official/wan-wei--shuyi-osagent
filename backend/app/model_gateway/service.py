@@ -166,7 +166,12 @@ def _pinned_json_post(url: str, pinned_ip: str, payload: dict, headers: dict[str
 
 
 def _build_providers() -> list[ModelProvider]:
-    """按当前 env 配置构建 provider 目录（运行时单一事实源）。"""
+    """按当前 env 配置构建 provider 目录（运行时单一事实源）。
+
+    issue #45 (4.1)：local_mock 整条 provider 已删除——本地模型请接
+    Ollama / llama.cpp 的 OpenAI 兼容端点，复用已验证的 openai_compatible
+    通路；本地不存在「模拟成功」的 provider。
+    """
     base, model, configured = local_llama_settings()
     return [
         ModelProvider(
@@ -184,8 +189,8 @@ def _build_providers() -> list[ModelProvider]:
             api_key_alias="ANTHROPIC_API_KEY",
             model="claude-sonnet-4",
             enabled=False,
-            status="planned_configurable",
-            notes="Anthropic provider stub with dry-run connectivity semantics.",
+            status="configuration_required",
+            notes="Anthropic provider; real /v1/messages smoke once configured and enabled (issue #45 4.1).",
         ),
         ModelProvider(
             provider="gemini",
@@ -193,17 +198,8 @@ def _build_providers() -> list[ModelProvider]:
             api_key_alias="GEMINI_API_KEY",
             model="gemini-2.5-pro",
             enabled=False,
-            status="planned_configurable",
-            notes="Gemini provider stub; no outbound call is made in v0.9.4 dry-run.",
-        ),
-        ModelProvider(
-            provider="local_mock",
-            api_base="local://memoryops/mock-model",
-            api_key_alias="NONE",
-            model="memoryops-local-mock",
-            enabled=True,
-            status="available_stub",
-            notes="Deterministic local dry-run provider for demos and CI.",
+            status="configuration_required",
+            notes="Gemini provider; real generateContent smoke once configured and enabled (issue #45 4.1).",
         ),
     ]
 
@@ -419,7 +415,95 @@ def _openai_compatible_smoke(
     return "ok", latency_ms, text[:600]
 
 
+def _anthropic_smoke(
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+) -> tuple[str, int, str]:
+    """Anthropic Messages API 真实 smoke（issue #45 4.1，复用 pinned-IP 模式）。"""
+    started = time.perf_counter()
+    payload = {
+        "model": model,
+        "max_tokens": max(16, min(max_tokens, 256)),
+        "system": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。",
+        "messages": [{"role": "user", "content": prompt[:500]}],
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    validated_base, pinned_ip = resolve_external_url(api_base, allowlist=local_llama_allowlist())
+    data = _pinned_json_post(
+        validated_base.rstrip("/") + "/v1/messages",
+        pinned_ip,
+        payload,
+        headers,
+        OPENAI_COMPATIBLE_TIMEOUT_S,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    blocks = data.get("content") or []
+    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+    return "ok", latency_ms, text[:600]
+
+
+def _gemini_smoke(
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+) -> tuple[str, int, str]:
+    """Gemini generateContent 真实 smoke（issue #45 4.1，复用 pinned-IP 模式）。"""
+    started = time.perf_counter()
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。\n\n" + prompt[:500]},
+                ],
+            },
+        ],
+        "generationConfig": {"maxOutputTokens": max(16, min(max_tokens, 256))},
+    }
+    headers = {"Content-Type": "application/json"}
+    validated_base, pinned_ip = resolve_external_url(api_base, allowlist=local_llama_allowlist())
+    data = _pinned_json_post(
+        validated_base.rstrip("/") + f"/v1beta/models/{model}:generateContent?key={api_key}",
+        pinned_ip,
+        payload,
+        headers,
+        OPENAI_COMPATIBLE_TIMEOUT_S,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    candidates = data.get("candidates") or []
+    text = ""
+    if candidates:
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    return "ok", latency_ms, text[:600]
+
+
+def _provider_dispatch(
+    provider: str,
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+) -> tuple[str, int, str]:
+    """按 provider 分发到真实 smoke 实现（issue #45 4.1 收口）。"""
+    if provider == "anthropic":
+        return _anthropic_smoke(api_base, api_key, model, prompt, max_tokens)
+    if provider == "gemini":
+        return _gemini_smoke(api_base, api_key, model, prompt, max_tokens)
+    return _openai_compatible_smoke(api_base, api_key, model, prompt, max_tokens)
+
+
 def _submit_smoke(
+    provider: str,
     api_base: str,
     api_key: str,
     model: str,
@@ -436,7 +520,8 @@ def _submit_smoke(
             raise _SmokeQueueFull
         try:
             future = executor.submit(
-                _openai_compatible_smoke,
+                _provider_dispatch,
+                provider,
                 api_base,
                 api_key,
                 model,
@@ -454,6 +539,7 @@ def _submit_smoke(
 
 
 def _run_smoke_in_dedicated_pool(
+    provider: str,
     api_base: str,
     api_key: str,
     model: str,
@@ -465,7 +551,7 @@ def _run_smoke_in_dedicated_pool(
     容量槽覆盖正在运行和排队的任务。调用方等待超时后不能提前释放槽，
     因为底层 socket/DNS 工作可能仍在继续；完成回调才是唯一释放点。
     """
-    future = _submit_smoke(api_base, api_key, model, prompt, max_tokens)
+    future = _submit_smoke(provider, api_base, api_key, model, prompt, max_tokens)
     try:
         return future.result(timeout=_SMOKE_RESULT_TIMEOUT_S)
     except FutureTimeoutError as exc:
@@ -484,6 +570,7 @@ def _consume_async_future_exception(future: asyncio.Future) -> None:
 
 
 async def _run_smoke_in_dedicated_pool_async(
+    provider: str,
     api_base: str,
     api_key: str,
     model: str,
@@ -491,7 +578,7 @@ async def _run_smoke_in_dedicated_pool_async(
     max_tokens: int,
 ) -> tuple[str, int, str]:
     """Await a dedicated worker without occupying Starlette's AnyIO pool."""
-    future = _submit_smoke(api_base, api_key, model, prompt, max_tokens)
+    future = _submit_smoke(provider, api_base, api_key, model, prompt, max_tokens)
     async_future = asyncio.wrap_future(future)
     async_future.add_done_callback(_consume_async_future_exception)
     try:
@@ -562,14 +649,14 @@ def _prepare_provider_test(
             request_id=request_id,
             message="Stored API key cannot be decrypted. Restore WANWEI_ENCRYPTION_KEY or submit a new API key.",
         )
-    if db_config is None and provider["provider"] != "openai_compatible":
+    if db_config is None and provider["provider"] not in {"openai_compatible", "anthropic", "gemini"}:
         return ModelGatewayTestOut(
             provider=provider["provider"],
             model=model,
             dry_run=False,
-            status="blocked_in_alpha",
+            status="not_implemented",
             request_id=request_id,
-            message="Only the local OpenAI-compatible llama.cpp endpoint is enabled for real smoke in this prototype.",
+            message="Provider has no real connectivity implementation; refusing to return ok (issue #45 4.1).",
         )
     return _ProviderTestContext(provider=provider, model=model, request_id=request_id)
 
@@ -638,6 +725,25 @@ _HANDLED_SMOKE_FAILURES = (
 )
 
 
+def probe_openai_compatible(
+    api_base: str,
+    api_key: str,
+    model: str,
+    prompt: str = "MemoryOps connectivity probe",
+    max_tokens: int = 16,
+) -> tuple[str, int, str]:
+    """公开的 OpenAI-compatible 连通性探测入口（同步，专用线程池内执行）。
+
+    Issue #45 (4.5)：providers 舱的云端连通性测试复用本实现，与
+    /model-gateway/test 走同一套 pinned-IP SSRF 防护与超时，不再各写一份。
+    返回值 (status, latency_ms, preview)；失败时抛 _HANDLED_SMOKE_FAILURES
+    中的异常，由调用方转为结构化错误。
+    """
+    return _run_smoke_in_dedicated_pool(
+        "openai_compatible", api_base, api_key, model, prompt, max_tokens,
+    )
+
+
 def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
     """Run a provider test synchronously for existing direct callers."""
     prepared = _prepare_provider_test(req)
@@ -646,6 +752,7 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
     provider = prepared.provider
     try:
         result = _run_smoke_in_dedicated_pool(
+            provider["provider"],
             provider["api_base"],
             provider["api_key"],
             prepared.model,
@@ -668,6 +775,7 @@ async def run_provider_test_async(req: ModelGatewayTestIn) -> ModelGatewayTestOu
     provider = prepared.provider
     try:
         result = await _run_smoke_in_dedicated_pool_async(
+            provider["provider"],
             provider["api_base"],
             provider["api_key"],
             prepared.model,

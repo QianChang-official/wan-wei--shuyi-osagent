@@ -67,12 +67,17 @@ def test_non_production_derivation_warns_once_and_works(monkeypatch, caplog):
     assert len(warnings) == 1, "回退警告应每进程只打一次，避免日志刷屏"
 
 
-def test_dev_default_key_still_usable(monkeypatch):
-    """dev 默认 key（wanwei-dev-key）零配置可用性不破坏。"""
+def test_dev_default_key_still_usable(monkeypatch, tmp_path):
+    """dev 默认 key 零配置可用性不破坏（自举生成替代公开常量）。"""
     monkeypatch.delenv("WANWEI_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
     monkeypatch.delenv("WANWEI_API_KEY", raising=False)
     monkeypatch.delenv("WANWEI_API_KEY_FILE", raising=False)
+    # 零配置自举会生成密钥并落盘到平台目录；隔离到 tmp_path 避免污染真实用户目录。
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
+    from backend.app.security import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "_AUTO_GENERATED_API_KEY", None)
 
     ciphertext = encryption.encrypt("dev-secret")
     assert encryption.decrypt(ciphertext) == "dev-secret"

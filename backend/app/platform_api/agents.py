@@ -448,57 +448,6 @@ def _mock_step_detail(run: dict, step: dict) -> str:
     )
 
 
-def _mock_result(run: dict) -> str:
-    steps = run.get('steps', [])
-    done = [s for s in steps if s.get('status') == 'done']
-    names = '、'.join(s.get('name', '') for s in done) or '（无）'
-    gear_label = WORK_GEARS.get(run.get('gear', ''), run.get('gear', ''))
-    depth_label = THINK_DEPTH_LABELS.get(run.get('depth', ''), run.get('depth', ''))
-    return (
-        f'【任务结论】「{run.get("task", "")[:60]}」已完成（模拟引擎）。\n'
-        f'【编排】{run.get("kind", "solo")} ｜ 档位 {gear_label} ｜ 深度 {depth_label}\n'
-        f'【过程摘要】已执行步骤：{names}，共 {len(done)} 步。\n'
-        f'【结果】目标达成度评估为良好；产物为结构化中文结论（本段文本）。\n'
-        f'【后续建议】1) 接入真实模型网关后可复跑对比；2) 人工审查链路保持开启。'
-    )
-
-
-def _mock_chat_reply(
-    message: str,
-    agent: dict | None,
-    depth: str,
-    gear: str,
-    goal: str,
-    attachments: list[Attachment],
-) -> str:
-    name = (agent or {}).get('name', '通用智能体')
-    role = (agent or {}).get('role', '通用协作角色')
-    depth_label = THINK_DEPTH_LABELS.get(depth, depth)
-    gear_label = WORK_GEARS.get(gear, gear)
-    n = _depth_steps(depth)
-    ideas = [
-        f'先厘清「{message[:30]}」的真实诉求与约束，再给出可执行路径',
-        '将问题拆为信息收集、方案设计、落地验证三段推进',
-        '对关键不确定点先行假设并标注置信度，后续用证据修正',
-        '对齐当前目标与权限面，避免越权操作与范围蔓延',
-    ][:n]
-    idea_lines = '\n'.join(f'{i + 1}. {idea}' for i, idea in enumerate(ideas))
-    attach_line = ''
-    if attachments:
-        listing = '、'.join(f'{a.name or "附件"}({a.mime or "unknown"})' for a in attachments)
-        attach_line = f'\n【附件】已收到 {len(attachments)} 个附件：{listing}（当前仅登记元信息，未读取内容）。'
-    goal_line = f'\n【目标对齐】{goal}' if goal else ''
-    return (
-        f'【{name}｜{role}】已收到你的消息。\n'
-        f'【任务理解】{message[:80]}{"……" if len(message) > 80 else ""}\n'
-        f'【思考深度】{depth_label} ｜ 【工作档位】{gear_label}\n'
-        f'【执行思路】\n{idea_lines}\n'
-        f'【下一步】确认方向后，可发起编排运行（run）进入 plan/act/reflect 流程；'
-        f'关键步骤将按档位{("提交人工审查" if gear == "human_review" else "自动推进")}。'
-        f'{goal_line}{attach_line}'
-    )
-
-
 # ---------------------------------------------------------------- 网关尝试（配置就绪才真实调用）
 
 def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | None:
@@ -678,7 +627,7 @@ def _new_run(
         'provider_pid': agent.get('provider_pid', ''),
         'model': agent.get('model', ''),
         'status': 'queued',
-        'engine': 'mock',
+        'engine': 'pending',
         'steps': _build_steps(kind, orchestration, members, resolved_gear),
         'cursor': 0,
         'result': '',
@@ -790,11 +739,16 @@ async def _finalize_run(rid: str) -> None:
             f'{gateway_text}\n\n—— 以上由模型网关真实生成'
             f'（engine=gateway，provider={provider_used}）。'
         )
+        run['status'] = 'done'
     else:
-        run['engine'] = 'mock'
+        # Issue #45 P0-3：网关不可用 → 明确失败，绝不 mock 假成功。
+        run['engine'] = 'gateway'
         run['provider_used'] = None
-        run['result'] = _mock_result(run)
-    run['status'] = 'done'
+        run['status'] = 'failed'
+        run['error'] = (
+            'model gateway unavailable: no provider configured or upstream '
+            'request failed (engine=gateway, no fallback mock)'
+        )
     run['updated_at'] = _now()
     run['finished_at'] = _now()
     _runs.set(rid, run)
@@ -1066,7 +1020,23 @@ async def chat(body: ChatIn, request: Request):
     goal = body.goal if body.goal is not None else (agent or {}).get('goal', '')
     # 系统提示真实消费记忆指令（与 /context-size 同源）；注入状态如实标注
     system_prompt, memory_injection = _compose_system_prompt(agent or {}, depth, gear)
-    reply = _mock_chat_reply(body.message, agent, depth, gear, goal, body.attachments)
+    # Issue #45 P0-3：对话必须走真实网关；网关不可用 → 502，不 mock 假成功。
+    prompt = (
+        f'{system_prompt}\n\n'
+        f'用户：{body.message}\n'
+        f'请给出简洁的中文回复。'
+    )
+    gateway_text, provider_used = await _try_gateway(prompt)
+    if not gateway_text:
+        # Issue #45 P0-3 / DoD-2：机器可读 error 枚举，不产出模型口吻文本。
+        raise HTTPException(
+            status_code=502,
+            detail={
+                'error': 'gateway_unavailable',
+                'reason': 'no provider configured or upstream request failed',
+            },
+        )
+    reply = gateway_text
     context_chars = (
         len(system_prompt) + len(body.message) + len(goal or '')
         + sum(len(a.name) + len(a.mime) + 8 for a in body.attachments)
@@ -1086,7 +1056,8 @@ async def chat(body: ChatIn, request: Request):
         step['needs_review'] = False
     run.update({
         'status': 'done', 'cursor': len(run['steps']), 'result': reply,
-        'engine': 'mock', 'updated_at': now, 'finished_at': now,
+        'engine': 'gateway', 'provider_used': provider_used,
+        'updated_at': now, 'finished_at': now,
         'system_prompt': system_prompt, 'memory_injection': memory_injection,
     })
     _runs.set(run['id'], run)
@@ -1096,7 +1067,8 @@ async def chat(body: ChatIn, request: Request):
         'run_id': run['id'],
         'depth': depth,
         'gear': gear,
-        'engine': 'mock',
+        'engine': 'gateway',
+        'provider_used': provider_used,
         'agent_id': body.agent_id,
         'memory_injection': memory_injection,
     }

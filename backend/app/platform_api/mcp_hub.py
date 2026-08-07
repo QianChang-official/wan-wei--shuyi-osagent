@@ -1157,9 +1157,20 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     live_ready = rec.get('transport') == 'stdio' and bool(rec.get('command'))
 
     if not live_ready:
+        # issue #45 (4.2): 保留"不伪装已连接"的诚实性，但 HTTP 状态必须是
+        # 503 —— 返回 200 会让前端把未连接渲染成灰色成功。响应体只保留
+        # plan 与机器可读 reason，不含任何结果字段。
         note = 'MCP 服务器未连接，调用计划已记录'
         _record_call(rec, payload, ok=False, mode='stub', note=note)
-        return {'ok': False, 'mode': 'stub', 'note': note, 'plan': _redact_plan(plan)}
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'ok': False,
+                'reason': 'server_not_connected',
+                'note': note,
+                'plan': _redact_plan(plan),
+            },
+        )
     _require_stdio_execution(rec, action='tool_call')
 
     try:

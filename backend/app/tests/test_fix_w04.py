@@ -243,7 +243,13 @@ def test_oauth_poll_returns_501_without_key(tmp_path):
 
 
 def test_oauth_poll_reports_authorized_when_key_configured(tmp_path):
-    """已通过其他途径配置密钥的，poll 如实报告 authorized（真实状态）。"""
+    """issue #45 P0-2: OAuth poll 未接入真实流程时必须 501，即使有 API key。
+    
+    旧行为：已配置 API key 时 poll 返回 authorized（混淆了 API key 配置与
+    设备码授权两条路径）。新行为：poll 仅报告真实设备码授权状态，无真实
+    endpoint 时统一 501。用户可通过 GET /providers/configs/{pid} 查询
+    API key 配置状态。
+    """
     client = _client(tmp_path)
     r = client.put(
         "/platform/providers/configs/github_copilot",
@@ -251,9 +257,10 @@ def test_oauth_poll_reports_authorized_when_key_configured(tmp_path):
         headers=_HEADERS,
     )
     assert r.status_code == 200, r.text
+    # P0-2: 无真实 OAuth 流程时 poll 必须 501，不得因有 API key 就声称 authorized
     r = client.post("/platform/providers/auth/github_copilot/poll", headers=_HEADERS)
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "authorized"
+    assert r.status_code == 501, r.text
+    assert "未接入真实供应商流程" in r.text
 
 
 def test_oauth_endpoints_reject_non_oauth_provider(tmp_path):

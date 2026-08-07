@@ -3,11 +3,12 @@
 职责：
 - 工作流 CRUD（JsonStore('flows')）；
 - AI 编辑：规则式中文解析器把自然语言指令转成完整流程定义 diff
-  （engine='mock'，未接入真实大模型，诚实标注为模拟引擎）。语义为
-  「全量重建」：proposed_flow 每次都是按整段指令重建的完整流程定义，
+  （engine='rule'，非模型生成，issue #45 P0-4；响应显式声明规则解析）。
+  语义为「全量重建」：proposed_flow 每次都是按整段指令重建的完整流程定义，
   步骤序列整体替换，不是对现有步骤的增量调整（edit_mode='full_rebuild'）；
 - 运行模拟（JsonStore('flow_runs')）：asyncio 后台逐步执行；shell/http/
-  agent/memory 步骤一律不真实执行，仅返回 would_run 说明；
+  agent/memory 步骤一律不真实执行，仅返回 would_run 说明；run 记录
+  simulated 默认 False（P0-5），模拟态只能由显式模拟入口写入；
 - 定时调度：router lifespan 内启 asyncio 后台任务，周期扫描 enabled 且
   trigger='schedule' 的流程，按 cron 五段式（本地时区 aware datetime）
   判到期触发，运行语义复用 _simulate_run（模拟执行，run 记录如实标注
@@ -403,7 +404,7 @@ def _next_cron_run(cron: Optional[str], now: Optional[datetime] = None) -> tuple
 
 
 # ---------------------------------------------------------------------------
-# AI 编辑：规则式中文指令解析器（engine='mock'）
+# AI 编辑：规则式中文指令解析器（engine='rule'，非模型生成，P0-4）
 # ---------------------------------------------------------------------------
 
 _WEEKDAY_MAP = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0}
@@ -768,7 +769,7 @@ def _try_create_run(flow: dict, *, triggered_by: str) -> Optional[dict]:
         'step_results': [],
         'started_at': _now_iso(),
         'finished_at': None,
-        'simulated': True,
+        'simulated': False,
         'triggered_by': triggered_by,
     }
     if not flow.get('enabled', True):
@@ -926,11 +927,15 @@ def _flow_view(flow: dict) -> dict:
 
 
 def _run_view(run: dict) -> dict:
-    """run 对外视图：补齐契约字段 done/simulated，兼容修复前的旧记录。"""
+    """run 对外视图：补齐契约字段 done/simulated，兼容修复前的旧记录。
+
+    issue #45 P0-5：simulated 默认值反转为 False——真实触发默认为非模拟，
+    模拟态只能由显式模拟入口写入。
+    """
     view = dict(run)
     done = view.get('done')
     view['done'] = done if isinstance(done, bool) else str(view.get('status') or '') != 'running'
-    view['simulated'] = bool(view.get('simulated', True))
+    view['simulated'] = bool(view.get('simulated', False))
     return view
 
 
@@ -1014,11 +1019,12 @@ def create_flow(payload: FlowIn) -> dict:
 
 @router.post('/flows/ai-edit')
 def ai_edit_flow(payload: AiEditIn) -> dict:
-    """规则式中文解析（engine='mock'，未接入真实大模型）。
+    """规则式中文解析（engine='rule'，非模型生成，issue #45 P0-4）。
 
     语义为「全量重建」（edit_mode='full_rebuild'）：proposed_flow 每次都
     按整段指令重建完整流程定义，步骤序列整体替换，不是对现有步骤的增量
-    调整；changes 如实列出重建后与现状的差异。
+    调整；changes 如实列出重建后与现状的差异。响应显式声明「规则解析、
+    非模型生成」，不允许与成功语义混同。
     """
     instruction = payload.instruction.strip()
     if not instruction:
@@ -1057,8 +1063,9 @@ def ai_edit_flow(payload: AiEditIn) -> dict:
         'understood': _understood(base, trigger, cron, steps),
         'proposed_flow': proposed,
         'changes': changes,
-        'engine': 'mock',
+        'engine': 'rule',
         'edit_mode': 'full_rebuild',
+        'note': '规则解析、非模型生成（engine=rule）',
     }
 
 

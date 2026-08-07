@@ -30,3 +30,4 @@ dl/
 /shot*.png
 /qa-*.png
 /vm_*.png
+.tmp/

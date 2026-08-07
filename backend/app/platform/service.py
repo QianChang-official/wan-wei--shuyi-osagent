@@ -121,7 +121,7 @@ PLATFORM_MODULES: list[dict] = [
         "backend_refs": ["/model-gateway/providers", "/model-gateway/test"],
         "frontend_refs": ["/model-gateway"],
         "competition_refs": ["模型调用", "成本统计", "调用日志"],
-        "description": "OpenAI-compatible、Anthropic、Gemini 与 local_mock 的配置草案、dry-run 测试和状态展示。",
+        "description": "OpenAI-compatible、Anthropic、Gemini 的真实连通性测试（dry-run 与真实调用）与状态展示。",
     },
     {
         "id": "baigong_skills",

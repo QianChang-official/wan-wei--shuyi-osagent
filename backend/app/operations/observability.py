@@ -105,7 +105,9 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             route = request.scope.get("route")
             route_path = getattr(route, "path", "__unmatched__")
             self._registry.finish(request.method, route_path, status_code, duration)
-            _logger.info(
+            # PF-3 (issue #45): /health 降为 DEBUG，避免淹没真实调用记录
+            log_fn = _logger.debug if route_path.startswith('/health') else _logger.info
+            log_fn(
                 "request_complete method=%s route=%s status=%s duration_ms=%.2f request_id=%s",
                 request.method,
                 route_path,

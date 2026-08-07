@@ -7,7 +7,8 @@ class ModelProvider(BaseModel):
     api_key_alias: str
     model: str
     enabled: bool = False
-    status: str = "stub"
+    # issue #45 (4.1): 禁止字段默认值就是 stub；status 必填。
+    status: str
     notes: str = ""
 
 

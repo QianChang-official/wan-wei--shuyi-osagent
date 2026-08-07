@@ -7,7 +7,8 @@
 - GET    /providers/configs            全部配置（api_key 脱敏只回尾 4 位）
 - PUT    /providers/configs/{pid}      新建/更新配置（api_key Fernet 加密落盘）
 - DELETE /providers/configs/{pid}      删除配置
-- POST   /providers/test               连通性测试（local 真实探测，其余 stub）
+- POST   /providers/test               连通性测试（local 真实探测；云端复用
+                                      model_gateway 真实 OpenAI 兼容探测，issue #45 4.5）
 - GET    /providers/aux                辅助模型配置
 - PUT    /providers/aux                更新辅助模型配置
 - POST   /providers/auth/{pid}/begin   OAuth 设备授权开始（真实流程未接入，如实 501）
@@ -686,13 +687,49 @@ def test_provider(body: TestIn) -> dict[str, Any]:
     if not _decrypt_key(record):
         return {'ok': False, 'pid': body.pid, 'reason': '未配置密钥'}
 
-    # 密钥就绪：真实连通性测试留待后续版本，当前诚实返回 stub
-    return {
-        'ok': True,
-        'pid': body.pid,
-        'mode': 'stub',
-        'note': '密钥已配置。真实云端连通性测试尚未启用，当前为模拟通过。',
-    }
+    # 云端：复用 model_gateway 的真实 OpenAI-compatible 探测（4.5）。
+    # 与 /model-gateway/test 走同一套 pinned-IP SSRF 防护与超时，
+    # 不再各写一份「模拟通过」的假成功。
+    from app.model_gateway.service import probe_openai_compatible
+
+    base_url = (record.get('base_url') or meta['base_url']).rstrip('/')
+    model = record.get('model') or (meta['models'][0] if meta['models'] else '')
+    api_key = _decrypt_key(record)
+    started = time.perf_counter()
+    try:
+        status, latency_ms, preview = probe_openai_compatible(
+            base_url, api_key, model,
+        )
+        if status != 'ok':
+            return {
+                'ok': False,
+                'pid': body.pid,
+                'mode': 'live',
+                'reason': f'云端探测失败（{status}），请检查端点/模型与密钥权限',
+            }
+        return {
+            'ok': True,
+            'pid': body.pid,
+            'mode': 'live',
+            'latency_ms': latency_ms,
+            'note': f'云端连通正常（真实探测），模型：{model}',
+            'response_preview': preview[:80],
+        }
+    except Exception as exc:  # noqa: BLE001 —— 网络/SSRF/队列异常统一归为不可达
+        logger.warning(
+            'Cloud provider probe failed: pid=%s error_type=%s',
+            body.pid,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return {
+            'ok': False,
+            'pid': body.pid,
+            'mode': 'live',
+            'latency_ms': elapsed,
+            'reason': '云端服务不可达或未通过 SSRF 防护校验',
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +802,6 @@ def auth_poll(pid: str) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
     if 'oauth' not in meta.get('auth_modes', []):
         raise HTTPException(status_code=400, detail=f'{meta["name"]} 不支持 OAuth 授权')
-    # 已通过其他途径完成授权并配置密钥：这是可核实的真实状态
-    if _decrypt_key(_store.get(pid) or {}):
-        return {'status': 'authorized', 'stub': False}
+    # P0-2: 无真实 device authorization endpoint 时，status 只能来自真实
+    # 设备码轮询结果；begin 已 501，poll 必须同样 501，不得声称 authorized。
     raise HTTPException(status_code=501, detail=_OAUTH_NOT_IMPLEMENTED)
