@@ -756,13 +756,6 @@ def _parse_length(header_line: bytes) -> int | None:
     if length < 1 or length > _MAX_CONTENT_LENGTH:
         raise ValueError(f'Content-Length {length} out of bounds [1, {_MAX_CONTENT_LENGTH}]')
     return length
-    try:
-        length = int(header_line.split(b':', 1)[1].strip())
-    except (IndexError, ValueError):
-        return None
-    if length < 0 or length > _MAX_CONTENT_LENGTH:
-        raise ValueError(f'Content-Length {length} out of bounds (max {_MAX_CONTENT_LENGTH})')
-    return length
 
 
 def _read_exact(stream: Any, size: int) -> bytes | None:

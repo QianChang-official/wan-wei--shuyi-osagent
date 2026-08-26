@@ -35,7 +35,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m compileall -q backend/app
-      - run: python -m ruff check backend/app --config ruff.toml --select E9,F63,F7,F82
+      - run: python -m ruff check backend/app --config ruff.toml --select E9,F63,F7,F82,F811,F841
       - run: python -m pytest --basetemp .pytest-ci -p no:cacheprovider
       # Mini-MEB 记忆体验基准（规范: AI优化/MemoryOS-BenchmarkHarness.md §4）。
       # 每 PR 跑核心用例；评测在临时库里跑，产出报告后再用契约校验器把关，

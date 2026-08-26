@@ -1296,7 +1296,6 @@ def _ensure_dream_lock(soul_id: str) -> None:
     播种 dream_lock 孤儿行（WHERE EXISTS 守卫），调用方语义不变。
     """
     conn = get_conn()
-    ts = utc_now_iso()
     conn.execute(
         """
         INSERT INTO dream_lock(soul_id, pid, started_at, last_dream_at, last_dream_duration_ms, last_dream_summary)
