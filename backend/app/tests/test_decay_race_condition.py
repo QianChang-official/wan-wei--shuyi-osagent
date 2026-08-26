@@ -172,8 +172,8 @@ def test_decay_affect_insert_or_ignore_idempotent(isolated_db):
     
     # 连续调用 3 次（第一次插入，后两次跳过）
     state1 = decay_affect(sid)
-    state2 = decay_affect(sid)
-    state3 = decay_affect(sid)
+    decay_affect(sid)  # 第二次：仅为触发副作用
+    decay_affect(sid)  # 第三次：仅为触发副作用
     
     # 表里只有一条记录
     rows = conn.execute("SELECT COUNT(*) FROM affect_state WHERE soul_id=?", (sid,)).fetchone()

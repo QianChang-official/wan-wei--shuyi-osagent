@@ -543,7 +543,7 @@ class _FakeASRResponse:
         self.status_code = status_code
         self._payload = payload
 
-    def json(self) -> dict:
+    def json(self) -> dict:  # noqa: F811 - mock HTTP 响应方法，有意遮蔽模块级 import json
         return self._payload
 
 

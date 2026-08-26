@@ -1,4 +1,6 @@
 # High-signal CI lint baseline. Full style enforcement can be enabled after module split.
+# CI 强卡规则(ci.yml --select)：E9,F63,F7,F82 语法/未定义名 + F811 重复定义 + F841 死变量。
+# F811/F841 专拦"插新不删旧"类坏补丁产生的重复定义与赋而未用的死代码。
 target-version = "py310"
 line-length = 120
 
