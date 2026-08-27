@@ -257,7 +257,6 @@ def test_dreams_archive_now_replaces_same_night(client):
     """POST /platform/memory/dreams/archive-now:同一夜重复执行覆盖旧条目。"""
     r1 = client.post('/platform/memory/dreams/archive-now')
     assert r1.status_code == 200
-    first_id = r1.json()['entry']['id']
     assert r1.json()['replaced'] is False
 
     r2 = client.post('/platform/memory/dreams/archive-now')
@@ -364,7 +363,6 @@ def test_remember_does_not_write_to_memoryos_ledger(client):
     # 与 memory_runtime 的 SQLite capsule 存储零互通。
     # 验证:memory_instructions 的 JsonStore 文件存在,
     # 但后端 SQLite 库中不应有对应的 capsule。
-    import os
     platform_dir = os.environ.get('WANWEI_PLATFORM_DIR')
     assert platform_dir is not None
     json_files = list(Path(platform_dir).glob('platform_memory_instructions*.json'))
