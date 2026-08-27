@@ -9,5 +9,4 @@ if [ ! -x "$PYTHON" ]; then
 fi
 
 exec "$PYTHON" "$ROOT/scripts/smoke.py" \
-  --base-url "${WANWEI_BASE_URL:-http://127.0.0.1:8010}" \
-  --api-key "${WANWEI_API_KEY:-wanwei-dev-key}" "$@"
+  --base-url "${WANWEI_BASE_URL:-http://127.0.0.1:8010}" "$@"

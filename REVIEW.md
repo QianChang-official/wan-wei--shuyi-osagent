@@ -73,6 +73,34 @@ operations are gated by explicit module-level checks rather than a global disabl
 - Memory lifecycle changes must preserve provenance, evidence identifiers,
   governance decisions, and the `active`/`quarantined`/`forgotten`/`rejected`
   semantics. High-impact writes must not bypass policy or confirmation gates.
+- `backend/app/memoryos/` is the governance layer over that base (lifecycle state
+  machine, immutable ledger, economic accounting, health scoring, MEB harness).
+  Its invariants are blocking:
+  - `memoryos.lifecycle.TRANSITIONS` is the sole authority on legal transitions.
+    Do not reintroduce direct `state["lifecycle"] = ...` assignments outside it.
+    `forgotten` and `deleted` must never reach a retrievable state.
+  - `RETRIEVABLE_STATES` and `INDEXABLE_POLICIES` are the single source of truth
+    for retrieval visibility. A second hand-written `IN` list will drift.
+  - `memory_ledger` is append-only, enforced by SQLite triggers. Removing or
+    weakening those triggers, or writing a ledger row outside the caller's
+    business transaction, is blocking.
+  - The FTS sync in `apply_transition` is what makes a confirmed candidate
+    retrievable and a quarantined capsule unretrievable. Review both directions.
+  - `verify_deletion` authorization derives from the ledger, not the base table:
+    a hard-deleted capsule has no row, and that is exactly when verification
+    matters most.
+  - The release gate must stay out of `/health/ready`. Governance freezing a
+    release is not the same as the instance being unready.
+  - Retrieval-path accounting must stay inside the existing `bump_usage_batch`
+    transaction and its 60-second window. A new write round-trip per search is
+    blocking.
+- Preserve the honesty boundary in the memory governance surface: an unmeasured
+  `precision@5` must stay `null` and be listed under `unmeasured`; estimated
+  token costs must keep their `honesty_note`; blocked poisoning attempts must not
+  be counted as incidents; MEB results must not be presented as public-benchmark
+  scores. Broad `except` around instrumentation must not swallow NameError,
+  TypeError, or AttributeError — that hid a silently failing snapshot sampler for
+  an entire run while the benchmark still reported success.
 - Backup creation must use SQLite's online backup semantics and integrity checks.
   Restore must verify the SHA-256 manifest, require a stopped writer, and avoid
   replacing the live database before validation succeeds.

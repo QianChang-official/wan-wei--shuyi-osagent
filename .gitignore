@@ -13,6 +13,7 @@ secrets/*
 node_modules/
 tmp/
 .pytest_cache/
+.pytest-*/
 *.db
 *.db-shm
 *.db-wal
@@ -31,3 +32,8 @@ dl/
 /qa-*.png
 /vm_*.png
 .tmp/
+
+.idea/
+AI优化/*.docx
+AI优化/1.txt
+AI优化/开发日志.txt

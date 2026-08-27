@@ -1,0 +1,74 @@
+name: Memory Benchmark
+
+# MEB / MHEB 记忆体验基准的周期性运行（规范: AI优化/MemoryOS-BenchmarkHarness.md §4）。
+#
+# 与 ci.yml 的分工：
+# - ci.yml 每 PR 跑 Mini-MEB（核心用例，门禁）
+# - 本工作流跑更慢的两档：每日 Long-MEB（公开集全量）、每周 RedTeam-MEB（安全维度）
+#
+# 诚实边界：规范里还列了「每月 Benchmark Sync（同步 hidden set + 更新基线）」。
+# 该项**未实现**——隐藏集需要一个仓库外的用例源，本仓库只提供
+# WANWEI_MEB_HIDDEN_DIR 加载机制，没有可同步的对象。不在这里放一个空跑的
+# job 假装覆盖了它。
+
+on:
+  schedule:
+    # 每日 UTC 17:43 跑全量公开集（错开整点，避开公共 runner 的调度尖峰）
+    - cron: "43 17 * * *"
+    # 每周一 UTC 18:11 跑红队集
+    - cron: "11 18 * * 1"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "要跑的套件"
+        type: choice
+        options: [mini, full, redteam]
+        default: full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: MEB (${{ github.event.inputs.suite || (github.event.schedule == '11 18 * * 1' && 'redteam' || 'full') }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: python -m pip install -r backend/requirements-dev.txt
+
+      # 跑评测并在同一步内与该套件的基线对比（规范 §5「pass_rate 下降 >5% 报警」）。
+      #
+      # 基线按套件分文件（reports/meb_baseline_<suite>.json）。此前这里是一段内联
+      # heredoc，拿单槽的 meb_score_report.json 当基线并在 suite 不同时跳过——而
+      # per-PR 写 mini、每日写 full、每周写 redteam，无论提交哪一份都至多匹配一种
+      # 流程，其余永远打印「跳过对比」，门禁看着在跑却从不触发。改为按套件取基线，
+      # 并把逻辑放进 run_meb.py，让它在本地也能复现、能被测试覆盖。
+      - name: Run MEB suite and compare against baseline
+        env:
+          SUITE: ${{ github.event.inputs.suite || (github.event.schedule == '11 18 * * 1' && 'redteam' || 'full') }}
+        run: |
+          python scripts/run_meb.py --suite "$SUITE" --save-traces \
+            --compare-baseline --regression-threshold 0.05
+
+      - name: Validate report contract
+        run: python scripts/run_meb.py --check-only
+
+      - name: Upload report and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meb-report-${{ github.run_id }}
+          path: |
+            reports/meb_score_report.json
+            reports/meb_traces.json
+          if-no-files-found: warn
+          retention-days: 30

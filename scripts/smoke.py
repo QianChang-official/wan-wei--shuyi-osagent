@@ -2,7 +2,7 @@
 
 覆盖范围（如实标注）：/health/live、/health/ready、/console/ 页面可达、
 /audit/logs 与 /metrics 的 API Key 鉴权（缺失时 401）、/memory/v2 胶囊写入与检索、
-/workflow/runs dry-run、/metrics 指标文本。
+/memory/governance/export 脱敏证据导出、/workflow/runs dry-run、/metrics 指标文本。
 不覆盖 /platform/* 端点；platform 冒烟由后端 pytest（backend/app/tests/test_platform_api_smoke.py）承担。
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -115,6 +116,21 @@ def run(base_url: str, api_key: str, timeout: float) -> dict:
     results = search.get("results", []) if isinstance(search, dict) else []
     assert_true(status == 200 and results and results[0].get("capsule_id") == capsule["capsule_id"], "Capsule retrieval failed.")
 
+    status, evidence_export, _ = request(
+        base_url,
+        "/memory/governance/export?format=json&limit=5",
+        api_key=api_key,
+        timeout=timeout,
+    )
+    assert_true(
+        status == 200
+        and isinstance(evidence_export, dict)
+        and evidence_export.get("format") == "memory-evidence-v1"
+        and len(str(evidence_export.get("integrity_sha256", ""))) == 64
+        and "owner_id" not in str(evidence_export.get("markdown", "")),
+        "Memory evidence export failed or leaked owner metadata.",
+    )
+
     status, workflow, _ = request(
         base_url,
         "/workflow/runs",
@@ -147,9 +163,15 @@ def run(base_url: str, api_key: str, timeout: float) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cross-platform HTTP delivery smoke test.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8010")
-    parser.add_argument("--api-key", default="wanwei-dev-key")
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("WANWEI_API_KEY", "").strip() or None,
+        help="API key, or WANWEI_API_KEY; no weak fallback is permitted",
+    )
     parser.add_argument("--timeout", type=float, default=10)
     args = parser.parse_args()
+    if not args.api_key:
+        parser.error("--api-key or WANWEI_API_KEY is required")
     print(json.dumps(run(args.base_url, args.api_key, args.timeout), ensure_ascii=False))
 
 

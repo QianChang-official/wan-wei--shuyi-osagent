@@ -37,6 +37,19 @@ jobs:
       - run: python -m compileall -q backend/app
       - run: python -m ruff check backend/app --config ruff.toml --select E9,F63,F7,F82
       - run: python -m pytest --basetemp .pytest-ci -p no:cacheprovider
+      # Mini-MEB 记忆体验基准（规范: AI优化/MemoryOS-BenchmarkHarness.md §4）。
+      # 每 PR 跑核心用例；评测在临时库里跑，产出报告后再用契约校验器把关，
+      # 防止字段缺失的报告被下游门禁与控制台消费。
+      # 只在一个 matrix 组合上跑：评测测的是记忆层逻辑，与 OS/Python 版本无关，
+      # 四个组合都跑纯属浪费 CI 时间。
+      - name: Mini-MEB memory benchmark
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          python scripts/run_meb.py --suite mini --fail-under 1.0 \
+            --compare-baseline --regression-threshold 0.05
+      - name: Validate MEB report contract
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python scripts/run_meb.py --check-only
       - run: python -m pip_audit -r backend/requirements.txt -r backend/requirements-dev.txt
 
   frontend:

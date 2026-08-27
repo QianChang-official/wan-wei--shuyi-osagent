@@ -140,6 +140,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ status: string; name: string; version: string }>('/health'),
+  memoryosBenchReport: () => req<Record<string, any>>('/memoryos/bench/report'),
   arenaMetrics: () => req<Record<string, any>>('/arena/metrics'),
   listCapsules: (limit = 50) =>
     req<{ items: any[] }>(`/memory/v2/capsules?limit=${limit}`),

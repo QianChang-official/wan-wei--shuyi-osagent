@@ -8,8 +8,12 @@ import GfTag from '@/components/gf/GfTag.vue'
 import GfEmpty from '@/components/gf/GfEmpty.vue'
 
 const metrics = ref<Record<string,any> | null>(null)
+const reportKind = ref<'meb' | 'legacy' | null>(null)
 const loading = ref(true)
 const { modules, statusCounts } = usePlatformModules()
+
+const mebHealth = computed(() => metrics.value?.health || null)
+const mebScores = computed(() => metrics.value?.scores || {})
 
 const META: Record<string, { cn: string; danger?: boolean; warn?: boolean }> = {
   assertion_pass_rate:         { cn: '断言通过率' },
@@ -44,8 +48,31 @@ function fmt(v: any) {
   return String(v)
 }
 
+function fmtRate(v: any) {
+  if (v === null || v === undefined) return '—'
+  return typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : String(v)
+}
+
+function shortHash(v: any) {
+  if (!v) return '未提供'
+  const value = String(v)
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
+}
+
 onMounted(async () => {
-  try { metrics.value = await api.arenaMetrics() } catch { metrics.value = null }
+  try {
+    metrics.value = await api.memoryosBenchReport()
+    reportKind.value = 'meb'
+  } catch {
+    // Keep older installations usable while making the fallback explicit.
+    try {
+      metrics.value = await api.arenaMetrics()
+      reportKind.value = 'legacy'
+    } catch {
+      metrics.value = null
+      reportKind.value = null
+    }
+  }
   loading.value = false
 })
 </script>
@@ -114,7 +141,91 @@ onMounted(async () => {
     </div>
     <GfEmpty v-else-if="!metrics" text="无法加载指标 — 运行 ./scripts/run_eval.sh 后刷新" />
 
+    <template v-else-if="reportKind === 'meb'">
+      <!-- 当前 MEB 报告是首屏唯一的评测事实源。 -->
+      <div class="stat-band">
+        <GfStat label="MEB Cases" :value="metrics.summary?.total_cases ?? 0" tone="rouge" hint="当前套件案卷总数" />
+        <GfStat label="通过率" :value="fmtRate(metrics.summary?.pass_rate)" tone="bamboo" hint="公开/隐藏集分开计数" />
+        <GfStat label="评测口径" :value="metrics.competition_metrics?.official ? 'Official' : 'Internal'" tone="dai" hint="官方成绩需独立隐藏集" />
+      </div>
+
+      <section class="section">
+        <div class="sec-head">
+          <span class="sec-seal">评</span>
+          <h2>MemoryOS 评测证据</h2>
+          <div class="sec-line"></div>
+        </div>
+        <div class="metrics-grid meb-grid">
+          <div class="metric-card metric-card--hero">
+            <span class="mc-bloom" aria-hidden="true"></span>
+            <div class="mc-val">{{ fmtRate(mebScores.mheb_overall) }}</div>
+            <div class="mc-cn">MHEB 加权总分</div>
+            <div class="mc-en">scores.mheb_overall</div>
+          </div>
+          <div class="metric-card">
+            <span class="mc-bloom" aria-hidden="true"></span>
+            <div class="mc-val">{{ fmtRate(metrics.competition_metrics?.preference_extraction_accuracy) }}</div>
+            <div class="mc-cn">偏好用例通过率</div>
+            <div class="mc-en">case-pass rate · 非字段级 F1</div>
+          </div>
+          <div class="metric-card">
+            <span class="mc-bloom" aria-hidden="true"></span>
+            <div class="mc-val">{{ fmtRate(metrics.competition_metrics?.knowledge_recall) }}</div>
+            <div class="mc-cn">知识 Recall@5</div>
+            <div class="mc-en">带 relevant_refs 的检索步骤</div>
+          </div>
+          <div class="metric-card">
+            <span class="mc-bloom" aria-hidden="true"></span>
+            <div class="mc-val">{{ fmtRate(metrics.competition_metrics?.conflict_correctness) }}</div>
+            <div class="mc-cn">冲突用例通过率</div>
+            <div class="mc-en">case-pass rate · 生命周期断言</div>
+          </div>
+          <div class="metric-card">
+            <span class="mc-bloom" aria-hidden="true"></span>
+            <div class="mc-val">{{ metrics.competition_metrics?.retrieval_latency_p95_ms ?? '—' }}<small v-if="metrics.competition_metrics?.retrieval_latency_p95_ms !== null"> ms</small></div>
+            <div class="mc-cn">检索延迟 P95</div>
+            <div class="mc-en">in-process retrieval trace</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section evidence-strip">
+        <div class="evidence-cell"><span>Suite</span><b>{{ metrics.suite }}</b></div>
+        <div class="evidence-cell"><span>Public / Hidden</span><b>{{ metrics.summary?.public_cases }} / {{ metrics.summary?.hidden_cases }}</b></div>
+        <div class="evidence-cell"><span>Run</span><b>{{ metrics.run_id }}</b></div>
+        <div class="evidence-cell"><span>Source</span><code>{{ shortHash(metrics.evaluation?.source_tree_sha256) }}</code></div>
+      </section>
+
+      <section v-if="mebHealth" class="section health-panel" :class="{ 'health-panel--warning': mebHealth.issues?.length }">
+        <div class="sec-head">
+          <span class="sec-seal">健</span>
+          <h2>运行健康度 · MHS {{ mebHealth.mhs }}</h2>
+          <GfTag :tone="mebHealth.issues?.length ? 'gold' : 'bamboo'">{{ mebHealth.issues?.length ? '有告警' : mebHealth.level }}</GfTag>
+          <div class="sec-line"></div>
+        </div>
+        <p v-if="mebHealth.issues?.length" class="health-warning">{{ mebHealth.issues.join(' · ') }}</p>
+        <p v-else class="health-ok">当前报告未发现健康度告警</p>
+      </section>
+
+      <section class="section">
+        <div class="sec-head">
+          <span class="sec-seal">流</span>
+          <h2>演示路线</h2>
+          <div class="sec-line"></div>
+        </div>
+        <div class="flow">
+          <div v-for="(f, i) in FLOW" :key="f.icon" class="flow-step">
+            <div class="flow-icon">{{ f.icon }}</div>
+            <b>{{ f.name }}</b>
+            <em>{{ f.desc }}</em>
+            <div v-if="i < FLOW.length - 1" class="flow-arr">→</div>
+          </div>
+        </div>
+      </section>
+    </template>
+
     <template v-else>
+      <div class="legacy-note">当前后端未提供 MEB 报告，以下为兼容旧版 MemoryArena 的诊断数据。</div>
       <!-- Arena KV 统计带 -->
       <div class="stat-band">
         <GfStat label="MemoryArena Cases" :value="metrics.total_cases" tone="rouge" hint="评测案卷总数" />
@@ -126,7 +237,7 @@ onMounted(async () => {
       <section class="section">
         <div class="sec-head">
           <span class="sec-seal">评</span>
-          <h2>Arena 评测指标</h2>
+          <h2>Arena 评测指标（Legacy）</h2>
           <div class="sec-line"></div>
         </div>
         <div class="metrics-grid">
@@ -328,6 +439,27 @@ onMounted(async () => {
 .metric-card.danger .mc-val { color: var(--cinnabar); }
 .mc-cn { font-size: 12.5px; color: var(--ink); letter-spacing: 1px; }
 .mc-en { font-size: 10px; color: var(--ink-muted); font-family: var(--font-mono); margin-top: 4px; word-break: break-all; }
+.meb-grid { grid-template-columns: repeat(5, 1fr); }
+.metric-card--hero { border-color: color-mix(in srgb, var(--cinnabar) 42%, var(--line)); }
+.mc-val small { font-size: 11px; font-family: var(--font-mono); color: var(--ink-muted); }
+.evidence-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.evidence-cell { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; background: var(--card-solid); min-width: 0; }
+.evidence-cell span { color: var(--ink-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.evidence-cell b, .evidence-cell code { color: var(--ink); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-cell code { font-family: var(--font-mono); }
+.health-panel { margin-bottom: 28px; }
+.health-panel--warning { border-left: 3px solid var(--gold); padding-left: 14px; }
+.health-warning, .health-ok { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+.health-warning { color: var(--gold-deep, var(--gold)); }
+.legacy-note { margin: 0 0 16px; padding: 10px 14px; border: 1px dashed var(--gold-line); color: var(--ink-muted); font-size: 11px; }
 
 /* ══ 五案卷宗 ══ */
 .case-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
@@ -407,10 +539,13 @@ onMounted(async () => {
 @media (max-width: 1100px) { .case-grid { grid-template-columns: repeat(3,1fr); } }
 @media (max-width: 900px) {
   .metrics-grid { grid-template-columns: repeat(2,1fr); }
+  .meb-grid { grid-template-columns: repeat(2,1fr); }
+  .evidence-strip { grid-template-columns: repeat(2,1fr); }
   .stat-band { grid-template-columns: 1fr; }
   .moon-hero { flex-direction: column; text-align: center; }
 }
 @media (max-width: 600px) {
+  .meb-grid, .evidence-strip { grid-template-columns: 1fr; }
   .case-grid { grid-template-columns: 1fr; }
   .flow { flex-wrap: wrap; }
   .flow-step { min-width: 50%; }

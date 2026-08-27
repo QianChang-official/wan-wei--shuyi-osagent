@@ -84,6 +84,8 @@ Compose 默认以生产模式运行，要求通过 secret 文件提供 API key�
 | 本机 SQLite FTS5 检索 | capsule_search_zh p95 为 0.8072 ms | 100 次、50 个 seed capsules、单机单进程、排除模型生成延迟 |
 | 麒麟原生 SDK（V11 VM） | 30 次 loopback HTTP 搜索 p50 195.320 ms、p95 246.473 ms | Kylin V11 2603 x86_64 QEMU/WHPX VM 快照证据；不覆盖物理目标硬件、其他架构与长期稳定性 |
 | MemoryArena-Lite | 5 cases、16 assertions 全部通过，unsafe_autonomy_rate=0.0 | misleading_memory_rate 与 production_task_success_rate 仍为 pending |
+| Mini-MEB 记忆体验基准 | 14/14 用例通过，MHEB 加权 1.0 | **本仓自建公开用例子集**；`official=false`、`hidden_cases=0`；报告含 source revision、源树/用例清单 SHA-256 与运行环境 |
+| Full-MEB 记忆体验基准 | 20/20 公开用例通过，MHEB 加权 1.0 | **本仓自建公开全集**；`official=false`、`hidden_cases=0`；不等同于官方公开/隐藏集成绩 |
 
 完整证据与边界见[文档中心](文档中心_DOCUMENTATION_HUB.md)。
 
@@ -94,6 +96,62 @@ Compose 默认以生产模式运行，要求通过 secret 文件提供 API key�
 3. **创建智能体并选档位**：进入「智能体」视图新建智能体，选择思考深度（low / medium / high / xhigh / max / ultracode）与工作档位（人工审查 / 沙盒工作 / 整台设备）。「人工审查」档位下关键步骤会挂起，须人工放行后才继续。
 4. **说「记住」生成记忆指令**：在对话中说「记住……」，系统会把它追加为一条记忆指令（上限 200 行，超限时淘汰最旧），写入前经 Policy Gate 校验敏感内容；可在「记忆中枢」查看与编辑。「梦境归档」把近期会话整理为时间线，alpha 单节点为手动触发（`/dreams/archive-now`），无启动自动补跑。
 5. **手机局域网控制**：桌面端一键切换后端监听 `127.0.0.1 ↔ 0.0.0.0`，自动生成手机访问地址。alpha 期手机伴侣页面主要用于状态展示与 token 配对校验；受 API Key 中间件保护，手机浏览器暂无法直接执行写操作（需后续 LAN token 换受限会话方案，或在本机桌面端浏览器中使用控制台）。
+
+## 记忆治理层（MemoryOS）
+
+在记忆底座之上补一层治理：记忆不只是「存得下、搜得到」，还要能回答**它凭什么在这里、
+什么时候该走、值不值得留**。设计规范见 `AI优化/MemoryOS-*.md`，实现位于
+`backend/app/memoryos/`（约 3.3k 行，199 个测试函数、参数化展开后 246 项）。
+
+| 能力 | 说明 | 端点 |
+| --- | --- | --- |
+| 生命周期状态机 | 10 态合法转移裁决，非法转移 422 拒绝而非静默放行；`forgotten`/`deleted` 不可回到任何可检索状态（已遗忘的记忆不会复活） | `/memory/lifecycle/*` |
+| 不可变账本 | 每次写入/更新/召回/删除留一条账目，含 actor、内容 SHA-256 前后哈希、risk_class；**append-only 由 SQLite 触发器强制**，UPDATE/DELETE 直接 ABORT | `/memory/ledger/{id}` |
+| 删除完整性验证 | 主表 / FTS / 图边 / 向量引用 / legacy 五处逐项取证，回答「真的删干净了吗」 | `/memory/governance/verify-deletion/{id}` |
+| Provenance Card | 单条记忆的来源、置信、有效期、版本链；写入 API 可显式提交 `valid_from`、`valid_until`、`episode_id`、`source_ids`、`evidence_ids` | `/memory/governance/provenance/{id}` |
+| 审计证据导出 | 按 owner/soul 作用域导出脱敏 Markdown/JSON，包含 Provenance Card、账本和完整性 SHA-256 | `/memory/governance/export` |
+| MHG 事故分级 | 1–5 级记忆危害分级；未解决的 MHG≥3 置起**发布冻结**（与 `/health/ready` 分开，治理冻结不等于实例不可用） | `/memory/governance/*` |
+| 经济账本 | 逐条记忆的成本 / 收益 / ROI，负 ROI 记忆按 应归档 / 应删除 / 受保护 三分类 | `/memory/accounting/*`、`/memory/health/decay` |
+| 健康度 MHS | 过期率、冲突率、噪声率、删除残留、投毒事故聚合成单一分数 + 7 天趋势曲线 | `/memory/health`、`/memory/health/trend` |
+| MEB 评测 | 5 类用例 × 4 维加权（ux .4 / safety .25 / product .25 / academic .1），并产出 `competition_metrics`（偏好准确率、知识 Recall@5、冲突正确率、检索 p95） | `/memoryos/bench/report` |
+
+跑评测：
+
+    python scripts/run_meb.py --suite mini      # 每 PR 门禁：14 用例
+    python scripts/run_meb.py --suite full      # 每日：公开集 20 用例
+    python scripts/run_meb.py --suite redteam   # 每周：安全维度 8 用例
+
+MEB suite contract is fixed in `backend/app/memoryos/harness.py`: `mini` is the
+14-case public subset tagged `mini`, `full` is the 20-case public corpus, and
+`redteam` is selected by the safety dimension. A run fails loudly if the public
+case manifest drifts from these counts. Every current report includes an
+`evaluation` block with the case manifest hash, source-tree hash, Python/
+platform/SQLite/architecture, and the source revision. Unless
+`WANWEI_SOURCE_REVISION` is explicitly set, `source_revision` is
+`working-tree` and `source_revision_pinned` is `false`; the result must not be
+presented as a pinned release measurement.
+
+评测默认在临时库里跑并在结束后清理，**不继承** shell 里的 `WANWEI_MEMORY_DB`——
+评测会写入、遗忘、硬删记忆，误指向真实库就是数据事故；要针对特定库跑须显式传
+`--database`。
+
+报告中的 `competition_metrics` 是可复现的工程测量卡：每个值带样本数、定义和局限，
+`official=false` 且目标阈值默认留空，直到把当年官方赛题通知/隐藏集放入提交证据包；
+它不能替代官方评分。
+
+### 诚实边界（MemoryOS）
+
+- **成本金额是估算不是实测**：token 数按「字符数 × 0.3」粗估（无 tokenizer 依赖），
+  账本里的绝对金额只有相对比较意义，API 响应里带 `honesty_note` 明示。
+- **precision@5 无实跑报告时为 `null`**，MHS 计算跳过该维度并在 `unmeasured` 里列出，
+  不用占位值把仪表盘填满。参考实现里硬编码 `0.9` 的做法未被采纳。
+- **MEB 当前只有公开集**，`reports/meb_score_report.json` 的 `hidden_cases` 为 0。
+  隐藏集需要仓库外的用例源，本仓库只提供 `WANWEI_MEB_HIDDEN_DIR` 加载机制，
+  规范里的「每月 Benchmark Sync」**未实现**。
+- pass_rate 1.0 是**本仓自建用例集**上的结果，不是 LongMemEval / BEAM 等公开赛题成绩，
+  两者不可比。
+- 健康度趋势需先采样才有数据（`POST /memory/health/snapshot`，或每日 MEB 自动采一条）；
+  没采过样时曲线如实返回空序列，不用当前即时值伪造历史。
 
 ## 许可证
 
@@ -121,8 +179,12 @@ Compose 默认以生产模式运行，要求通过 secret 文件提供 API key�
 - MCP stdio 真实进程默认关闭，必须同时满足 device 授权和部署白名单；将 `python`、`node`、PowerShell、`npx`、`uvx` 等解释器或包启动器加入白名单，等同向该服务账号授予任意代码执行能力，生产环境应只允许受控的专用 MCP 包装器路径。子进程不会继承 `WANWEI_*` 服务秘密，但这不降低白名单本身的高信任级别。
 - 梦境归档仅支持手动触发，无每夜调度或启动时补跑。
 - 原生 Kylin 检索在 SDK 不可用时回退 FTS5；OCR、物理目标硬件和其他目标架构仍需独立验收。
-- 正式偏好提取准确率、知识检索召回率和冲突处理正确率尚未形成赛题级实测报告。
+- 正式偏好提取准确率、知识检索召回率和冲突处理正确率仍未形成赛题级实测报告；当前
+  `competition_metrics` 只反映自建公开 MEB 用例（`preference_extraction` /
+  `knowledge_recall` / `conflict_update`）的可复现结果，不能替代官方公开/隐藏集成绩。
+- MHG 事故端点只**登记**应做的响应动作（告警 / 发布冻结 / 回滚 / 红队复盘），
+  不代替人执行回滚与复盘——那些是流程动作，由 CI 与运维按返回的 `actions` 列表落实。
 
 ## 文档中心
 
-[文档中心](文档中心_DOCUMENTATION_HUB.md)收录历史整合文档，并按项目与版本、架构与运行时、记忆与 Schema、治理与安全、API 与工作流、评测与合规、麒麟适配、部署与运维、研究资料和历史备份分类。现行万枢平台架构详见 [docs/万枢平台-架构设计.md](docs/万枢平台-架构设计.md)，代码审查与安全红线见 [docs/代码审查规范与安全编码标准.md](docs/代码审查规范与安全编码标准.md)。
+[文档中心](文档中心_DOCUMENTATION_HUB.md)收录历史整合文档，并按项目与版本、架构与运行时、记忆与 Schema、治理与安全、API 与工作流、评测与合规、麒麟适配、部署与运维、研究资料和历史备份分类。现行万枢平台架构详见 [docs/万枢平台-架构设计.md](docs/万枢平台-架构设计.md)，记忆治理层实现详见 [docs/MemoryOS-记忆治理层.md](docs/MemoryOS-记忆治理层.md)，代码审查与安全红线见 [docs/代码审查规范与安全编码标准.md](docs/代码审查规范与安全编码标准.md)。

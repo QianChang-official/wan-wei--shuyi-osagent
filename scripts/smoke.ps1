@@ -2,11 +2,14 @@
 [CmdletBinding()]
 param(
     [string]$BaseUrl = 'http://127.0.0.1:8010',
-    [string]$ApiKey = 'wanwei-dev-key',
+    [string]$ApiKey = $env:WANWEI_API_KEY,
     [double]$Timeout = 10
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+    throw 'API key is required. Pass -ApiKey or set WANWEI_API_KEY.'
+}
 $root = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $root 'backend\.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {

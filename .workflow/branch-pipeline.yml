@@ -20,7 +20,10 @@ stages:
         commands:
           - python3 -m pip install --upgrade pip
           - pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-          - pip3 install -r backend/requirements.txt
+          # The security tests import pytest, ruff and audit helpers from the
+          # dev contract; installing runtime-only requirements made this
+          # pipeline fail before it could run any assertion.
+          - pip3 install -r backend/requirements-dev.txt
           - PYTHONPATH=backend python3 -m compileall -q backend/app
           - PYTHONPATH=. python3 -m pytest -q backend/app/model_gateway/test_ssrf.py backend/app/tests/test_security_baseline.py
       - step: publish@general_artifacts

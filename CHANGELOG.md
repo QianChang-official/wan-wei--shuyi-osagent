@@ -22,6 +22,26 @@
 
 ## Unreleased
 
+### 2026-08-24 - MemoryOS 记忆治理层
+
+设计规范见 `AI优化/MemoryOS-*.md`（Lifecycle 状态机 / Governance 账本 / Accounting
+经济账本 / Health 健康度 / Benchmark Harness 五份草案）。实现见
+[docs/MemoryOS-记忆治理层.md](docs/MemoryOS-记忆治理层.md)。
+
+- 新增 `backend/app/memoryos/` 记忆治理包（约 3.3k 行，199 个测试函数、参数化展开后 246 项），与 `memory_runtime/` 平级协作而非取代：
+  - `lifecycle`：10 态生命周期状态机。此前 `state.lifecycle` 是各处直接赋值的自由字符串，`deleted → active`、`forgotten → reinforced` 这类「已删除记忆被复活」的写入无人拦截；现由转移表裁决，非法转移经 `POST /memory/lifecycle/transition` 返回 422 而非静默放行。`forgotten`/`deleted` 不可回到任何可检索状态。
+  - `governance`：`memory_ledger` 不可变账本（actor、内容 SHA-256 前后哈希、独立 `risk_class` 列，**append-only 由 SQLite 触发器强制**，UPDATE/DELETE 直接 ABORT）、Provenance Card、五处删除完整性验证（主表 / FTS / 图边 / 向量引用 / legacy）、MHG 1–5 级事故分级与发布冻结。
+  - `accounting`：逐条记忆的成本-收益-ROI 账本。收益信号取自既有 `evolution.reflect_task` 的 `helpful_memories` / `misleading_memories`，不需要新的用户输入；检索侧记账挂在 `bump_usage_batch` 已有事务内并复用 60 秒时间窗门控，搜索路径**不新增写往返**。
+  - `health`：MHS 综合分 + Health / Decay / Self-Knowledge 三面板 + 7 天趋势曲线。
+  - `harness`：MEB/MHEB 评测 runner，5 类用例 × 4 维加权（ux .4 / safety .25 / product .25 / academic .1），产出前先过 `report_contract` 校验。
+- 修复功能断链：`capsule_store` 原先只在 `lifecycle == 'active'` 时写 FTS，而没有任何代码把 candidate/quarantined 转成 active 并补写索引——被人工确认过的记忆永远搜不到。`apply_transition` 现承担 FTS 同步（转入可检索态先 DELETE 再 INSERT 防重，转出 DELETE），「确认后的 candidate 可检索」与「quarantined 不可检索」两条验收标准至此才真正成立。
+- 修复 `run_suite` 中健康度快照采样引用未定义变量导致的静默失效：宽 `except` 曾把该 `NameError` 咽成一行 warning，评测照报「通过」而趋势曲线整轮无数据。现编码错误（NameError/TypeError/AttributeError）直接抛出，只有环境性故障降级为 warning，并补回归测试断言快照条数。
+- 新增四张表（均在主库，账本可与业务写入原子落库）：`memory_ledger`、`memory_accounts`、`memory_incidents`、`memory_health_snapshots`。
+- 新增 19 个 `/memory/*` 与 `/memoryos/*` 端点，默认受 `APIKeyMiddleware` 保护并按 owner/soul 作用域隔离，跨属主请求返回 404 不泄漏存在性。删除验证端点的授权来源是**账本而非主表**——硬删后主表已无行，用主表鉴权会让「验证一条已被彻底删除的记忆」永远 404，而那恰是最需要验证的情形。
+- 新增 `scripts/run_meb.py` 与 `.github/workflows/memory-bench.yml`：每 PR 跑 Mini-MEB 门禁，每日 full / 每周 redteam 并与已提交基线比较，pass_rate 相对下降 >5 个百分点即失败。评测默认在临时库中运行，不继承 `WANWEI_MEMORY_DB`。
+- 与规范的有意偏差（理由见实现文档）：冲突裁决败方默认转 `deprecated` 而非规范的 `deleted`（保留裁决现场证据）；`stale` 为「可检索但降权」，仅在高风险查询下排除；批量遗忘对非法转移跳过并列入 `rejected_transitions` 而非整批失败。
+- 诚实边界：成本金额基于「字符数 × 0.3」token 估算而非实测用量，响应带 `honesty_note` 明示；无实跑评测报告时 `precision@5` 输出 `null` 且 MHS 跳过该维度（未采纳参考实现硬编码 `0.9` 的做法）；被闸门拦下的投毒尝试记为 `poisoning_blocked` 且不扣健康分；MEB 当前仅有公开集（`hidden_cases=0`），规范的「每月 Benchmark Sync」未实现；pass_rate 1.0 是本仓自建用例集上的结果，与 LongMemEval / BEAM 等公开赛题不可比。发布冻结刻意不并入 `/health/ready`——治理冻结发布不等于实例不可用。
+
 ### 2026-08-04 - Issue #38 安全与韧性收尾
 
 - 修复自动化流程部分更新的并发丢字段问题，创建/更新/运行记录继续在持久化锁内完成，并补充确定性并发回归测试。

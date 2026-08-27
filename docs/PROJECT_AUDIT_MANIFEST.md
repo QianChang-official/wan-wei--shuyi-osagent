@@ -236,12 +236,12 @@ Gitee (.workflow/):
 
 | 交付项 | 状态 |
 |---|---|
-| 偏好提取准确率 85% | pending，harness 无此 scorer |
-| 知识检索召回率 85% | pending |
-| 冲突处理正确率 88% | pending |
-| 检索延迟 p95 ≤500ms | 本地 SQLite 约 0.8ms，麒麟目标机未实测 |
-| Kylin 原生 SDK | 未构建，始终走 FTS5 后备 |
-| 适配测试报告 | 仅 VM 启动 5 项 vm_verified |
+| 偏好提取准确率 85% | `competition_metrics` 已提供自建 MEB case pass rate；`official=false`，官方阈值待随赛题通知固化 |
+| 知识检索召回率 85% | `competition_metrics.knowledge_recall` 已提供带 `relevant_refs` 的 Recall@5；隐藏集仍待接入 |
+| 冲突处理正确率 88% | `competition_metrics.conflict_correctness` 已提供自建冲突用例结果；不等同官方成绩 |
+| 检索延迟 p95 ≤500ms | harness trace 已输出 p95；另有 Kylin V11 x86_64 VM 的 30 次 loopback 证据（p95 246.473ms），物理目标机仍待验收 |
+| Kylin 原生 SDK | 已有 SDK/FTS5 fallback 与 VM 证据；物理硬件、其他架构和长期稳定性仍待验收 |
+| 适配测试报告 | Windows 基线已通过；Kali VM 当前 SSH 不可达，需启动虚拟机后执行 Linux 冒烟；Kylin 验收不可由 Kali 替代 |
 | PPT / 演示视频 | 缺失 |
 
 ---
