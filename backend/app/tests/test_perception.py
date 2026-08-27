@@ -258,6 +258,8 @@ def test_intake_perception_idempotent_turn_id(isolated_db):
 
     r1 = intake.intake_perception(soul_id='test-soul-003', role='user', content='开心', used_capsule_ids=[], owner_id='test-owner')
     r2 = intake.intake_perception(soul_id='test-soul-003', role='user', content='开心', used_capsule_ids=[], owner_id='test-owner')
+    # 防御:两次调用都应成功返回(turn_id 唯一性靠 conversation_turns 计数验证)
+    assert r1 is not None and r2 is not None
 
     # 验证 conversation_turns 表里至少写了 2 条(如果 intake_perception 真的写表的话)
     try:
