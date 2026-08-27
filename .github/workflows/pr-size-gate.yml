@@ -1,0 +1,69 @@
+name: PR Size Gate
+
+# 防 AI 幻觉巨型 PR(如 #143/#144 各 +10万行/485文件)进入人工 review 前的第一道闸门。
+# 阈值来自 2026-08-27 事故复盘:该次 AI 幻觉 PR 单 PR 改动 484-485 个文件、+101K 行。
+# 设置 50 文件 / 5000 行 作为「需要拆分」的明确信号,而非绝对上限。
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  size-gate:
+    name: PR size within reviewable bounds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PR size
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MAX_FILES: 50
+          MAX_LINES: 5000
+        run: |
+          set -euo pipefail
+          STATS=$(gh pr view "$PR_NUMBER" --json changedFiles,additions,deletions)
+          FILES=$(echo "$STATS" | python -c "import json,sys;print(json.load(sys.stdin)['changedFiles'])")
+          ADD=$(echo "$STATS" | python -c "import json,sys;print(json.load(sys.stdin)['additions'])")
+          DEL=$(echo "$STATS" | python -c "import json,sys;print(json.load(sys.stdin)['deletions'])")
+          TOTAL=$((ADD + DEL))
+          echo "PR #${PR_NUMBER}: ${FILES} files, +${ADD}/-${DEL} (${TOTAL} total lines)"
+
+          FAIL=0
+          REASON=""
+          if [ "$FILES" -gt "$MAX_FILES" ]; then
+            FAIL=1
+            REASON="${REASON}changedFiles=${FILES} > ${MAX_FILES}; "
+          fi
+          if [ "$TOTAL" -gt "$MAX_LINES" ]; then
+            FAIL=1
+            REASON="${REASON}additions+deletions=${TOTAL} > ${MAX_LINES}; "
+          fi
+
+          if [ "$FAIL" = "1" ]; then
+            MSG=$(cat <<MSG_EOF
+          ## ⚠️ PR 体积超出可审查边界
+
+          本 PR 改动:**${FILES} 个文件,+${ADD}/-${DEL} 行**。
+
+          阈值:${MAX_FILES} 文件 / ${MAX_LINES} 行(参考 2026-08-27 事故复盘)。
+
+          **为什么有这个门禁**:单 PR 超过这个体量后,人工 review 与 AI review 都无法给出有意义的反馈,
+          「审过了」会变成一句空话。请按主题拆分为多个小 PR,每个 PR 解决一个独立问题。
+
+          触发原因:${REASON}
+
+          如确属必要(例如批量重命名、依赖升级),请由 maintainer 在 PR 评论中说明理由并手动豁免。
+          MSG_EOF
+          )
+            gh pr comment "$PR_NUMBER" --body "$MSG"
+            echo "::error::PR size gate failed: $REASON"
+            exit 1
+          fi
+
+          echo "✅ PR size within bounds"
