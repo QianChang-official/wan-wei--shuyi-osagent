@@ -1,0 +1,206 @@
+[
+  {
+    "case_id": "MEB-CONF-001",
+    "category": "conflict_update",
+    "weight_dimension": "product",
+    "title": "新旧事实矛盾必须显式裁决，裁决后只有赢家可召回",
+    "tags": ["mini", "conflict", "basic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "部署端口为 8000"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "部署端口为 8010"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "resolve_conflict",
+        "winner_ref": 1,
+        "loser_ref": 0,
+        "reason": "user_provided_latest_port"
+      },
+      {
+        "op": "search",
+        "query": "部署端口",
+        "expect": {
+          "must_contain": ["8010"],
+          "must_not_contain": ["8000"],
+          "must_retrieve_refs": [1],
+          "must_not_retrieve_refs": [0],
+          "relevant_refs": [1]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-CONF-002",
+    "category": "conflict_update",
+    "weight_dimension": "product",
+    "title": "标记冲突后不自动覆盖：两侧都还在，等人裁决",
+    "tags": ["mini", "conflict", "no_auto_overwrite"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "会议定在周二上午"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "会议定在周四下午"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "conflicted",
+        "reason": "meeting_time_disagreement",
+        "expect": {"to_state": "conflicted"}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 1,
+        "to_state": "conflicted",
+        "reason": "meeting_time_disagreement",
+        "expect": {"to_state": "conflicted"}
+      },
+      {
+        "op": "search",
+        "query": "会议",
+        "comment": "conflicted 仍可检索（低风险场景），但高风险任务下应被排除",
+        "expect": {"must_contain": ["会议"], "min_hits": 2}
+      },
+      {
+        "op": "search",
+        "query": "会议",
+        "high_risk": true,
+        "comment": "高风险决策不采纳未裁决的冲突记忆",
+        "expect": {"must_not_retrieve_refs": [0, 1], "max_hits": 0}
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-CONF-003",
+    "category": "conflict_update",
+    "weight_dimension": "academic",
+    "title": "裁决须维护版本链 supersedes / superseded_by",
+    "tags": ["mini", "conflict", "version_chain", "academic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "API 版本 v1 为当前版本"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "API 版本 v2 为当前版本"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "resolve_conflict",
+        "winner_ref": 1,
+        "loser_ref": 0,
+        "reason": "v2_released"
+      },
+      {
+        "op": "search",
+        "query": "API 版本",
+        "expect": {
+          "must_contain": ["v2"],
+          "must_not_contain": ["v1 为当前版本"],
+          "relevant_refs": [1]
+        }
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "reinforced",
+        "reason": "attempt_to_reinforce_superseded",
+        "comment": "已归档的败方不能被直接强化——deprecated 只能 restore 到 active",
+        "expect": {"illegal": true}
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-CONF-004",
+    "category": "conflict_update",
+    "weight_dimension": "product",
+    "title": "过期事实降权：stale 仍可召回但排在新鲜事实之后",
+    "tags": ["conflict", "stale", "decay"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "季度目标是提升检索召回率"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "stale",
+        "reason": "quarter_ended",
+        "expect": {"to_state": "stale"}
+      },
+      {
+        "op": "search",
+        "query": "季度目标",
+        "comment": "stale 是「低权重」而非「不可见」（规范 Lifecycle §1）",
+        "expect": {
+          "must_contain": ["季度目标"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "季度目标",
+        "high_risk": true,
+        "comment": "高风险任务不采纳过期事实",
+        "expect": {"must_not_retrieve_refs": [0], "max_hits": 0}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "active",
+        "reason": "refreshed_for_new_quarter",
+        "expect": {"to_state": "active"}
+      },
+      {
+        "op": "search",
+        "query": "季度目标",
+        "high_risk": true,
+        "comment": "刷新后重新参与高风险决策",
+        "expect": {"must_retrieve_refs": [0]}
+      }
+    ]
+  }
+]

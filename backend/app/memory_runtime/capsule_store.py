@@ -6,10 +6,22 @@ from typing import Any
 from ..db import get_conn, database_path, transaction
 from ..audit.service import record, record_in_transaction
 from ..utils.datetime_utils import utc_now_iso_compact
+from ..memoryos.lifecycle import (
+    HIGH_RISK_EXCLUDED_STATES,
+    INDEXABLE_POLICIES,
+    RETRIEVABLE_STATES,
+    retrievable_sql_list,
+)
 from .policy_gate import evaluate_policy
 
-RETRIEVABLE_POLICY = {"allow", "redact"}
-RETRIEVABLE_LIFECYCLE = {"active", "reinforced", "conflicted"}
+# 策略闸门与生命周期的可检索口径统一由 memoryos.lifecycle 提供，避免这里和
+# retrieval 各写一份 IN 列表而漂移。lifecycle 的纯词表段不 import
+# memory_runtime，因此这个模块级导入不构成循环依赖。
+RETRIEVABLE_POLICY = INDEXABLE_POLICIES
+RETRIEVABLE_LIFECYCLE = RETRIEVABLE_STATES
+
+#: SQL 片段：可检索状态的 IN 列表字面量（内容全为模块常量，拼接安全）。
+_RETRIEVABLE_SQL = retrievable_sql_list()
 
 # B2: 模块级 once 标记，按 db_path 缓存。避免每次 write_capsule 都跑完整
 # init_db（~30 条 DDL + 迁移扫描 + print）。测试切换 WANWEI_MEMORY_DB 时
@@ -34,6 +46,20 @@ def loads(text: str, default: Any = None) -> Any:
 
 def _content_text(content: dict[str, Any]) -> str:
     return dumps(content)
+
+
+def _bounded_provenance_ids(value: Any) -> list[str]:
+    """Normalize legacy provenance IDs before persisting untrusted metadata."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[str] = []
+    for item in value[:50]:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item and len(item) <= 128:
+            normalized.append(item)
+    return normalized
 
 
 def _lifecycle_for_policy(policy_result: str) -> str:
@@ -71,6 +97,12 @@ def write_capsule(
     affects_future_behavior: bool = False,
     source_trust: str = "normal",
     provenance: dict[str, Any] | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    episode_id: str | None = None,
+    source_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+    confidence: float | None = None,
     production_context: dict[str, Any] | None = None,
     alignment_metadata: dict[str, Any] | None = None,
     relation_edges: list[dict[str, Any]] | None = None,
@@ -98,6 +130,36 @@ def write_capsule(
         "verified": source_type in {"user_input", "eval", "file", "manual_config"},
         "verification_method": "manual" if source_type == "user_input" else "unknown",
     })
+    # Keep temporal/source metadata in one auditable card while accepting both
+    # the new explicit API fields and older callers that still send provenance.
+    resolved_valid_from = valid_from or provenance.get("valid_from") or created
+    resolved_valid_until = valid_until if valid_until is not None else provenance.get("valid_until")
+    resolved_episode_id = episode_id or provenance.get("episode_id")
+    if not isinstance(resolved_episode_id, str) or not resolved_episode_id.strip() or len(resolved_episode_id) > 128:
+        resolved_episode_id = None
+    resolved_source_ids = _bounded_provenance_ids(
+        source_ids if source_ids is not None else provenance.get("source_ids")
+    )
+    resolved_evidence_ids = _bounded_provenance_ids(
+        evidence_ids if evidence_ids is not None else provenance.get("evidence_ids")
+    )
+    resolved_confidence = confidence if confidence is not None else provenance.get("confidence")
+    if (
+        not isinstance(resolved_confidence, (int, float))
+        or isinstance(resolved_confidence, bool)
+        or not 0 <= float(resolved_confidence) <= 1
+    ):
+        resolved_confidence = governance.get("confidence")
+    provenance.update({
+        "valid_from": resolved_valid_from,
+        "source_ids": resolved_source_ids,
+        "evidence_ids": resolved_evidence_ids,
+        "confidence": resolved_confidence,
+    })
+    if resolved_valid_until is not None:
+        provenance["valid_until"] = resolved_valid_until
+    if resolved_episode_id:
+        provenance["episode_id"] = resolved_episode_id
     resolved_soul_id = soul_id or provenance.get("soul_id")
     resolved_owner_id = owner_id
     if resolved_soul_id and resolved_owner_id is None:
@@ -125,6 +187,8 @@ def write_capsule(
         "last_accessed_at": None,
         "supersedes": [],
         "superseded_by": [],
+        "valid_from": resolved_valid_from,
+        "valid_until": resolved_valid_until,
     }
     alignment_metadata = alignment_metadata or {
         "human_preference_links": [], "policy_links": [], "constraint_links": [],
@@ -134,6 +198,13 @@ def write_capsule(
     }
     relation_edges = relation_edges or []
     index_refs = {"fts_ref": capsule_id, "vector_ref": None, "graph_node_id": capsule_id}
+    source_events = [{
+        "episode_id": resolved_episode_id,
+        "source_type": source_type,
+        "source_ids": resolved_source_ids,
+        "evidence_ids": resolved_evidence_ids,
+        "captured_at": created,
+    }]
     native_index = {"backend": "fts_fallback", "indexed": False, "reason": "policy_not_indexable"}
 
     if governance["policy_result"] == "reject":
@@ -145,6 +216,20 @@ def write_capsule(
                 "memory_class": memory_class,
             },
         )
+        # 被拒的写入也要留账：治理面板要能回答「有多少次写入被闸门挡下」，
+        # 而被拒记忆没有主表行，账本是唯一留痕处。不记内容哈希（内容未落库）。
+        from ..memoryos.governance import append_ledger
+
+        append_ledger(
+            op_type="write_rejected",
+            capsule_id=capsule_id,
+            actor=provenance.get("writer_identity") or "runtime",
+            after_state="rejected",
+            reason=f"policy_reject:{','.join(governance.get('risk_tags') or [])}",
+            risk_class="high",
+            owner_id=resolved_owner_id,
+            soul_id=str(resolved_soul_id) if resolved_soul_id else None,
+        )
         return {
             "capsule_id": capsule_id,
             "memory_class": memory_class,
@@ -153,6 +238,9 @@ def write_capsule(
             "audit_id": audit_id,
             "native_index": native_index,
         }
+
+    from ..memoryos.accounting import estimate_tokens, record_write_in_transaction
+    from ..memoryos.governance import append_ledger_in_transaction
 
     with transaction() as conn:
         conn.execute(
@@ -165,7 +253,7 @@ def write_capsule(
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                capsule_id, memory_class, dumps(content), dumps([]), dumps(provenance), dumps(governance),
+                capsule_id, memory_class, dumps(content), dumps(source_events), dumps(provenance), dumps(governance),
                 dumps(state), dumps(production_context), dumps(alignment_metadata), dumps({}),
                 dumps(relation_edges), dumps(index_refs), created, created,
                 'working', 0.0, 0,
@@ -173,6 +261,26 @@ def write_capsule(
         )
         if governance["policy_result"] in RETRIEVABLE_POLICY and state["lifecycle"] == "active":
             conn.execute("INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)", (capsule_id, text))
+        # 账本与经济账都在同一事务内落库：任一失败整体回滚，保证
+        # 「记忆存在 ⇔ 有账目 ⇔ 有账户」三者不脱节。
+        append_ledger_in_transaction(
+            conn,
+            op_type="write",
+            capsule_id=capsule_id,
+            actor=provenance.get("writer_identity") or "runtime",
+            after_content=text,
+            after_state=state["lifecycle"],
+            reason=f"{source_type}:{write_intent}",
+            risk_class=risk_class,
+            owner_id=resolved_owner_id,
+            soul_id=str(resolved_soul_id) if resolved_soul_id else None,
+        )
+        record_write_in_transaction(
+            conn,
+            capsule_id,
+            content_bytes=len(text.encode("utf-8")),
+            extraction_tokens=estimate_tokens(text),
+        )
     audit_id = record("capsule_write", {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class})
     # The vector copy is optional and is never created for rejected,
     # quarantined, or confirmation-pending memories.
@@ -335,12 +443,25 @@ def update_capsule(
     relation_edges: list[dict[str, Any]] | None = None,
     owner_id: str | None = None,
     soul_id: str | None = None,
+    actor: str = "runtime",
+    reason: str = "capsule_update",
 ) -> dict[str, Any]:
+    """通用状态/关系边更新。
+
+    注意：本函数**不做生命周期转移校验**——它是底层 setter，`state` 由调用方
+    整体替换。需要改 ``state.lifecycle`` 的调用方应走
+    ``memoryos.lifecycle.apply_transition``，那里才有合法转移裁决与 FTS 同步。
+    这里只负责把 before/after 内容哈希记进账本，让「谁改了什么」可追。
+    """
+    from ..memoryos.governance import append_ledger_in_transaction
+
     cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise KeyError(capsule_id)
     new_state = state or cap["state"]
     new_edges = relation_edges if relation_edges is not None else cap["relation_edges"]
+    before_snapshot = dumps({"state": cap["state"], "relation_edges": cap["relation_edges"]})
+    after_snapshot = dumps({"state": new_state, "relation_edges": new_edges})
     scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
     scope_clause = f" AND {scope_sql}" if scope_sql else ""
     with transaction() as conn:
@@ -349,24 +470,54 @@ def update_capsule(
             f"WHERE capsule_id=?{scope_clause}",
             [dumps(new_state), dumps(new_edges), now(), capsule_id, *scope_params],
         )
+        append_ledger_in_transaction(
+            conn,
+            op_type="update",
+            capsule_id=capsule_id,
+            actor=actor,
+            before_content=before_snapshot,
+            after_content=after_snapshot,
+            before_state=(cap["state"] or {}).get("lifecycle"),
+            after_state=(new_state or {}).get("lifecycle"),
+            reason=reason,
+            owner_id=owner_id or (cap.get("provenance") or {}).get("owner_id"),
+            soul_id=soul_id or (cap.get("provenance") or {}).get("soul_id"),
+        )
     record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
     return get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
 
 
-def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
+def bump_usage_batch(
+    updates: list[tuple[str, dict[str, Any]]],
+    *,
+    injected_tokens: dict[str, int] | None = None,
+) -> None:
     """Persist usage-count/state updates for many capsules in one round-trip.
 
     ``updates`` is a list of (capsule_id, new_state) pairs. Uses a single
     ``executemany`` plus one aggregated audit record, replacing the per-capsule
     get+update+audit+get chain that caused N+1 query amplification in the
     retrieval hot path.
+
+    经济账与检索账本挂在**同一个事务**里，且只对已经通过
+    ``retrieval._usage_bump_due`` 60 秒时间窗门控的胶囊执行——也就是说搜索路径
+    **不新增任何一次写往返**，记账完全搭既有 usage 落库的车。改动这里时请保持
+    该性质：不要在 search 里单独开事务记账，那会把只读搜索变成每次都写库。
+
+    先记 ``neutral``：检索当下还不知道这条记忆有没有帮上忙，等
+    ``evolution.reflect_task`` 回来再用 ``accounting.settle_recall_outcome``
+    回填成 useful/harmful。
     """
     if not updates:
         return
+    from ..memoryos.accounting import record_recalls_in_transaction
+    from ..memoryos.governance import append_ledger_batch_in_transaction
+
     ts = now()
+    tokens = injected_tokens or {}
     with transaction() as conn:
         conn.executemany(
-            """
+            f"""
             UPDATE memory_capsules_v2
             SET state=json_set(
                     state,
@@ -375,10 +526,27 @@ def bump_usage_batch(updates: list[tuple[str, dict[str, Any]]]) -> None:
                 ),
                 updated_at=?
             WHERE capsule_id=?
-              AND json_extract(state,'$.lifecycle') IN ('active','reinforced','conflicted')
+              AND json_extract(state,'$.lifecycle') IN ({_RETRIEVABLE_SQL})
               AND json_extract(governance,'$.policy_result') IN ('allow','redact')
             """,
             [(state.get("last_accessed_at") or ts, ts, cid) for cid, state in updates],
+        )
+        record_recalls_in_transaction(
+            conn,
+            [(cid, "neutral", tokens.get(cid, 0)) for cid, _ in updates],
+        )
+        append_ledger_batch_in_transaction(
+            conn,
+            [
+                {
+                    "op_type": "retrieve",
+                    "capsule_id": cid,
+                    "actor": "runtime",
+                    "after_state": (state or {}).get("lifecycle"),
+                    "reason": "retrieval_hit",
+                }
+                for cid, state in updates
+            ],
         )
     record("capsule_usage_batch", {"capsule_ids": [cid for cid, _ in updates], "count": len(updates)})
 
@@ -390,18 +558,31 @@ def forget_capsules_in_transaction(
     mode: str = "soft_delete",
     owner_id: str | None = None,
     soul_id: str | None = None,
+    actor: str = "runtime",
 ) -> dict[str, Any]:
-    """Apply local forget state using the caller's transaction."""
+    """Apply local forget state using the caller's transaction.
+
+    生命周期转移经 ``memoryos.lifecycle`` 校验。**批量语义例外**：本函数的既有
+    契约是「跳过查不到的 id」而不是整批失败，因此非法转移（例如对已 ``deleted``
+    的胶囊再次硬删）同样按跳过处理，并列进返回值的 ``rejected_transitions``，
+    而不是抛异常中断整批。单条操作要硬拒非法转移时走
+    ``lifecycle.apply_transition``（``POST /memory/lifecycle/transition``），
+    那里会抛 ``IllegalTransitionError``。
+    """
+    from ..memoryos.governance import append_ledger_batch_in_transaction
+    from ..memoryos.lifecycle import LifecycleState, can_transition
     from .vector_index import mark_vectors_delete_pending_in_transaction
 
     deleted: list[str] = []
+    rejected: list[dict[str, str]] = []
+    ledger_entries: list[dict[str, Any]] = []
     unique_ids = list(dict.fromkeys(capsule_ids))
     if unique_ids:
         placeholders = ",".join("?" for _ in unique_ids)
         scope_sql, scope_params = _scope_predicate(owner_id=owner_id, soul_id=soul_id)
         scope_clause = f" AND {scope_sql}" if scope_sql else ""
         rows = conn.execute(
-            f"SELECT capsule_id,state FROM memory_capsules_v2 "
+            f"SELECT capsule_id,state,content,provenance FROM memory_capsules_v2 "
             f"WHERE capsule_id IN ({placeholders}){scope_clause}",
             [*unique_ids, *scope_params],
         ).fetchall()
@@ -409,12 +590,24 @@ def forget_capsules_in_transaction(
         rows = []
     by_id = {row["capsule_id"]: row for row in rows}
     timestamp = now()
+    target = (
+        LifecycleState.DELETED.value if mode == "hard_delete" else LifecycleState.FORGOTTEN.value
+    )
     for capsule_id in unique_ids:
         row = by_id.get(capsule_id)
         if not row:
             continue
         state = loads(row["state"], {})
-        state["lifecycle"] = "forgotten" if mode != "hard_delete" else "deleted"
+        from_state = str(state.get("lifecycle") or LifecycleState.ACTIVE.value)
+        if from_state != target and not can_transition(from_state, target):
+            rejected.append({
+                "capsule_id": capsule_id,
+                "from_state": from_state,
+                "to_state": target,
+                "reason": "illegal_lifecycle_transition",
+            })
+            continue
+        state["lifecycle"] = target
         state["forgotten_at"] = timestamp
         if mode == "hard_delete":
             conn.execute("DELETE FROM memory_capsules_v2 WHERE capsule_id=?", (capsule_id,))
@@ -424,11 +617,26 @@ def forget_capsules_in_transaction(
                 (dumps(state), timestamp, capsule_id),
             )
         conn.execute("DELETE FROM memory_capsules_v2_fts WHERE capsule_id=?", (capsule_id,))
+        provenance = loads(row["provenance"], {}) or {}
+        ledger_entries.append({
+            "op_type": "delete",
+            "capsule_id": capsule_id,
+            "actor": actor,
+            "before_content": row["content"],
+            "before_state": from_state,
+            "after_state": target,
+            "reason": f"forget:{mode}",
+            "risk_class": "medium",
+            "owner_id": owner_id or provenance.get("owner_id"),
+            "soul_id": soul_id or provenance.get("soul_id"),
+        })
         deleted.append(capsule_id)
+    append_ledger_batch_in_transaction(conn, ledger_entries)
     native_vector = mark_vectors_delete_pending_in_transaction(conn, deleted)
     return {
         "status": "forgotten",
         "deleted_capsule_ids": deleted,
+        "rejected_transitions": rejected,
         "native_vector": native_vector,
     }
 
@@ -474,12 +682,36 @@ def forget_capsules(
     return {
         "status": "forgotten",
         "deleted_capsule_ids": result["deleted_capsule_ids"],
+        "rejected_transitions": result.get("rejected_transitions", []),
         "audit_id": audit_id,
         "native_vector": native_vector,
+        # 删除完整性证据（规范 §2.4）：删完立刻验，把「主表/FTS/图边/向量」
+        # 四处的残留情况随响应一起返回，而不是让调用方自己去猜删干净没有。
+        "deletion_verification": _verify_deleted(result["deleted_capsule_ids"]),
     }
 
 
+def _verify_deleted(capsule_ids: list[str]) -> dict[str, Any]:
+    """删除后校验，失败不影响删除本身已提交的事实（只降级为无证据）。"""
+    if not capsule_ids:
+        return {"checked": 0, "complete": 0, "incomplete": [], "all_complete": True}
+    try:
+        from ..memoryos.governance import verify_deletions
+
+        return verify_deletions(capsule_ids)
+    except Exception as exc:  # pragma: no cover - 验证失败不该反噬删除结果
+        import logging
+
+        logging.getLogger(__name__).warning("deletion verification failed: %s", exc)
+        return {"error": "verification_unavailable", "reason": type(exc).__name__}
+
+
 def allowed_for_context(cap: dict[str, Any], *, high_risk: bool = False) -> bool:
+    """该记忆能否进入本次上下文注入。
+
+    高风险任务额外排除 ``conflicted``（有矛盾未裁决）与 ``stale``（已过期）——
+    这两类内容用于低风险问答尚可，用于高风险决策则应先让人确认。
+    """
     gov = cap["governance"]
     state = cap["state"]
     if gov.get("policy_result") not in RETRIEVABLE_POLICY:
@@ -488,6 +720,6 @@ def allowed_for_context(cap: dict[str, Any], *, high_risk: bool = False) -> bool
         return False
     if state.get("lifecycle") not in RETRIEVABLE_LIFECYCLE:
         return False
-    if high_risk and state.get("lifecycle") == "conflicted":
+    if high_risk and state.get("lifecycle") in HIGH_RISK_EXCLUDED_STATES:
         return False
     return True

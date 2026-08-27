@@ -2,6 +2,12 @@ import uuid
 from typing import Any
 from ..db import get_conn, transaction
 from ..audit.service import record
+from ..memoryos.lifecycle import (
+    REINFORCEABLE_STATES,
+    IllegalTransitionError,
+    LifecycleState,
+    apply_transition,
+)
 from .capsule_store import get_capsule, update_capsule, write_capsule, dumps, now
 
 
@@ -12,19 +18,44 @@ def reinforce(
     owner_id: str | None = None,
     soul_id: str | None = None,
 ) -> dict[str, Any]:
+    """强化一条记忆：提高 importance / retention，并按状态机推进生命周期。
+
+    可强化的状态见 ``memoryos.lifecycle.REINFORCEABLE_STATES``：
+    ``active`` 会被推进到 ``reinforced``；``reinforced`` 与 ``stale`` 原地累加
+    权重（``stale`` 被重新用到本身就是它还有价值的信号，但要刷新回 active 得走
+    显式 ``refresh``）。其余状态一律拒绝：
+
+    - ``conflicted`` 必须先裁决——否则自动强化就等于绕过裁决替系统选边；
+    - ``candidate`` / ``quarantined`` / ``deprecated`` 必须先确认、放行、恢复；
+    - ``forgotten`` / ``deleted`` / ``rejected`` 是终态，已遗忘的记忆不可复活。
+
+    与改造前的差别：旧实现对非 active 状态是「把原状态写回、静默成功」
+    （``"reinforced" if lifecycle == "active" else lifecycle``），因此对一条
+    已遗忘的记忆调用 reinforce 会假装成功。现在会抛
+    :class:`IllegalTransitionError`（``ValueError`` 子类，既有 except 链不受影响）。
+    """
     cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise ValueError(f"Capsule not found: {capsule_id}")
-    st = cap["state"]
-    st["lifecycle"] = "reinforced" if st.get("lifecycle") == "active" else st.get("lifecycle", "candidate")
-    st["importance_score"] = min(1.0, float(st.get("importance_score", 0.5)) + amount)
-    st["retention_score"] = min(1.0, float(st.get("retention_score", 0.5)) + amount)
-    return update_capsule(
-        capsule_id,
-        state=st,
-        owner_id=owner_id,
-        soul_id=soul_id,
+    st = dict(cap["state"])
+    current = str(st.get("lifecycle") or LifecycleState.ACTIVE.value)
+    if current not in REINFORCEABLE_STATES:
+        raise IllegalTransitionError(current, LifecycleState.REINFORCED.value, capsule_id)
+    patch = {
+        "importance_score": min(1.0, float(st.get("importance_score", 0.5)) + amount),
+        "retention_score": min(1.0, float(st.get("retention_score", 0.5)) + amount),
+    }
+    # active → reinforced 是唯一改变状态的情形；reinforced/stale 原地累加权重。
+    target = (
+        LifecycleState.REINFORCED.value
+        if current == LifecycleState.ACTIVE.value
+        else current
     )
+    result = apply_transition(
+        capsule_id, target, f"reinforce(+{amount})",
+        actor="agent", owner_id=owner_id, soul_id=soul_id, state_patch=patch,
+    )
+    return result["capsule"]
 
 
 def deprecate(
@@ -34,24 +65,34 @@ def deprecate(
     owner_id: str | None = None,
     soul_id: str | None = None,
 ) -> dict[str, Any]:
+    """归档一条记忆（规范中的 ``archived``），不再进入上下文注入。
+
+    Raises:
+        IllegalTransitionError: 从 ``deleted`` / ``forgotten`` / ``rejected``
+            归档——这些终态没有可归档的内容。
+    """
     cap = get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap:
         raise ValueError(f"Capsule not found: {capsule_id}")
-    st = cap["state"]; st["lifecycle"] = "deprecated"; st["deprecation_reason"] = reason
-    return update_capsule(
-        capsule_id,
-        state=st,
-        owner_id=owner_id,
-        soul_id=soul_id,
+    result = apply_transition(
+        capsule_id, LifecycleState.DEPRECATED.value, reason,
+        actor="agent", owner_id=owner_id, soul_id=soul_id,
+        state_patch={"deprecation_reason": reason},
     )
+    return result["capsule"]
 
 
 def conflict_mark(capsule_id: str, reason: str = "conflict") -> dict[str, Any]:
+    """标记为冲突待裁决。裁决走 ``memoryos.lifecycle.resolve_conflict``。"""
     cap = get_capsule(capsule_id)
     if not cap:
         raise ValueError(f"Capsule not found: {capsule_id}")
-    st = cap["state"]; st["lifecycle"] = "conflicted"; st["conflict_reason"] = reason
-    return update_capsule(capsule_id, state=st)
+    result = apply_transition(
+        capsule_id, LifecycleState.CONFLICTED.value, reason,
+        actor="agent", risk_class="medium",
+        state_patch={"conflict_reason": reason},
+    )
+    return result["capsule"]
 
 
 def supersede(old_capsule_id: str, *, new_content: dict[str, Any], memory_class: str = "knowledge") -> dict[str, Any]:
@@ -59,8 +100,18 @@ def supersede(old_capsule_id: str, *, new_content: dict[str, Any], memory_class:
     if not old:
         raise ValueError(f"Capsule not found: {old_capsule_id}")
     new = write_capsule(memory_class=memory_class, content=new_content, source_type="eval", write_intent="explicit")
-    old_state = old["state"]; old_state["lifecycle"] = "deprecated"; old_state.setdefault("superseded_by", []).append(new["capsule_id"])
-    update_capsule(old_capsule_id, state=old_state)
+    old_state = old["state"]
+    superseded_by = list(old_state.get("superseded_by") or [])
+    superseded_by.append(new["capsule_id"])
+    apply_transition(
+        old_capsule_id, LifecycleState.DEPRECATED.value,
+        f"superseded_by:{new['capsule_id']}",
+        actor="agent",
+        state_patch={
+            "superseded_by": superseded_by,
+            "deprecation_reason": f"superseded_by:{new['capsule_id']}",
+        },
+    )
     new_cap = get_capsule(new["capsule_id"])
     if not new_cap:
         # 理论上不应发生：capsule 刚由 write_capsule 成功创建并落库。
@@ -71,7 +122,7 @@ def supersede(old_capsule_id: str, *, new_content: dict[str, Any], memory_class:
             "This indicates a critical issue in write_capsule or the database layer."
         )
     st = new_cap["state"]; st.setdefault("supersedes", []).append(old_capsule_id)
-    return update_capsule(new["capsule_id"], state=st)
+    return update_capsule(new["capsule_id"], state=st, reason=f"supersedes:{old_capsule_id}")
 
 
 def reflect_task(
@@ -96,22 +147,55 @@ def reflect_task(
     all_ids = helpful_ids + misleading_ids
     
     if all_ids:
+        from ..memoryos.accounting import settle_recall_outcome
         from .capsule_store import get_capsules_batch
         caps_by_id = get_capsules_batch(
             all_ids,
             owner_id=owner_id,
             soul_id=soul_id,
         )
-        
+
+        # 单条记忆的生命周期已到终态（已遗忘/已删除）时，状态机会拒绝强化或归档。
+        # 这属于业务上完全正常的情形——反思报告可能引用了本轮中途被用户删掉的
+        # 记忆——因此逐条捕获并记入 actions，不让一条失败掀翻整次反思。
+        settled_useful: list[str] = []
+        settled_harmful: list[str] = []
         for cid in helpful_ids:
-            if cid in caps_by_id:
+            if cid not in caps_by_id:
+                continue
+            try:
                 reinforce(cid, owner_id=owner_id, soul_id=soul_id)
-                actions.append({"action": "reinforce", "capsule_id": cid})
+            except IllegalTransitionError as exc:
+                actions.append({"action": "reinforce_skipped", "capsule_id": cid,
+                                "reason": f"{exc.from_state}->{exc.to_state}"})
+                continue
+            actions.append({"action": "reinforce", "capsule_id": cid})
+            settled_useful.append(cid)
 
         for cid in misleading_ids:
-            if cid in caps_by_id:
+            if cid not in caps_by_id:
+                continue
+            try:
                 deprecate(cid, owner_id=owner_id, soul_id=soul_id)
-                actions.append({"action": "deprecate", "capsule_id": cid})
+            except IllegalTransitionError as exc:
+                actions.append({"action": "deprecate_skipped", "capsule_id": cid,
+                                "reason": f"{exc.from_state}->{exc.to_state}"})
+                continue
+            actions.append({"action": "deprecate", "capsule_id": cid})
+            settled_harmful.append(cid)
+
+        # 经济账本的收益回填。这是 Accounting 规范里 utility 的**真实来源**：
+        # 检索时只能先记 neutral（当下不知道有没有用），反思阶段人/评估器判定了
+        # helpful / misleading，才能把那次召回改判为 useful / harmful。
+        # 不需要任何新的用户输入——reflect_task 本来就在收集这两个列表。
+        if settled_useful:
+            settle_recall_outcome(settled_useful, "useful")
+            actions.append({"action": "account_settle", "outcome": "useful",
+                            "capsule_ids": settled_useful})
+        if settled_harmful:
+            settle_recall_outcome(settled_harmful, "harmful")
+            actions.append({"action": "account_settle", "outcome": "harmful",
+                            "capsule_ids": settled_harmful})
 
         # #56: workflow/任务完成回调——本轮被判定 helpful 的记忆从 working 层
         # 晋升 short_term，让「用得上的记忆」自动进入短期待复用区。

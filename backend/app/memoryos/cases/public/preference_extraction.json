@@ -1,0 +1,159 @@
+[
+  {
+    "case_id": "MEB-PREF-001",
+    "category": "preference_extraction",
+    "weight_dimension": "ux",
+    "title": "咖啡口味偏好：明确写入后应被正确召回",
+    "tags": ["mini", "preference", "basic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {
+            "preference_type": "beverage",
+            "statement": "只喝美式咖啡，不要加糖",
+            "strength": "strong"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        },
+        "expect": {"policy_result": "allow", "lifecycle": "active"}
+      },
+      {
+        "op": "search",
+        "query": "咖啡",
+        "expect": {
+          "must_contain": ["美式"],
+          "must_not_contain": ["拿铁"],
+          "min_hits": 1,
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-PREF-002",
+    "category": "preference_extraction",
+    "weight_dimension": "ux",
+    "title": "推断型偏好需人工确认，确认前不可检索、确认后可检索",
+    "tags": ["mini", "preference", "confirmation"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {
+            "preference_type": "workflow",
+            "statement": "推测用户偏好深色主题界面",
+            "strength": "weak"
+          },
+          "source_type": "tool_result",
+          "write_intent": "inferred",
+          "affects_future_behavior": true
+        },
+        "expect": {"policy_result": "require_confirmation", "lifecycle": "candidate"}
+      },
+      {
+        "op": "search",
+        "query": "深色主题",
+        "comment": "candidate 未确认，不该进检索结果",
+        "expect": {"must_not_contain": ["深色主题"], "must_not_retrieve_refs": [0]}
+      },
+      {"op": "confirm", "capsule_ref": 0},
+      {
+        "op": "search",
+        "query": "深色主题",
+        "comment": "确认后必须可检索——此前 write_capsule 只在 active 时写 FTS，确认过的记忆永远搜不到",
+        "expect": {
+          "must_contain": ["深色主题"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-PREF-003",
+    "category": "preference_extraction",
+    "weight_dimension": "ux",
+    "title": "多条偏好并存时按查询意图分别召回，不互相串味",
+    "tags": ["preference", "precision"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {"preference_type": "diet", "statement": "忌口海鲜与花生"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {"preference_type": "commute", "statement": "上班优先地铁不打车"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "忌口",
+        "expect": {
+          "must_contain": ["海鲜"],
+          "must_not_contain": ["地铁"],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "地铁",
+        "expect": {
+          "must_contain": ["地铁"],
+          "must_not_contain": ["海鲜"],
+          "relevant_refs": [1]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-PREF-004",
+    "category": "preference_extraction",
+    "weight_dimension": "academic",
+    "title": "偏好记忆须携带完整 Provenance（来源可追、置信可读）",
+    "tags": ["preference", "provenance", "academic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {"preference_type": "writing", "statement": "文档一律用简体中文"},
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        },
+        "expect": {"policy_result": "allow", "lifecycle": "active"}
+      },
+      {
+        "op": "search",
+        "query": "简体中文",
+        "expect": {"must_contain": ["简体中文"], "min_hits": 1, "relevant_refs": [0]}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "reinforced",
+        "reason": "user_reaffirmed",
+        "expect": {"to_state": "reinforced"}
+      },
+      {
+        "op": "search",
+        "query": "简体中文",
+        "comment": "reinforced 仍可检索",
+        "expect": {"must_contain": ["简体中文"], "must_retrieve_refs": [0]}
+      }
+    ]
+  }
+]

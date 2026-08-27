@@ -7,10 +7,15 @@ import time
 from typing import Any
 
 from ..db import get_conn
+from ..memoryos.lifecycle import RETRIEVAL_SCORE_PENALTY, retrievable_sql_list
 from .capsule_store import get_capsules_batch, allowed_for_context, bump_usage_batch, now
 from .vector_index import PROVIDER, native_candidates
 
 logger = logging.getLogger(__name__)
+
+#: 可检索状态的 SQL IN 列表。派生自 memoryos.lifecycle 的状态机定义，
+#: 不在这里另写一份字面量——两处各写一份是状态漂移的经典来源。
+_RETRIEVABLE_SQL = retrievable_sql_list()
 
 # 03-#15 搜索读路径写放大降频：
 # usage_count / last_accessed_at 是统计性元数据。此前每次 search 都对全部命中
@@ -119,7 +124,7 @@ def _fts_rows(
             WHERE 1=1
               {scope_clause}
               AND memory_capsules_v2_fts MATCH ?
-              AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
+              AND json_extract(capsule.state,'$.lifecycle') IN ({_RETRIEVABLE_SQL})
               AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
             LIMIT ?
             """,
@@ -164,7 +169,7 @@ def _substring_rows(
         SELECT capsule.capsule_id FROM memory_capsules_v2 AS capsule
         {failed_join}
         WHERE ({clauses})
-          AND json_extract(capsule.state,'$.lifecycle') IN ('active','reinforced','conflicted')
+          AND json_extract(capsule.state,'$.lifecycle') IN ({_RETRIEVABLE_SQL})
           AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
           {scope_clause}
         ORDER BY capsule.updated_at DESC LIMIT ?
@@ -243,7 +248,16 @@ def search_capsules_with_status(
     high_risk: bool = False,
     owner_id: str | None = None,
     soul_id: str | None = None,
+    with_trace: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """混合检索并返回 ``(命中列表, 检索状态)``。
+
+    ``with_trace=True`` 时在返回的状态字典里附加规范
+    ``AI优化/MemoryOS-BenchmarkHarness.md`` §2.2 要求的 Memory Trace
+    （候选集 / 过滤条件 / 重排结果 / 注入项 / 耗时）。**默认关闭**：trace 需要
+    保留全部候选的中间态，评测与排障时才有价值，常规检索路径不该为此付开销。
+    """
+    trace_started = time.monotonic() if with_trace else 0.0
     native_rows, status = native_candidates(q, top_k=top_k * 4)
     scoped_search = owner_id is not None or soul_id is not None
     native_scores: dict[str, float] = {}
@@ -283,9 +297,15 @@ def search_capsules_with_status(
     accessed_at = now()
     scored: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     updates: list[tuple[str, dict[str, Any]]] = []
+    filtered_out: list[dict[str, str]] = []
     for capsule_id in candidate_ids:
         cap = by_id.get(capsule_id)
         if not cap or not allowed_for_context(cap, high_risk=high_risk):
+            if with_trace:
+                filtered_out.append({
+                    "capsule_id": capsule_id,
+                    "reason": "not_in_scope" if not cap else "policy_or_lifecycle_filtered",
+                })
             continue
         gov = cap["governance"]; state = cap["state"]
         affective = _affective_score(cap)
@@ -294,6 +314,12 @@ def search_capsules_with_status(
             semantic_score = _normalized_native_score(native_scores[capsule_id])
             score = 0.15 + 0.20 * semantic_score + 0.25 * float(gov.get("trust_score", 0)) + 0.20 * float(gov.get("confidence", 0)) + 0.05 * float(state.get("retention_score", 0)) + 0.15 * affective
             cap["vector_score"] = round(native_scores[capsule_id], 4)
+        # 生命周期降权：stale（已过期）仍可召回但排在同等条件的新鲜记忆之后。
+        # 规范 Lifecycle §1 把 stale 定为「低权重或弃权」而非直接不可见。
+        penalty = RETRIEVAL_SCORE_PENALTY.get(str(state.get("lifecycle")), 0.0)
+        if penalty:
+            score = max(0.0, score - penalty)
+            cap["retrieval_lifecycle_penalty"] = penalty
         cap["retrieval_affective"] = round(affective, 4)
         cap["retrieval_score"] = round(score, 4)
         cap["retrieval_backend"] = "fts_fallback" if capsule_id in fts_fallback_ids else status["backend"]
@@ -311,6 +337,7 @@ def search_capsules_with_status(
     # 按 retrieval_score 降序取 top_k；usage bump 仍只对最终命中的胶囊落库。
     scored.sort(key=lambda item: item[1]["retrieval_score"], reverse=True)
     out = []
+    injected_tokens: dict[str, int] = {}
     for capsule_id, cap, state in scored[:top_k]:
         # 03-#15: 时间窗内重复命中的 capsule 跳过落库（内存计数同步跳过，
         # 保持响应与库内一致）；窗口外命中照常累计并批量落库。
@@ -318,10 +345,58 @@ def search_capsules_with_status(
             state["usage_count"] = int(state.get("usage_count") or 0) + 1
             state["last_accessed_at"] = accessed_at
             updates.append((capsule_id, state))
+            injected_tokens[capsule_id] = _injected_token_estimate(cap)
         out.append(cap)
     # Batch-update usage counts in a single executemany + one aggregated audit.
-    bump_usage_batch(updates)
+    # 经济账（检索成本）与检索账本也在这一个事务里，不额外增加写往返。
+    bump_usage_batch(updates, injected_tokens=injected_tokens)
+    if with_trace:
+        status["trace"] = {
+            "query": q,
+            "query_terms": _zh_terms(q),
+            "candidates": [
+                {
+                    "capsule_id": capsule_id,
+                    "stage": "vector" if capsule_id in native_scores else "fts",
+                    "score": round(cap["retrieval_score"], 4),
+                }
+                for capsule_id, cap, _ in scored
+            ],
+            "filters_applied": _describe_filters(owner_id, soul_id, high_risk),
+            "filtered_out": filtered_out,
+            "rerank": {"method": "weighted_sum", "final": [cap["capsule_id"] for cap in out]},
+            "injected": list(injected_tokens) or [cap["capsule_id"] for cap in out],
+            "injected_tokens": sum(injected_tokens.values()),
+            "latency_ms": round((time.monotonic() - trace_started) * 1000, 2),
+        }
     return out, status
+
+
+def _injected_token_estimate(cap: dict[str, Any]) -> int:
+    """估算这条记忆注入上下文的 token 数（经济账本的检索成本输入）。
+
+    这是**估算不是实测**——真实注入量取决于上层如何拼 prompt，运行时这里拿不到。
+    绝对金额因此只有相对比较意义，account 面板上须如实标注。
+    """
+    from ..memoryos.accounting import estimate_tokens
+
+    try:
+        import json as _json
+
+        return estimate_tokens(_json.dumps(cap.get("content") or {}, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _describe_filters(owner_id: str | None, soul_id: str | None, high_risk: bool) -> list[str]:
+    filters = [f"lifecycle IN ({_RETRIEVABLE_SQL})", "policy_result IN ('allow','redact')"]
+    if owner_id is not None:
+        filters.append(f"owner_id={owner_id}")
+    if soul_id is not None:
+        filters.append(f"soul_id={soul_id}")
+    if high_risk:
+        filters.append("high_risk: exclude conflicted/stale")
+    return filters
 
 
 def search_capsules(
@@ -331,6 +406,7 @@ def search_capsules(
     high_risk: bool = False,
     owner_id: str | None = None,
     soul_id: str | None = None,
+    with_trace: bool = False,
 ) -> list[dict[str, Any]]:
     """Compatibility wrapper for internal callers that expect only result rows."""
     results, _ = search_capsules_with_status(
@@ -339,5 +415,6 @@ def search_capsules(
         high_risk=high_risk,
         owner_id=owner_id,
         soul_id=soul_id,
+        with_trace=with_trace,
     )
     return results

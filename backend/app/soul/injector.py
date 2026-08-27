@@ -12,11 +12,13 @@ import json
 from typing import Any
 
 from ..db import get_conn
+from ..memoryos.lifecycle import retrievable_sql_list
 from ..security.redaction import redact_capsule_for_output, redact_sensitive_text
 from ..utils.datetime_utils import utc_now_iso_compact
 
 
 _FILTERED_INJECTION_PROMPT = "你是枢忆。（系统提示因安全策略被过滤）"
+_RETRIEVABLE_SQL = retrievable_sql_list()
 
 
 def _loads(text: str | None, default: Any = None) -> Any:
@@ -96,7 +98,7 @@ def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
             return []
         owner_id = str(owner_row["owner_id"])
         rows = get_conn().execute(
-            """SELECT capsule_id, content, state, governance
+            f"""SELECT capsule_id, content, state, governance
                FROM memory_capsules_v2
                WHERE json_extract(provenance, '$.owner_id') = ?
                  AND (json_extract(provenance, '$.soul_id') = ?
@@ -106,11 +108,12 @@ def _get_core_memories(soul_id: str, limit: int = 10) -> list[dict]:
                  -- soul 注入会把记忆写入模型「系统提示」，是最高危的重注入面；
                  -- 若不做此过滤，被 policy-gate 判为 quarantine/require_confirmation
                  -- 的投毒/提示注入记忆（仍带 importance_score）会绕过治理直接进系统提示。
-                 -- RETRIEVABLE_POLICY={allow,redact} / RETRIEVABLE_LIFECYCLE={active,reinforced,conflicted}
+                 -- RETRIEVABLE_POLICY allow/redact; lifecycle is sourced from
+                 -- memoryos.lifecycle so stale visibility cannot drift here.
                  AND json_extract(governance, '$.policy_result') IN ('allow', 'redact')
                  AND (json_extract(governance, '$.sensitivity_level') IS NULL
                        OR json_extract(governance, '$.sensitivity_level') != 'S3')
-                 AND json_extract(state, '$.lifecycle') IN ('active', 'reinforced', 'conflicted')
+                 AND json_extract(state, '$.lifecycle') IN ({_RETRIEVABLE_SQL})
                ORDER BY CASE WHEN json_extract(provenance, '$.soul_id') = ? THEN 0 ELSE 1 END,
                         json_extract(state, '$.importance_score') DESC
                LIMIT ?""",

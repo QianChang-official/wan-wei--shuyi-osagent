@@ -23,6 +23,8 @@ from .schemas import (
     MemoryEventIn, ForgetPreviewIn, ForgetConfirmIn, CapsuleWriteIn,
     CommandLoopIn, ReflectionIn, SoulConnectIn, SoulChatIn,
     SoulPersonaUpdateIn, SoulDreamIn, TierTransitionIn, TierAutoFlowIn,
+    LifecycleTransitionIn, LifecycleConfirmIn, LifecycleResolveConflictIn,
+    LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
 )
 from .db import close_all, get_conn, transaction
 from .memory_runtime.policy_gate import evaluate_policy
@@ -49,6 +51,12 @@ from .memory_runtime.tier_manager import (
     transition_history,
 )
 from .memory_arena.metrics_contract import arena_metrics_validation_error
+from .memoryos import governance as memoryos_governance
+from .memoryos import health as memoryos_health
+from .memoryos import lifecycle as memoryos_lifecycle
+from .memoryos import accounting as memoryos_accounting
+from .memoryos import export as memoryos_export
+from .memoryos import harness as memoryos_harness
 from .platform.service import list_modules, module_summary
 from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
 from .model_gateway.service import (
@@ -57,6 +65,7 @@ from .model_gateway.service import (
     delete_config,
     list_configs,
     list_providers,
+    resolve_runtime_provider,
     run_provider_test_async,
     shutdown_smoke_executor,
     start_smoke_executor,
@@ -336,8 +345,9 @@ def health_ready():
     return JSONResponse(report, status_code=200 if report['status'] == 'ready' else 503)
 
 @app.get('/kylin/sdk/status')
-def kylin_sdk_status():
+def kylin_sdk_status(request: Request = None):
     """Expose native SDK readiness without leaking bridge input or credentials."""
+    _require_local_admin(request)
     from .memory_runtime.vector_index import native_index_coverage, vector_sync_active
 
     sdk = get_native_sdk()
@@ -351,8 +361,10 @@ def kylin_sdk_reindex(
     background_tasks: BackgroundTasks,
     limit: int = 10,
     retry_failed: bool = False,
+    request: Request = None,
 ):
     """Queue a bounded native-index migration without holding the HTTP worker."""
+    _require_local_admin(request)
     if not 1 <= limit <= 25:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 25")
     from .memory_runtime.vector_index import (
@@ -425,16 +437,56 @@ def arena_metrics():
 def platform_modules(status: str | None = None):
     return {'items': list_modules(status), 'summary': module_summary()}
 
+
+def _require_legacy_gateway_owner(request: Request | None) -> None:
+    """Keep legacy SQLite gateway credentials single-principal at the HTTP edge.
+
+    The old model-gateway table predates owner columns.  Until it is migrated,
+    only the configured local actor may use those routes; newer owner-aware
+    provider routes remain available for additional principals.
+    """
+    owner_id = actor_id_for_request(request) if request is not None else configured_actor_id()
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
+def _require_governance_owner(request: Request | None) -> None:
+    """Keep platform-wide incident/release state behind the local admin actor.
+
+    ``memory_incidents`` predates owner columns and drives one process-wide
+    release gate.  Until a separate governance-admin role/schema exists, an
+    alternate API principal must not be able to read or poison that state.
+    """
+    _require_local_admin(request)
+
+
+def _require_local_admin(request: Request | None) -> None:
+    """Protect legacy process-wide state until it has an owner-aware schema.
+
+    Several early single-node tables (workflow runs, audit logs and native
+    index state) predate multi-principal ownership.  They remain usable by
+    the configured local actor and anonymous in-process calls, while another
+    API principal receives the same not-found response used by other guarded
+    legacy surfaces.
+    """
+    owner_id = actor_id_for_request(request) if request is not None else configured_actor_id()
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
 @app.get('/model-gateway/providers')
-def model_gateway_providers():
+def model_gateway_providers(request: Request = None):
+    _require_legacy_gateway_owner(request)
     return list_providers()
 
 @app.get('/model-gateway/configs')
-def model_gateway_configs():
+def model_gateway_configs(request: Request = None):
+    _require_legacy_gateway_owner(request)
     return list_configs()
 
 @app.post('/model-gateway/configs')
-def model_gateway_configs_upsert(req: ModelGatewayConfigIn):
+def model_gateway_configs_upsert(req: ModelGatewayConfigIn, request: Request = None):
+    _require_legacy_gateway_owner(request)
     return upsert_config(
         req.provider,
         req.api_base,
@@ -445,11 +497,13 @@ def model_gateway_configs_upsert(req: ModelGatewayConfigIn):
     )
 
 @app.delete('/model-gateway/configs/{provider}')
-def model_gateway_configs_delete(provider: str):
+def model_gateway_configs_delete(provider: str, request: Request = None):
+    _require_legacy_gateway_owner(request)
     return {"deleted": delete_config(provider)}
 
 @app.post('/model-gateway/test')
-async def model_gateway_test(req: ModelGatewayTestIn):
+async def model_gateway_test(req: ModelGatewayTestIn, request: Request = None):
+    _require_legacy_gateway_owner(request)
     return await run_provider_test_async(req)
 
 @app.get('/tool-registry/tools')
@@ -495,23 +549,28 @@ def workflow_competition_mapping_view():
     return workflow_competition_mapping()
 
 @app.post('/workflow/run-dry-run')
-def workflow_run_dry_run_view(req: WorkflowRunIn):
+def workflow_run_dry_run_view(req: WorkflowRunIn, request: Request = None):
+    _require_local_admin(request)
     return workflow_run_dry_run(req)
 
 @app.post('/workflow/runs')
-def workflow_runs_create(req: WorkflowRunIn):
+def workflow_runs_create(req: WorkflowRunIn, request: Request = None):
+    _require_local_admin(request)
     return workflow_create_run(req)
 
 @app.get('/workflow/runs/{run_id}')
-def workflow_runs_get(run_id: str):
+def workflow_runs_get(run_id: str, request: Request = None):
+    _require_local_admin(request)
     return workflow_get_run(run_id)
 
 @app.get('/workflow/runs/{run_id}/trace')
-def workflow_runs_trace(run_id: str):
+def workflow_runs_trace(run_id: str, request: Request = None):
+    _require_local_admin(request)
     return workflow_get_trace(run_id)
 
 @app.get('/workflow/runs/{run_id}/artifacts')
-def workflow_runs_artifacts(run_id: str):
+def workflow_runs_artifacts(run_id: str, request: Request = None):
+    _require_local_admin(request)
     return workflow_get_artifacts(run_id)
 
 # v0.9.5: New workflow persistence management endpoints
@@ -520,15 +579,19 @@ def workflow_runs_list(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     scenario: str | None = None,
+    request: Request = None,
 ):
+    _require_local_admin(request)
     return workflow_list_runs(limit=limit, offset=offset, scenario=scenario)
 
 @app.post('/workflow/cleanup')
-def workflow_cleanup(ttl_days: int = Query(default=7, ge=1, le=3650)):
+def workflow_cleanup(ttl_days: int = Query(default=7, ge=1, le=3650), request: Request = None):
+    _require_local_admin(request)
     return workflow_cleanup_old_runs(ttl_days=ttl_days)
 
 @app.get('/workflow/stats')
-def workflow_stats():
+def workflow_stats(request: Request = None):
+    _require_local_admin(request)
     return workflow_get_storage_stats()
 
 # v0.9 lightweight research system reproduction endpoints
@@ -1419,23 +1482,30 @@ def soul_dream(req: SoulDreamIn, request: Request = None):
 # ---------------------------------------------------------------------------
 
 
-def _chat_request_context(messages: list[dict], model: str) -> tuple[str, str, str] | None:
+def _chat_request_context(
+    messages: list[dict],
+    model: str,
+    provider: str = "default",
+    owner_id: str | None = None,
+) -> tuple[str, str, str, str, str] | None:
     """Resolve the configured provider once and bound the prompt payload."""
-    from .model_gateway.service import local_llama_settings
-
-    api_base, env_model, _configured = local_llama_settings()
-    api_model = env_model if model == 'default' else model
-    if not api_base or not api_model:
+    target = resolve_runtime_provider(
+        provider=provider,
+        model=model,
+        owner_id=owner_id,
+    )
+    if target is None:
         return None
+    provider_label, api_base, api_key, api_model = target
     prompt = '\n'.join(
         str(message.get('content', ''))
         for message in messages
         if isinstance(message, dict)
     )[-4000:]
-    return api_base, api_model, prompt
+    return provider_label, api_base, api_key, api_model, prompt
 
 
-def _provider_error_completion(api_model: str, exc: Exception) -> dict:
+def _provider_error_completion(provider: str, api_model: str, exc: Exception) -> dict:
     """Return a stable public error while keeping provider details in logs only."""
     logger.warning(
         'OpenAI-compatible provider request failed: model=%s error_type=%s',
@@ -1444,7 +1514,7 @@ def _provider_error_completion(api_model: str, exc: Exception) -> dict:
         exc_info=True,
     )
     return {
-        'provider': 'openai_compatible',
+        'provider': provider,
         'model': api_model,
         'content': '',
         'latency_ms': 0,
@@ -1453,7 +1523,12 @@ def _provider_error_completion(api_model: str, exc: Exception) -> dict:
     }
 
 
-def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
+def _chat_complete(
+    messages: list[dict],
+    model: str = 'default',
+    provider: str = 'default',
+    owner_id: str | None = None,
+) -> dict:
     """Lightweight chat completion via the configured model gateway.
 
     03-#14: env 解析、allowlist 解析与超时常量统一走 model_gateway.service
@@ -1464,7 +1539,7 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
     issue #45 (4.1): local_mock 回退已删除——未配置网关时如实
     provider_error，不产出任何模型口吻文本。
     """
-    context = _chat_request_context(messages, model)
+    context = _chat_request_context(messages, model, provider, owner_id)
     if context is None:
         return {
             'provider': 'none',
@@ -1474,15 +1549,15 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
             'status': 'provider_error',
             'error': 'gateway_not_configured',
         }
-    api_base, api_model, prompt = context
+    provider_label, api_base, api_key, api_model, prompt = context
     try:
         status, latency_ms, content = _run_smoke_in_dedicated_pool(
-            'openai_compatible', api_base, '', api_model, prompt, 512,
+            provider_label, api_base, api_key, api_model, prompt, 512,
         )
         if status != 'ok':
             raise RuntimeError(f'gateway_status={status}')
         return {
-            'provider': 'openai_compatible',
+            'provider': provider_label,
             'model': api_model,
             'content': content,
             'latency_ms': latency_ms,
@@ -1490,12 +1565,17 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
         }
     except Exception as exc:
         # B3: 失败如实返回 provider_error，不静默回退 mock
-        return _provider_error_completion(api_model, exc)
+        return _provider_error_completion(provider_label, api_model, exc)
 
 
-async def _chat_complete_async(messages: list[dict], model: str = 'default') -> dict:
+async def _chat_complete_async(
+    messages: list[dict],
+    model: str = 'default',
+    provider: str = 'default',
+    owner_id: str | None = None,
+) -> dict:
     """Async counterpart that leaves the Starlette worker pool available."""
-    context = _chat_request_context(messages, model)
+    context = _chat_request_context(messages, model, provider, owner_id)
     if context is None:
         # issue #45 (4.1): 未配置网关不再回退 local_mock，如实报错。
         return {
@@ -1506,22 +1586,22 @@ async def _chat_complete_async(messages: list[dict], model: str = 'default') -> 
             'status': 'provider_error',
             'error': 'gateway_not_configured',
         }
-    api_base, api_model, prompt = context
+    provider_label, api_base, api_key, api_model, prompt = context
     try:
         status, latency_ms, content = await _run_smoke_in_dedicated_pool_async(
-            'openai_compatible', api_base, '', api_model, prompt, 512,
+            provider_label, api_base, api_key, api_model, prompt, 512,
         )
         if status != 'ok':
             raise RuntimeError(f'gateway_status={status}')
         return {
-            'provider': 'openai_compatible',
+            'provider': provider_label,
             'model': api_model,
             'content': content,
             'latency_ms': latency_ms,
             'status': 'ok',
         }
     except Exception as exc:
-        return _provider_error_completion(api_model, exc)
+        return _provider_error_completion(provider_label, api_model, exc)
 
 
 @app.post('/soul/chat')
@@ -1556,7 +1636,12 @@ async def soul_chat(req: SoulChatIn, request: Request = None):
         )
 
     # 3. Call model gateway
-    completion = await _chat_complete_async(injected_messages, model=req.model)
+    completion = await _chat_complete_async(
+        injected_messages,
+        model=req.model,
+        provider=getattr(req, 'provider', 'default'),
+        owner_id=soul_scope.owner_id,
+    )
 
     # 4. Perception: intake assistant reply
     assistant_content = completion.get('content', '')
@@ -1825,10 +1910,416 @@ def tier_auto_flow_endpoint(req: TierAutoFlowIn, request: Request = None):
         limit=req.limit,
     )
 
-@app.get('/audit/logs')
-def audit_logs(limit:int=50,trace_id:str|None=None):
-    return {'items':list_logs(limit,trace_id)}
+# ---------------------------------------------------------------------------
+# v0.13 MemoryOS 治理层端点（规范来源: AI优化/MemoryOS-*.md）
+#
+# 路由顺序注意：固定路径必须先于同前缀的参数路径注册，否则会被路径参数吞掉。
+# 具体是 '/memory/accounting/summary' 先于 '/memory/accounting/{capsule_id}'，
+# 以及 '/memory/lifecycle/*' 的动作路径先于 '/memory/lifecycle/{capsule_id}'。
+#
+# 鉴权：security/auth.py 的公开路径是显式白名单，这些 '/memory/*' 端点默认即
+# 受 APIKeyMiddleware 保护，无需在此额外处理。
+# ---------------------------------------------------------------------------
 
+
+def _scope_of(request: Request | None, soul_id: str | None) -> SoulScope | None:
+    return _owned_soul_scope(request, soul_id, allow_internal_unscoped=True)
+
+
+def _require_visible_capsule(capsule_id: str, scope: SoulScope | None) -> dict:
+    """确认目标 capsule 在调用方作用域内可见，否则 404（不泄漏存在性）。"""
+    cap = get_capsule(
+        capsule_id,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    if not cap:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    return cap
+
+
+def _lifecycle_http_error(exc: Exception) -> HTTPException:
+    """状态机异常 → HTTP。非法转移是调用方输入问题，用 422 而不是 500。"""
+    if isinstance(exc, memoryos_lifecycle.IllegalTransitionError):
+        return HTTPException(
+            status_code=422,
+            detail={
+                'error': 'illegal_lifecycle_transition',
+                'from_state': exc.from_state,
+                'to_state': exc.to_state,
+                'legal_next_states': memoryos_lifecycle.legal_next_states(exc.from_state),
+            },
+        )
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail={'error': 'not_found'})
+    raise exc
+
+
+def _public_transition_result(result: dict) -> dict:
+    """转移结果对外输出：胶囊走统一脱敏，其余字段原样。"""
+    payload = dict(result)
+    capsule = payload.get('capsule')
+    if isinstance(capsule, dict):
+        payload['capsule'] = _public_capsule(capsule)
+    return payload
+
+
+@app.post('/memory/lifecycle/transition')
+def lifecycle_transition(req: LifecycleTransitionIn, request: Request = None):
+    """受状态机裁决的生命周期转移。非法转移 422，不静默放行。"""
+    scope = _scope_of(request, req.soul_id)
+    _require_visible_capsule(req.capsule_id, scope)
+    try:
+        result = memoryos_lifecycle.apply_transition(
+            req.capsule_id, req.to_state, req.reason,
+            actor='human',
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except (memoryos_lifecycle.IllegalTransitionError, KeyError) as exc:
+        raise _lifecycle_http_error(exc) from exc
+    return _public_transition_result(result)
+
+
+@app.post('/memory/lifecycle/confirm')
+def lifecycle_confirm(req: LifecycleConfirmIn, request: Request = None):
+    """确认待定记忆（candidate → active）或放行隔离记忆（quarantined → active）。
+
+    两者都会**结清策略闸门**并补写 FTS——在此之前，需要确认的记忆即使确认了
+    也依然进不了检索候选集（policy_result 仍停在 require_confirmation）。
+    """
+    scope = _scope_of(request, req.soul_id)
+    cap = _require_visible_capsule(req.capsule_id, scope)
+    current = (cap.get('state') or {}).get('lifecycle')
+    action = (
+        memoryos_lifecycle.release_quarantine
+        if current == memoryos_lifecycle.LifecycleState.QUARANTINED.value
+        else memoryos_lifecycle.confirm_candidate
+    )
+    try:
+        result = action(
+            req.capsule_id,
+            actor='human',
+            reason=req.reason,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except (memoryos_lifecycle.IllegalTransitionError, KeyError) as exc:
+        raise _lifecycle_http_error(exc) from exc
+    return _public_transition_result(result)
+
+
+@app.post('/memory/lifecycle/resolve-conflict')
+def lifecycle_resolve_conflict(req: LifecycleResolveConflictIn, request: Request = None):
+    """裁决冲突：赢家回 active，败方归档，并维护 supersedes 版本链。"""
+    if req.winner_capsule_id == req.loser_capsule_id:
+        raise HTTPException(
+            status_code=422,
+            detail={'error': 'winner_and_loser_must_differ'},
+        )
+    scope = _scope_of(request, req.soul_id)
+    _require_visible_capsule(req.winner_capsule_id, scope)
+    _require_visible_capsule(req.loser_capsule_id, scope)
+    try:
+        result = memoryos_lifecycle.resolve_conflict(
+            req.winner_capsule_id, req.loser_capsule_id, req.reason,
+            actor='human', loser_state=req.loser_state,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except (memoryos_lifecycle.IllegalTransitionError, KeyError) as exc:
+        raise _lifecycle_http_error(exc) from exc
+    return {
+        'reason': result['reason'],
+        'winner': _public_transition_result(result['winner']),
+        'loser': _public_transition_result(result['loser']),
+    }
+
+
+@app.post('/memory/lifecycle/scan-stale')
+def lifecycle_scan_stale(req: LifecycleScanStaleIn, request: Request = None):
+    """扫描并标记过期记忆。valid_until 到期始终生效；闲置降权默认关闭。"""
+    scope = _scope_of(request, req.soul_id)
+    result = memoryos_lifecycle.scan_stale(
+        idle_days=req.idle_days,
+        limit=req.limit,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    result['marked'] = [_public_transition_result(item) for item in result['marked']]
+    return result
+
+
+@app.get('/memory/lifecycle/{capsule_id}')
+def lifecycle_status(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """当前状态 + 全部合法后继 + 就地转移历史。"""
+    scope = _scope_of(request, soul_id)
+    _require_visible_capsule(capsule_id, scope)
+    return memoryos_lifecycle.lifecycle_status(
+        capsule_id,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@app.get('/memory/ledger/{capsule_id}')
+def memory_ledger(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    limit: int = Query(default=100, ge=1, le=500),
+    op_type: str | None = None,
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """单条记忆的不可变账目（谁在什么时候、基于什么理由改了什么）。"""
+    scope = _scope_of(request, soul_id)
+    _require_visible_capsule(capsule_id, scope)
+    return {
+        'capsule_id': capsule_id,
+        'items': memoryos_governance.ledger_history(capsule_id, limit=limit, op_type=op_type),
+    }
+
+
+@app.get('/memory/governance/release-gate')
+def governance_release_gate(request: Request = None):
+    """发布闸门状态。未解决的 MHG≥3 事故会冻结发布。
+
+    刻意与 /health/ready 分开：治理冻结发布不等于应用不可用，
+    混进就绪探针会让编排系统误杀一个健康实例。
+    """
+    _require_governance_owner(request)
+    return memoryos_governance.release_gate()
+
+
+@app.get('/memory/governance/incidents')
+def governance_incidents(
+    limit: int = Query(default=50, ge=1, le=200),
+    unresolved_only: bool = False,
+    min_mhg: int = Query(default=1, ge=1, le=5),
+    request: Request = None,
+):
+    _require_governance_owner(request)
+    return {
+        'items': memoryos_governance.list_incidents(
+            limit=limit, unresolved_only=unresolved_only, min_mhg=min_mhg,
+        )
+    }
+
+
+@app.post('/memory/governance/incidents')
+def governance_incident_create(req: MemoryIncidentIn, request: Request = None):
+    """登记 MHG 事故并派生响应动作。
+
+    本端点只登记「应做什么」，不代替人执行回滚或红队复盘——那些是流程动作，
+    由 CI/运维按返回的 actions 列表落实。
+    """
+    _require_governance_owner(request)
+    if req.capsule_id:
+        _require_visible_capsule(req.capsule_id, _scope_of(request, None))
+    return memoryos_governance.record_incident(
+        req.mhg_level, req.incident_type,
+        description=req.description,
+        capsule_id=req.capsule_id,
+        detected_by=req.detected_by,
+    )
+
+
+@app.get('/memory/governance/provenance/{capsule_id}')
+def governance_provenance(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """Provenance Card：这条记忆凭什么在这里（来源/置信/有效期/版本链）。"""
+    scope = _scope_of(request, soul_id)
+    cap = _require_visible_capsule(capsule_id, scope)
+    card = memoryos_governance.provenance_card(cap)
+    card.pop('owner', None)  # 与 _public_capsule 一致：不外泄内部属主标识
+    return card
+
+
+@app.get('/memory/governance/export')
+def governance_export(
+    format: str = Query(default='markdown', pattern='^(markdown|json)$'),
+    limit: int = Query(default=50, ge=1, le=200),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """Export owner-scoped, redacted memory evidence with an integrity digest."""
+    scope = _scope_of(request, soul_id)
+    payload = memoryos_export.build_memory_evidence_export(
+        owner_id=scope.owner_id if scope else configured_actor_id(),
+        soul_id=scope.soul_id if scope else soul_id,
+        limit=limit,
+    )
+    if format == 'json':
+        return payload
+    return Response(
+        content=payload['markdown'],
+        media_type='text/markdown; charset=utf-8',
+        headers={
+            'Content-Disposition': 'attachment; filename="memory-evidence.md"',
+            'X-Memory-Export-SHA256': payload['integrity_sha256'],
+        },
+    )
+
+
+@app.get('/memory/governance/verify-deletion/{capsule_id}')
+def governance_verify_deletion(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """删除完整性验证：主表 / FTS / 图边 / 向量引用 / legacy 五处逐项证据。
+
+    授权来源是**账本**而不是主表：硬删后主表已无行，用 get_capsule 鉴权会让
+    「验证一条已被彻底删除的记忆」永远 404——而那恰恰是最需要验证的情形。
+    因此这里检查调用方作用域内是否存在该 capsule 的 delete 账目。
+    """
+    scope = _scope_of(request, soul_id)
+    if scope is not None:
+        owned = get_conn().execute(
+            "SELECT 1 FROM memory_ledger WHERE capsule_id=? AND op_type IN ('delete','write') "
+            "AND owner_id=? LIMIT 1",
+            (capsule_id, scope.owner_id),
+        ).fetchone()
+        if not owned and not get_capsule(
+            capsule_id, owner_id=scope.owner_id, soul_id=scope.soul_id
+        ):
+            raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    return memoryos_governance.verify_deletion(capsule_id)
+
+
+@app.get('/memory/accounting/summary')
+def accounting_summary(soul_id: str | None = None, request: Request = None):
+    """经济汇总：总成本、总收益、平均 ROI、每次有用召回的成本。"""
+    scope = _scope_of(request, soul_id)
+    payload = memoryos_accounting.summary(
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    payload['honesty_note'] = (
+        '成本金额基于 token 估算（字符数 × 0.3）而非实测用量，仅供相对比较。'
+    )
+    return payload
+
+
+@app.get('/memory/accounting/{capsule_id}')
+def accounting_for_capsule(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    scope = _scope_of(request, soul_id)
+    _require_visible_capsule(capsule_id, scope)
+    account = memoryos_accounting.account_for(capsule_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail={'error': 'no_account'})
+    return account
+
+
+@app.get('/memory/health')
+def memory_health(soul_id: str | None = None, request: Request = None):
+    """Health Panel：MHS 综合分 + 子指标 + 问题清单 + **未测量项**。
+
+    未测量项如实列出（例如无实跑评测报告时 precision@5 为 null），
+    不用占位值把仪表盘填满。
+    """
+    scope = _scope_of(request, soul_id)
+    return memoryos_health.health_report(
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@app.get('/memory/health/decay')
+def memory_health_decay(
+    limit: int = Query(default=50, ge=1, le=200),
+    min_roi: float = Query(default=0.0, ge=-100.0, le=100.0),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """Decay Panel：负 ROI 记忆按 应归档 / 应删除 / 受保护 三分类。"""
+    scope = _scope_of(request, soul_id)
+    return memoryos_health.decay_panel(
+        limit=limit, min_roi=min_roi,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@app.get('/memory/health/self-knowledge')
+def memory_health_self_knowledge(
+    limit: int = Query(default=20, ge=1, le=200),
+    confidence_threshold: float = Query(default=0.7, ge=0.0, le=1.0),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """Self-Knowledge Panel：我有哪些记忆、依据是什么、哪些不确定、如何纠错。"""
+    scope = _scope_of(request, soul_id)
+    return memoryos_health.self_knowledge_panel(
+        limit=limit, confidence_threshold=confidence_threshold,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@app.post('/memory/health/snapshot')
+def memory_health_snapshot(req: MemoryHealthSnapshotIn, request: Request = None):
+    """采一次健康度快照，写入趋势序列。
+
+    刻意是 POST 而不是让 GET /memory/health 顺手落库：读端点写库会让前端轮询
+    把快照表撑爆，曲线也会退化成「谁看得勤谁点多」而不是时间序列。
+    正常由每日 MEB 评测收尾自动采样（harness 里 source='meb:<suite>'），
+    此端点供运维手动补点。
+    """
+    scope = _scope_of(request, req.soul_id)
+    return memoryos_health.record_snapshot(
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+        source=req.source,
+    )
+
+
+@app.get('/memory/health/trend')
+def memory_health_trend(
+    days: int = Query(default=7, ge=1, le=365),
+    limit: int = Query(default=200, ge=1, le=1000),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """MHS 近 N 天曲线。没采过样就返回空序列 + 提示，不用当前值伪造历史。"""
+    scope = _scope_of(request, soul_id)
+    return memoryos_health.health_trend(
+        days=days, limit=limit,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@app.get('/memoryos/bench/report')
+def memoryos_bench_report(request: Request = None):
+    """上一次 MEB 实跑产出的 score_report。没跑过就 404，不返回样例数据。"""
+    _require_local_admin(request)
+    report = memoryos_harness.latest_report()
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                'error': 'meb_report_not_found',
+                'hint': 'run: python scripts/run_meb.py --suite mini',
+            },
+        )
+    return report
+
+
+@app.get('/audit/logs')
+def audit_logs(limit:int=50,trace_id:str|None=None, request: Request = None):
+    _require_local_admin(request)
+    return {'items':list_logs(limit,trace_id)}
 # 万枢协作平台聚合路由：platform_api 包自动发现子模块 router，
 # 单个子模块导入失败记 error 日志并跳过，不影响整体启动（03-#19）。
 # 03-#13: 统一相对导入。

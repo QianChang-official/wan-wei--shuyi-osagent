@@ -266,6 +266,95 @@ def main():
         created_at TEXT,
         FOREIGN KEY(soul_id) REFERENCES soul_persona(soul_id)
     );
+
+    -- v0.13 MemoryOS 治理层（规范来源: AI优化/MemoryOS-*.md）
+    --
+    -- memory_ledger: 记忆域专用的不可变账本。与 audit_logs 并存而非取代——
+    -- 它多出 actor / before_hash / after_hash / risk_class 四样审计表没有的
+    -- 东西，而这四样正是「谁在什么时候、基于什么证据改了什么」的答案。
+    -- append-only 由下面两个触发器**在数据库层强制**，不是文档声明：任何
+    -- UPDATE/DELETE 都会 ABORT，篡改账本必须先改 schema，改动会留在版本历史里。
+    CREATE TABLE IF NOT EXISTS memory_ledger(
+        ledger_id TEXT PRIMARY KEY,
+        op_type TEXT NOT NULL,
+        capsule_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        owner_id TEXT,
+        soul_id TEXT,
+        before_state TEXT,
+        after_state TEXT,
+        before_hash TEXT,
+        after_hash TEXT,
+        reason TEXT,
+        risk_class TEXT NOT NULL DEFAULT 'low',
+        trace_id TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ledger_capsule ON memory_ledger(capsule_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ledger_op ON memory_ledger(op_type, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ledger_owner ON memory_ledger(owner_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS memory_ledger_no_update
+        BEFORE UPDATE ON memory_ledger
+        BEGIN SELECT RAISE(ABORT, 'memory_ledger is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS memory_ledger_no_delete
+        BEFORE DELETE ON memory_ledger
+        BEGIN SELECT RAISE(ABORT, 'memory_ledger is append-only'); END;
+
+    -- memory_accounts: 逐条记忆的成本-收益-ROI 账户。
+    -- roi 是派生列，由 accounting._recompute_roi_in_transaction 在每次计费后
+    -- 同事务重算，便于直接建索引做「负 ROI 记忆」查询而不必全表算一遍。
+    CREATE TABLE IF NOT EXISTS memory_accounts(
+        capsule_id TEXT PRIMARY KEY,
+        storage_cost REAL NOT NULL DEFAULT 0,
+        retrieval_cost REAL NOT NULL DEFAULT 0,
+        maintenance_cost REAL NOT NULL DEFAULT 0,
+        total_cost REAL NOT NULL DEFAULT 0,
+        useful_recalls INTEGER NOT NULL DEFAULT 0,
+        neutral_recalls INTEGER NOT NULL DEFAULT 0,
+        harmful_recalls INTEGER NOT NULL DEFAULT 0,
+        utility REAL NOT NULL DEFAULT 0,
+        roi REAL NOT NULL DEFAULT 0,
+        last_accessed TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_accounts_roi ON memory_accounts(roi);
+
+    -- memory_incidents: MHG 记忆危害事故。未解决的 MHG≥3 会置起发布冻结
+    -- （governance.release_gate），但**不并入 /health/ready**——治理冻结发布
+    -- 不等于应用不可用，混进就绪探针会让编排系统误杀健康实例。
+    CREATE TABLE IF NOT EXISTS memory_incidents(
+        incident_id TEXT PRIMARY KEY,
+        mhg_level INTEGER NOT NULL,
+        incident_type TEXT NOT NULL,
+        capsule_id TEXT,
+        description TEXT,
+        detected_by TEXT,
+        actions TEXT,
+        resolved_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_incidents_open
+        ON memory_incidents(resolved_at, mhg_level, created_at);
+
+    -- memory_health_snapshots: MHS 历史快照，用于画健康度趋势曲线
+    -- （Health 规范 §3.1「MHS 总分 + 趋势（7 天）」）。
+    -- 快照是**显式动作**而不是每次读 /memory/health 都写一条：读端点写库会让
+    -- 前端轮询把趋势表撑爆，且曲线会变成「谁看得勤谁点多」而非时间序列。
+    -- 由 POST /memory/health/snapshot 或每日 MEB 评测收尾时写入。
+    CREATE TABLE IF NOT EXISTS memory_health_snapshots(
+        snapshot_id TEXT PRIMARY KEY,
+        owner_id TEXT,
+        soul_id TEXT,
+        mhs REAL NOT NULL,
+        level TEXT NOT NULL,
+        metrics TEXT NOT NULL,
+        issues TEXT NOT NULL,
+        source TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_health_snapshots_time
+        ON memory_health_snapshots(owner_id, created_at);
     """)
     migrate_legacy_vector_refs(conn)
     _migrate_soul_awakening(conn)

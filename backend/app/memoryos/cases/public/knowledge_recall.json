@@ -1,0 +1,161 @@
+[
+  {
+    "case_id": "MEB-KNOW-001",
+    "category": "knowledge_recall",
+    "weight_dimension": "ux",
+    "title": "项目约束类知识写入后按关键词召回",
+    "tags": ["mini", "knowledge", "basic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "constraint",
+            "statement": "生产环境部署必须使用非 root 用户运行容器",
+            "validity_scope": "project"
+          },
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow", "lifecycle": "active"}
+      },
+      {
+        "op": "search",
+        "query": "容器",
+        "expect": {
+          "must_contain": ["非 root"],
+          "min_hits": 1,
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-KNOW-002",
+    "category": "knowledge_recall",
+    "weight_dimension": "ux",
+    "title": "多条同域知识共存时相关项排在前列",
+    "tags": ["mini", "knowledge", "ranking"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "数据库使用 SQLite WAL 模式"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "全文检索使用 FTS5 虚拟表"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "前端控制台基于 Vue 3 构建"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "FTS5",
+        "expect": {
+          "must_contain": ["FTS5"],
+          "must_retrieve_refs": [1],
+          "relevant_refs": [1]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-KNOW-003",
+    "category": "knowledge_recall",
+    "weight_dimension": "product",
+    "title": "风险类记忆在高风险任务下仍可召回（未冲突未过期）",
+    "tags": ["knowledge", "risk", "high_risk"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "risk",
+          "content": {
+            "risk_statement": "直接执行 rm -rf 会造成不可恢复的数据损失",
+            "trigger_condition": "生成清理脚本",
+            "mitigation": "改用带确认的删除流程"
+          },
+          "source_type": "eval",
+          "risk_class": "high"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "清理脚本",
+        "high_risk": true,
+        "expect": {
+          "must_contain": ["不可恢复"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-KNOW-004",
+    "category": "knowledge_recall",
+    "weight_dimension": "product",
+    "title": "归档记忆不再进入上下文，恢复后重新可召回",
+    "tags": ["mini", "knowledge", "lifecycle"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "旧版接口路径为 legacy 前缀"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "legacy",
+        "expect": {"must_contain": ["legacy"], "relevant_refs": [0]}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "deprecated",
+        "reason": "interface_removed",
+        "expect": {"to_state": "deprecated"}
+      },
+      {
+        "op": "search",
+        "query": "legacy",
+        "comment": "归档后必须从 FTS 摘除，不再注入上下文",
+        "expect": {"must_not_contain": ["legacy 前缀"], "must_not_retrieve_refs": [0]}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "active",
+        "reason": "restored_for_migration_doc",
+        "expect": {"to_state": "active"}
+      },
+      {
+        "op": "search",
+        "query": "legacy",
+        "comment": "恢复后必须补回 FTS",
+        "expect": {"must_contain": ["legacy"], "must_retrieve_refs": [0]}
+      }
+    ]
+  }
+]

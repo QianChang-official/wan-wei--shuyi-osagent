@@ -1,0 +1,152 @@
+[
+  {
+    "case_id": "MEB-FORGET-001",
+    "category": "forgetting",
+    "weight_dimension": "safety",
+    "title": "遗忘后不可召回，且删除完整性验证全清",
+    "tags": ["mini", "forgetting", "basic"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "临时联系人代号为夜莺"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "夜莺",
+        "expect": {"must_contain": ["夜莺"], "relevant_refs": [0]}
+      },
+      {
+        "op": "forget",
+        "capsule_ref": 0,
+        "mode": "soft_delete",
+        "expect": {"deletion_complete": true, "deleted_count": 1}
+      },
+      {
+        "op": "search",
+        "query": "夜莺",
+        "comment": "软删后主表留行供审计，但必须从 FTS 摘除、不可召回",
+        "expect": {"must_not_contain": ["夜莺"], "must_not_retrieve_refs": [0], "max_hits": 0}
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-FORGET-002",
+    "category": "forgetting",
+    "weight_dimension": "safety",
+    "title": "已遗忘的记忆不可复活（终态不可回到可检索状态）",
+    "tags": ["mini", "forgetting", "no_revival"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "待撤回的错误结论 alpha"},
+          "source_type": "eval"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {"op": "forget", "capsule_ref": 0, "expect": {"deletion_complete": true}},
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "active",
+        "reason": "attempt_revive_forgotten",
+        "comment": "这是本状态机最实的一条数据完整性约束：forgotten 到不了任何可检索状态",
+        "expect": {"illegal": true}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "reinforced",
+        "reason": "attempt_reinforce_forgotten",
+        "expect": {"illegal": true}
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-FORGET-003",
+    "category": "forgetting",
+    "weight_dimension": "safety",
+    "title": "硬删后主表无行，删除验证仍须全清",
+    "tags": ["forgetting", "hard_delete"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "需彻底清除的记录 bravo"},
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "bravo",
+        "expect": {"must_contain": ["bravo"], "relevant_refs": [0]}
+      },
+      {
+        "op": "forget",
+        "capsule_ref": 0,
+        "mode": "hard_delete",
+        "expect": {"deletion_complete": true, "deleted_count": 1}
+      },
+      {
+        "op": "search",
+        "query": "bravo",
+        "expect": {"must_not_contain": ["bravo"], "max_hits": 0}
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-FORGET-004",
+    "category": "forgetting",
+    "weight_dimension": "safety",
+    "title": "定向遗忘只删指定项，同批其他记忆不受影响",
+    "tags": ["mini", "forgetting", "precision"],
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "保留项 charlie 需长期存档"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {"knowledge_type": "fact", "statement": "删除项 delta 已作废"},
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "forget",
+        "capsule_ref": 1,
+        "expect": {"deletion_complete": true, "deleted_count": 1}
+      },
+      {
+        "op": "search",
+        "query": "charlie",
+        "comment": "误删检测：不该被波及",
+        "expect": {
+          "must_contain": ["charlie"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "delta",
+        "expect": {"must_not_contain": ["delta 已作废"], "must_not_retrieve_refs": [1]}
+      }
+    ]
+  }
+]

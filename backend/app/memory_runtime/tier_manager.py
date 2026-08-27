@@ -425,6 +425,17 @@ def run_auto_flow(
         "demoted": demoted,
         "skipped": skipped,
     }
+    # 维护成本记账（Accounting 规范 §2.3）：状态机扫描本身要花资源，
+    # 只对**实际发生流转**的胶囊计费——纯扫过没动的不产生维护成本，否则
+    # 每轮定时任务都会给全库无差别加成本，把 ROI 指标冲成噪音。
+    moved_ids = [item["capsule_id"] for item in (*promoted, *demoted)]
+    if moved_ids:
+        try:
+            from ..memoryos.accounting import record_maintenance
+
+            record_maintenance(moved_ids)
+        except Exception as exc:  # pragma: no cover - 记账失败不该回滚已完成的流转
+            logger.warning("tier auto-flow maintenance accounting failed: %s", exc)
     record(
         "tier_auto_flow",
         {
