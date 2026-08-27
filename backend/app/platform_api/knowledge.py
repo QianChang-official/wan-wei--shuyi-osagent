@@ -35,14 +35,28 @@ import uuid
 from datetime import timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from app.db import get_conn, transaction
 from app.platform_api.guards import audit_safe
+from app.soul.ownership import actor_id_for_request, configured_actor_id
 from app.utils.datetime_utils import utc_now, utc_now_iso_compact
 
-router = APIRouter(prefix='/knowledge', tags=['knowledge'])
+
+
+def _require_knowledge_owner(request: Request) -> None:
+    """Keep legacy shared knowledge storage behind the configured local actor."""
+    owner_id = actor_id_for_request(request)
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
+router = APIRouter(
+    prefix='/knowledge',
+    tags=['knowledge'],
+    dependencies=[Depends(_require_knowledge_owner)],
+)
 
 SOURCES = ('manual', 'web', 'chat', 'file')
 _IMPORT_CAP = 500

@@ -30,15 +30,31 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.platform_api.deps import WORK_GEARS
 from app.platform_api.guards import audit_safe, require_gear
 from app.platform_api.store import JsonStore
+from app.soul.ownership import actor_id_for_request, configured_actor_id
 from app.utils.datetime_utils import utc_now_iso
 
-router = APIRouter()
+
+
+def _require_device_owner(request: Request) -> None:
+    """Keep device-level state behind the configured local principal.
+
+    The system service controls one physical desktop (voice history, browser
+    rules, emulator jobs and LAN pairing), rather than a tenant-owned object.
+    Until a separate device-admin role exists, alternate API principals must
+    not be able to read or mutate that shared state.
+    """
+    owner_id = actor_id_for_request(request)
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
+router = APIRouter(dependencies=[Depends(_require_device_owner)])
 
 _sys_store = JsonStore('system')
 _emu_store = JsonStore('emulator')

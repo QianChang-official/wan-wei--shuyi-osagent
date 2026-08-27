@@ -29,7 +29,7 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.platform_api.deps import WORK_GEARS
@@ -41,6 +41,7 @@ from app.platform_api.guards import (
 )
 from app.platform_api.store import JsonStore
 from app.security import encryption
+from app.soul.ownership import actor_id_for_request, configured_actor_id
 from app.utils.datetime_utils import utc_now_iso
 
 router = APIRouter(tags=['spaces'])
@@ -126,16 +127,60 @@ def _new_project_id() -> str:
     return 'sp_' + uuid.uuid4().hex[:12]
 
 
-def _get_project_or_404(pid: str) -> dict:
+def _get_project_or_404_unscoped(pid: str) -> dict:
     project = _projects.get(pid)
     if not isinstance(project, dict):
         raise HTTPException(status_code=404, detail=f'项目不存在：{pid}')
     return project
 
 
+def _owner_id(request: Request | None = None) -> str:
+    return actor_id_for_request(request)
+
+
+def _legacy_owner_allowed(owner_id: str) -> bool:
+    return owner_id in {'anonymous', configured_actor_id()}
+
+
+def _project_visible(project: dict, owner_id: str) -> bool:
+    stored_owner = project.get('owner_id')
+    if stored_owner:
+        return str(stored_owner) == owner_id
+    return _legacy_owner_allowed(owner_id)
+
+
+def _materialize_project_owner(pid: str, project: dict, owner_id: str) -> dict:
+    """Bind a compatible ownerless legacy row before allowing mutations."""
+    if project.get('owner_id') or not _legacy_owner_allowed(owner_id):
+        return project
+
+    def _bind(data: dict) -> dict:
+        current = data.get(pid)
+        if not isinstance(current, dict) or not _project_visible(current, owner_id):
+            raise HTTPException(status_code=404, detail=f'legacy project not visible: {pid}')
+        current = dict(current)
+        current['owner_id'] = owner_id
+        data[pid] = current
+        return current
+
+    return _projects.mutate(_bind)
+
+
+def _get_project_or_404(pid: str, owner_id: str | None = None) -> dict:
+    owner_id = owner_id or _owner_id()
+    project = _projects.get(pid)
+    if not isinstance(project, dict) or not _project_visible(project, owner_id):
+        raise HTTPException(status_code=404, detail=f'project not found: {pid}')
+    return _materialize_project_owner(pid, project, owner_id)
+
+
 def _public_project(project: dict) -> dict:
     """对外项目视图：剥离内部字段（commit_template 走专属接口）。"""
-    return {key: value for key, value in project.items() if key != 'commit_template'}
+    return {
+        key: value
+        for key, value in project.items()
+        if key not in {'commit_template', 'owner_id'}
+    }
 
 
 def _commit_template_of(project: dict) -> dict:
@@ -333,8 +378,51 @@ def _validate_branch_name(branch: str) -> str | None:
     return None
 
 
-def _integration_view(kind: str) -> dict:
+def _integration_view_unscoped(kind: str) -> dict:
     stored = _integrations.get(kind)
+    if not isinstance(stored, dict) or not stored.get('token_encrypted'):
+        return {'kind': kind, 'bound': False}
+    view: dict[str, Any] = {'kind': kind, 'bound': True}
+    if stored.get('account'):
+        view['account'] = stored['account']
+    if stored.get('scopes'):
+        view['scopes'] = stored['scopes']
+    if stored.get('bound_at'):
+        view['bound_at'] = stored['bound_at']
+    return view
+
+
+def _integration_key(kind: str, owner_id: str) -> str:
+    return f'{kind}::{owner_id}'
+
+
+def _integration_record(kind: str, owner_id: str, *, materialize: bool = False) -> dict | None:
+    """Resolve an owner-private integration, including one legacy row."""
+    keyed = _integrations.get(_integration_key(kind, owner_id))
+    if isinstance(keyed, dict) and keyed.get('token_encrypted'):
+        return keyed
+    legacy = _integrations.get(kind)
+    if not isinstance(legacy, dict) or not legacy.get('token_encrypted'):
+        return None
+    stored_owner = legacy.get('owner_id')
+    if stored_owner and str(stored_owner) != owner_id:
+        return None
+    if materialize and not stored_owner and _legacy_owner_allowed(owner_id):
+        def _bind(data: dict) -> dict:
+            current = data.get(kind)
+            if not isinstance(current, dict) or current.get('owner_id') not in (None, owner_id):
+                raise HTTPException(status_code=404, detail='integration not found')
+            current = dict(current)
+            current['owner_id'] = owner_id
+            data[kind] = current
+            return current
+
+        return _integrations.mutate(_bind)
+    return legacy
+
+
+def _integration_view(kind: str, owner_id: str | None = None) -> dict:
+    stored = _integration_record(kind, owner_id or _owner_id(), materialize=True)
     if not isinstance(stored, dict) or not stored.get('token_encrypted'):
         return {'kind': kind, 'bound': False}
     view: dict[str, Any] = {'kind': kind, 'bound': True}
@@ -383,10 +471,18 @@ def _check_root_path(root_path: str | None) -> str:
 
 
 @router.get('/spaces/projects')
-def list_projects(kind: str | None = Query(default=None)) -> list[dict]:
+def list_projects(
+    kind: str | None = Query(default=None),
+    request: Request = None,
+) -> list[dict]:
+    owner_id = _owner_id(request)
     if kind is not None and kind not in PROJECT_KINDS:
         raise HTTPException(status_code=400, detail=f'kind 仅支持 {list(PROJECT_KINDS)}')
-    items = [_public_project(p) for p in _projects.all().values() if isinstance(p, dict)]
+    items = [
+        _public_project(p)
+        for p in _projects.all().values()
+        if isinstance(p, dict) and _project_visible(p, owner_id)
+    ]
     if kind is not None:
         items = [p for p in items if p.get('kind') == kind]
     items.sort(key=lambda p: p.get('created_at', ''), reverse=True)
@@ -394,14 +490,18 @@ def list_projects(kind: str | None = Query(default=None)) -> list[dict]:
 
 
 @router.post('/spaces/projects', status_code=201)
-def create_project(body: ProjectIn) -> dict:
+def create_project(body: ProjectIn, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
     if body.kind not in PROJECT_KINDS:
         raise HTTPException(status_code=400, detail=f'kind 仅支持 {list(PROJECT_KINDS)}')
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail='name 不能为纯空白字符')
     parent_id = (body.parent_id or '').strip() or None
-    if parent_id is not None and not isinstance(_projects.get(parent_id), dict):
+    parent = _projects.get(parent_id) if parent_id is not None else None
+    if parent_id is not None and (
+        not isinstance(parent, dict) or not _project_visible(parent, owner_id)
+    ):
         raise HTTPException(status_code=400, detail=f'父空间不存在：{parent_id}')
     root_path = _check_root_path(body.root_path)
     project = {
@@ -415,18 +515,21 @@ def create_project(body: ProjectIn) -> dict:
         'parent_id': parent_id,
         'created_at': utc_now_iso(),
         'archived': False,
+        'owner_id': owner_id,
     }
     _projects.set(project['id'], project)
     return _public_project(project)
 
 
 @router.get('/spaces/projects/{pid}')
-def get_project(pid: str) -> dict:
-    return _public_project(_get_project_or_404(pid))
+def get_project(pid: str, request: Request = None) -> dict:
+    return _public_project(_get_project_or_404(pid, _owner_id(request)))
 
 
 @router.put('/spaces/projects/{pid}')
-def update_project(pid: str, body: ProjectUpdateIn) -> dict:
+def update_project(pid: str, body: ProjectUpdateIn, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
+    _get_project_or_404(pid, owner_id)
     changes = body.model_dump(exclude_unset=True)
     if 'kind' in changes:
         if changes['kind'] not in PROJECT_KINDS:
@@ -445,12 +548,16 @@ def update_project(pid: str, body: ProjectUpdateIn) -> dict:
         changes['default_branch'] = (changes['default_branch'] or '').strip() or 'main'
     def _apply(data: dict) -> dict:
         stored = data.get(pid)
-        if not isinstance(stored, dict):
+        if not isinstance(stored, dict) or not _project_visible(stored, owner_id):
             raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
         parent_id = changes.get('parent_id')
-        if parent_id is not None and not isinstance(data.get(parent_id), dict):
+        parent = data.get(parent_id) if parent_id is not None else None
+        if parent_id is not None and (
+            not isinstance(parent, dict) or not _project_visible(parent, owner_id)
+        ):
             raise HTTPException(status_code=400, detail=f'父空间不存在：{parent_id}')
         project = dict(stored)
+        project['owner_id'] = owner_id
         project.update(changes)
         data[pid] = project
         return _public_project(project)
@@ -459,9 +566,13 @@ def update_project(pid: str, body: ProjectUpdateIn) -> dict:
 
 
 @router.delete('/spaces/projects/{pid}')
-def delete_project(pid: str) -> dict:
+def delete_project(pid: str, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
+    _get_project_or_404(pid, owner_id)
+
     def _cascade(data: dict) -> list[str]:
-        if not isinstance(data.get(pid), dict):
+        root = data.get(pid)
+        if not isinstance(root, dict) or not _project_visible(root, owner_id):
             raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
 
         # A visited set also bounds traversal if legacy/corrupt data contains a cycle.
@@ -474,6 +585,7 @@ def delete_project(pid: str) -> dict:
                 key for key, value in data.items()
                 if key not in visited
                 and isinstance(value, dict)
+                and _project_visible(value, owner_id)
                 and value.get('parent_id') == current
             ]
             visited.update(children)
@@ -491,12 +603,14 @@ def delete_project(pid: str) -> dict:
 
 
 @router.get('/spaces/integrations')
-def list_integrations() -> list[dict]:
-    return [_integration_view(kind) for kind in INTEGRATION_KINDS]
+def list_integrations(request: Request = None) -> list[dict]:
+    owner_id = _owner_id(request)
+    return [_integration_view(kind, owner_id) for kind in INTEGRATION_KINDS]
 
 
 @router.post('/spaces/integrations/{kind}/bind')
-def bind_integration(kind: str, body: BindIn) -> dict:
+def bind_integration(kind: str, body: BindIn, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
     _check_integration_kind(kind)
     token = body.token.strip()
     if not token:
@@ -506,22 +620,44 @@ def bind_integration(kind: str, body: BindIn) -> dict:
         'account': (body.account or '').strip() or None,
         'scopes': body.scopes or [],
         'bound_at': utc_now_iso(),
+        'owner_id': owner_id,
     }
-    _integrations.set(kind, record)
-    return _integration_view(kind)
+    legacy = _integrations.get(kind)
+    if isinstance(legacy, dict) and legacy.get('token_encrypted'):
+        legacy_owner = legacy.get('owner_id')
+        if legacy_owner and str(legacy_owner) != owner_id:
+            _integrations.set(_integration_key(kind, owner_id), record)
+        elif not legacy_owner and _legacy_owner_allowed(owner_id):
+            _integrations.set(kind, record)
+        else:
+            _integrations.set(_integration_key(kind, owner_id), record)
+    else:
+        _integrations.set(kind, record)
+    return _integration_view(kind, owner_id)
 
 
 @router.post('/spaces/integrations/{kind}/unbind')
-def unbind_integration(kind: str) -> dict:
+def unbind_integration(kind: str, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
     _check_integration_kind(kind)
-    _store_delete(_integrations, kind)
+    key = _integration_key(kind, owner_id)
+    if isinstance(_integrations.get(key), dict):
+        _store_delete(_integrations, key)
+    else:
+        legacy = _integrations.get(kind)
+        if isinstance(legacy, dict) and (
+            not legacy.get('owner_id') and _legacy_owner_allowed(owner_id)
+            or str(legacy.get('owner_id')) == owner_id
+        ):
+            _store_delete(_integrations, kind)
     return {'kind': kind, 'bound': False}
 
 
 @router.post('/spaces/integrations/{kind}/test')
-def test_integration(kind: str) -> dict:
+def test_integration(kind: str, request: Request = None) -> dict:
+    owner_id = _owner_id(request)
     _check_integration_kind(kind)
-    stored = _integrations.get(kind)
+    stored = _integration_record(kind, owner_id, materialize=True)
     if not isinstance(stored, dict) or not stored.get('token_encrypted'):
         return {'ok': False, 'note': f'尚未绑定 {kind} 账号，无法测试'}
     token = stored['token_encrypted']
@@ -589,8 +725,8 @@ def test_integration(kind: str) -> dict:
 
 
 @router.get('/spaces/{pid}/tree')
-def space_tree(pid: str) -> dict:
-    project = _get_project_or_404(pid)
+def space_tree(pid: str, request: Request = None) -> dict:
+    project = _get_project_or_404(pid, _owner_id(request))
     try:
         return _real_tree(project)
     except _NotARepository as exc:
@@ -616,13 +752,19 @@ def space_tree(pid: str) -> dict:
 
 
 @router.get('/spaces/{pid}/commit-template')
-def get_commit_template(pid: str) -> dict:
-    project = _get_project_or_404(pid)
+def get_commit_template(pid: str, request: Request = None) -> dict:
+    project = _get_project_or_404(pid, _owner_id(request))
     return _commit_template_of(project)
 
 
 @router.put('/spaces/{pid}/commit-template')
-def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
+def put_commit_template(
+    pid: str,
+    body: CommitTemplateIn,
+    request: Request = None,
+) -> dict:
+    owner_id = _owner_id(request)
+    _get_project_or_404(pid, owner_id)
     types = [t.strip() for t in body.types if t and t.strip()]
     if not types:
         raise HTTPException(status_code=400, detail='types 不能为空')
@@ -645,7 +787,7 @@ def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
         ) from None
     def _apply(data: dict) -> None:
         stored = data.get(pid)
-        if not isinstance(stored, dict):
+        if not isinstance(stored, dict) or not _project_visible(stored, owner_id):
             raise HTTPException(status_code=404, detail=f'空间不存在：{pid}')
         project = dict(stored)
         project['commit_template'] = template_cfg
@@ -661,8 +803,8 @@ def put_commit_template(pid: str, body: CommitTemplateIn) -> dict:
 
 
 @router.post('/spaces/{pid}/commit')
-def commit_in_space(pid: str, body: CommitIn) -> dict:
-    project = _get_project_or_404(pid)
+def commit_in_space(pid: str, body: CommitIn, request: Request = None) -> dict:
+    project = _get_project_or_404(pid, _owner_id(request))
     root = (project.get('root_path') or '').strip()
     if root:
         try:

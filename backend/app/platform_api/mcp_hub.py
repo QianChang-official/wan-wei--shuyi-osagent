@@ -46,12 +46,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.platform_api.guards import audit_safe, device_gear_enabled, mask_secret_keys
 from app.platform_api.store import JsonStore
 from app.security import encryption
+from app.security.auth import actor_id_from_api_key
 from app.security.ssrf import validate_external_url
 
 router = APIRouter(prefix='/mcp', tags=['mcp-hub'])
@@ -243,19 +244,98 @@ def _migrate_clear_preset_commands() -> None:
         _store.mutate(_migrate)
 
 
-def _servers() -> dict[str, dict]:
+def _configured_actor_id() -> str | None:
+    """Resolve the configured single-user actor for legacy MCP rows."""
+    try:
+        from app.soul.ownership import configured_actor_id
+    except Exception:  # noqa: BLE001 - compatibility helper must not break reads
+        try:
+            from backend.app.soul.ownership import configured_actor_id
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return configured_actor_id()
+    except Exception:  # noqa: BLE001 - auth/config lookup is best effort here
+        return None
+
+
+def _actor_id(request: Request | None = None) -> str:
+    """Resolve a request principal without exposing its API key."""
+    if request is None:
+        return _configured_actor_id() or 'anonymous'
+    api_key = (request.headers.get('x-api-key') or '').strip()
+    return actor_id_from_api_key(api_key) if api_key else 'anonymous'
+
+
+def _legacy_owner_allowed(owner_id: str) -> bool:
+    """Ownerless pre-isolation rows are compatible only with local actors."""
+    return owner_id == 'anonymous' or owner_id == _configured_actor_id()
+
+
+def _record_visible(record: dict[str, Any], owner_id: str) -> bool:
+    owner = record.get('owner_id')
+    if owner:
+        return str(owner) == owner_id
+    return _legacy_owner_allowed(owner_id)
+
+
+def _materialize_server_owner(sid: str, owner_id: str) -> dict | None:
+    """Bind one ownerless legacy row atomically after a compatible read."""
+    def _bind(data: dict) -> dict | None:
+        current = data.get(sid)
+        if not isinstance(current, dict):
+            return None
+        if current.get('owner_id'):
+            return dict(current) if str(current['owner_id']) == owner_id else None
+        if not _legacy_owner_allowed(owner_id):
+            return None
+        updated = dict(current)
+        updated['owner_id'] = owner_id
+        data[sid] = updated
+        return updated
+
+    return _store.mutate(_bind)
+
+
+def _servers(owner_id: str | None = None) -> dict[str, dict]:
     """全部服务器记录（过滤保留键与墓碑）。"""
-    return {
-        key: value
-        for key, value in _store.all().items()
-        if not key.startswith('_') and isinstance(value, dict)
-    }
+    if owner_id is None:
+        return {
+            key: value
+            for key, value in _store.all().items()
+            if not key.startswith('_') and isinstance(value, dict)
+        }
+
+    def _snapshot(data: dict) -> dict[str, dict]:
+        visible: dict[str, dict] = {}
+        for key, value in data.items():
+            if key.startswith('_') or not isinstance(value, dict):
+                continue
+            if not _record_visible(value, owner_id):
+                continue
+            rec = dict(value)
+            if not rec.get('owner_id') and _legacy_owner_allowed(owner_id):
+                rec['owner_id'] = owner_id
+                data[key] = rec
+            visible[key] = rec
+        return visible
+
+    return _store.mutate(_snapshot)
 
 
-def _get_server_or_404(sid: str) -> dict:
+def _get_server_or_404(sid: str, owner_id: str | None = None) -> dict:
     rec = _store.get(sid)
     if not isinstance(rec, dict):
         raise HTTPException(status_code=404, detail=f'MCP 服务器不存在：{sid}')
+    if owner_id is None:
+        return rec
+    if not _record_visible(rec, owner_id):
+        raise HTTPException(status_code=404, detail=f'MCP server is not available: {sid}')
+    if not rec.get('owner_id'):
+        bound = _materialize_server_owner(sid, owner_id)
+        if bound is not None:
+            return bound
+        raise HTTPException(status_code=404, detail='MCP server is not available')
     return rec
 
 
@@ -269,6 +349,7 @@ def _redact_env(rec: dict) -> dict:
     """返回服务器记录的脱敏副本：env 只保留键名，不暴露真实密钥值。"""
     redacted = dict(rec)
     redacted.pop(_CONFIG_REVISION_KEY, None)
+    redacted.pop('owner_id', None)
     env = redacted.get('env')
     if isinstance(env, dict):
         redacted['env'] = {k: '' for k in env}
@@ -334,12 +415,18 @@ def _decrypt_env(rec: dict) -> dict[str, str]:
     return plain
 
 
-def _delete_key(key: str) -> None:
+def _delete_key(key: str, owner_id: str | None = None) -> bool:
     """Delete one record through the store's atomic mutation boundary."""
-    def _delete(data: dict) -> None:
+    def _delete(data: dict) -> bool:
+        current = data.get(key)
+        if owner_id is not None:
+            if not isinstance(current, dict) or not _record_visible(current, owner_id):
+                return False
+        existed = key in data
         data.pop(key, None)
+        return existed
 
-    _store.mutate(_delete)
+    return bool(_store.mutate(_delete))
 
 
 _CALL_ARGS_LIMIT = 400
@@ -366,7 +453,15 @@ def _redact_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def _record_call(rec: dict, payload: CallIn, *, ok: bool, mode: str, note: str) -> dict:
+def _record_call(
+    rec: dict,
+    payload: CallIn,
+    *,
+    ok: bool,
+    mode: str,
+    note: str,
+    owner_id: str | None = None,
+) -> dict:
     """向 _recent_calls 追加一条调用记录（最新在前，封顶 20 条）。
 
     读-改-写收进模块级单锁，避免并发调用互相覆盖丢记录（_CALLS_KEY
@@ -383,6 +478,9 @@ def _record_call(rec: dict, payload: CallIn, *, ok: bool, mode: str, note: str) 
         'mode': mode,
         'note': note,
     }
+    effective_owner = owner_id or rec.get('owner_id') or _configured_actor_id()
+    if effective_owner:
+        entry['owner_id'] = str(effective_owner)
     def _prepend(data: dict) -> None:
         calls = data.get(_CALLS_KEY, [])
         if not isinstance(calls, list):
@@ -398,7 +496,44 @@ def _record_call(rec: dict, payload: CallIn, *, ok: bool, mode: str, note: str) 
         'ok': ok,
         'mode': mode,
     })
-    return entry
+    return _public_call(entry)
+
+
+def _public_call(entry: dict[str, Any]) -> dict[str, Any]:
+    """Remove the internal owner marker before returning call history."""
+    safe = dict(entry)
+    safe.pop('owner_id', None)
+    return safe
+
+
+def _calls_for_owner(owner_id: str, servers: dict[str, dict]) -> list[dict[str, Any]]:
+    """Return recent call history whose server or owner belongs to the actor."""
+    calls = _store.get(_CALLS_KEY, [])
+    if not isinstance(calls, list):
+        return []
+    visible: list[dict[str, Any]] = []
+    for entry in calls:
+        if not isinstance(entry, dict):
+            continue
+        entry_owner = entry.get('owner_id')
+        if entry_owner:
+            if str(entry_owner) != owner_id:
+                continue
+        else:
+            # Legacy entries had no owner marker.  Associate them with their
+            # server, and never expose unscoped history to a newly introduced
+            # principal.  Only the configured/anonymous compatibility actors
+            # may inspect pre-isolation history.
+            if not _legacy_owner_allowed(owner_id):
+                continue
+            sid = entry.get('server_id')
+            server = servers.get(sid) if sid else None
+            if not isinstance(server, dict) or not _record_visible(server, owner_id):
+                continue
+        visible.append(_public_call(entry))
+        if len(visible) >= _CALLS_CAP:
+            break
+    return visible
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +1047,7 @@ def _update_runtime_state(
     status: str,
     last_error: str | None,
     tools: list | None = None,
+    owner_id: str | None = None,
 ) -> bool:
     """CAS runtime results so slow operations cannot overwrite newer config.
 
@@ -923,7 +1059,11 @@ def _update_runtime_state(
         current = data.get(sid)
         if not isinstance(current, dict) or _config_revision(current) != expected_revision:
             return False
+        if owner_id is not None and not _record_visible(current, owner_id):
+            return False
         updated = dict(current)
+        if owner_id is not None and not updated.get('owner_id'):
+            updated['owner_id'] = owner_id
         updated['status'] = status
         updated['last_error'] = last_error
         if tools is not None:
@@ -936,21 +1076,35 @@ def _update_runtime_state(
     return bool(_store.mutate(_apply))
 
 
-def _mark_error(sid: str, expected_revision: int, message: str) -> bool:
+def _mark_error(
+    sid: str,
+    expected_revision: int,
+    message: str,
+    *,
+    owner_id: str | None = None,
+) -> bool:
     return _update_runtime_state(
         sid,
         expected_revision,
         status='error',
         last_error=message,
+        owner_id=owner_id,
     )
 
 
-def _mark_timeout(sid: str, expected_revision: int, message: str) -> bool:
+def _mark_timeout(
+    sid: str,
+    expected_revision: int,
+    message: str,
+    *,
+    owner_id: str | None = None,
+) -> bool:
     return _update_runtime_state(
         sid,
         expected_revision,
         status='timeout',
         last_error=message,
+        owner_id=owner_id,
     )
 
 
@@ -959,20 +1113,22 @@ def _mark_timeout(sid: str, expected_revision: int, message: str) -> bool:
 # ---------------------------------------------------------------------------
 
 @router.get('/servers')
-def list_servers() -> dict:
+def list_servers(request: Request = None) -> dict:
     """服务器列表（含预置示例）；响应中 env 值脱敏。"""
     _ensure_seeded()
+    owner_id = _actor_id(request)
     servers = sorted(
-        (_redact_env(s) for s in _servers().values()),
+        (_redact_env(s) for s in _servers(owner_id).values()),
         key=lambda s: (s.get('created_at') or '', s.get('id') or ''),
     )
     return {'servers': servers, 'total': len(servers)}
 
 
 @router.post('/servers', status_code=201)
-def create_server(payload: ServerIn) -> dict:
+def create_server(payload: ServerIn, request: Request = None) -> dict:
     """注册新 MCP 服务器；env 值加密落盘，响应中脱敏。"""
     _ensure_seeded()
+    owner_id = _actor_id(request)
     sid = _new_id()
     data = _normalize_server_config(payload.model_dump())
     data['env'] = _encrypt_env(data.get('env'))
@@ -983,6 +1139,7 @@ def create_server(payload: ServerIn) -> dict:
         'created_at': _now(),
         'tools_cache': [],
         'tools_count': 0,
+        'owner_id': owner_id,
     }
     _store.set(sid, rec)
     audit_safe('mcp_server_created', {'server_id': sid, 'name': rec.get('name'), 'transport': rec.get('transport')})
@@ -990,14 +1147,14 @@ def create_server(payload: ServerIn) -> dict:
 
 
 @router.get('/servers/{sid}')
-def get_server(sid: str) -> dict:
+def get_server(sid: str, request: Request = None) -> dict:
     """单个服务器详情；响应中 env 值脱敏。"""
     _ensure_seeded()
-    return _redact_env(_get_server_or_404(sid))
+    return _redact_env(_get_server_or_404(sid, _actor_id(request)))
 
 
 @router.put('/servers/{sid}')
-def update_server(sid: str, payload: ServerPatch) -> dict:
+def update_server(sid: str, payload: ServerPatch, request: Request = None) -> dict:
     """部分更新服务器配置（仅合并显式传入字段）；env 更新加密落盘，响应脱敏。
 
     ``command``/``args``/``transport`` 变更时，旧的连接状态与工具缓存随之
@@ -1006,15 +1163,20 @@ def update_server(sid: str, payload: ServerPatch) -> dict:
     ``'unknown'``，``connected``/``error`` 由服务端探测/调用结果写入。
     """
     _ensure_seeded()
+    owner_id = _actor_id(request)
     patch = payload.model_dump(exclude_unset=True)
     if 'env' in patch and patch['env'] is not None:
         patch['env'] = _encrypt_env(patch['env'])
 
     def _apply(data: dict) -> dict:
         stored = data.get(sid)
+        if isinstance(stored, dict) and not _record_visible(stored, owner_id):
+            raise HTTPException(status_code=404, detail='MCP server is not available')
         if not isinstance(stored, dict):
             raise HTTPException(status_code=404, detail=f'MCP 服务器不存在：{sid}')
         rec = dict(stored)
+        if not rec.get('owner_id'):
+            rec['owner_id'] = owner_id
         rec.update(patch)
         rec = _normalize_server_config(rec)
         rec[_CONFIG_REVISION_KEY] = _config_revision(stored) + 1
@@ -1033,11 +1195,13 @@ def update_server(sid: str, payload: ServerPatch) -> dict:
 
 
 @router.delete('/servers/{sid}')
-def delete_server(sid: str) -> dict:
+def delete_server(sid: str, request: Request = None) -> dict:
     """注销服务器（历史调用记录保留在总览中）。"""
     _ensure_seeded()
-    rec = _get_server_or_404(sid)
-    _delete_key(sid)
+    owner_id = _actor_id(request)
+    rec = _get_server_or_404(sid, owner_id)
+    if not _delete_key(sid, owner_id):
+        raise HTTPException(status_code=404, detail='MCP server is not available')
     audit_safe('mcp_server_deleted', {'server_id': sid, 'name': rec.get('name')})
     return {'ok': True, 'id': sid}
 
@@ -1047,7 +1211,7 @@ def delete_server(sid: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get('/servers/{sid}/tools')
-def discover_tools(sid: str) -> dict:
+def discover_tools(sid: str, request: Request = None) -> dict:
     """实时探测服务器工具清单。
 
     stdio + command 时发起真实 JSON-RPC 探测（握手 10 秒独立预算 +
@@ -1055,7 +1219,8 @@ def discover_tools(sid: str) -> dict:
     绝不伪装已连接。
     """
     _ensure_seeded()
-    rec = _get_server_or_404(sid)
+    owner_id = _actor_id(request)
+    rec = _get_server_or_404(sid, owner_id)
     expected_revision = _config_revision(rec)
     if not rec.get('enabled'):
         raise HTTPException(
@@ -1092,12 +1257,12 @@ def discover_tools(sid: str) -> dict:
     except TimeoutError:
         logger.warning('MCP 工具发现超时：server_id=%s', sid, exc_info=True)
         note = '工具发现超时，请稍后重试'
-        _mark_timeout(sid, expected_revision, note)
+        _mark_timeout(sid, expected_revision, note, owner_id=owner_id)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'timeout', 'note': note}
     except Exception:  # noqa: BLE001 —— 子进程/协议失败落为 error
         logger.exception('MCP 工具发现失败：server_id=%s', sid)
         note = '工具发现失败，请检查服务器配置或运行状态'
-        _mark_error(sid, expected_revision, note)
+        _mark_error(sid, expected_revision, note, owner_id=owner_id)
         return {'server': sid, 'transport': transport, 'tools': [], 'status': 'error', 'note': note}
 
     tools = result.get('tools') if isinstance(result, dict) else None
@@ -1108,6 +1273,7 @@ def discover_tools(sid: str) -> dict:
         status='connected',
         last_error=None,
         tools=tools,
+        owner_id=owner_id,
     )
     if not state_applied:
         return {
@@ -1133,7 +1299,7 @@ def discover_tools(sid: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.post('/servers/{sid}/call')
-def call_tool(sid: str, payload: CallIn) -> dict:
+def call_tool(sid: str, payload: CallIn, request: Request = None) -> dict:
     """转发一次 tools/call。
 
     真实连接可用（enabled + stdio + command）时执行并返回 mode:'live'；
@@ -1141,7 +1307,8 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     其它失败返回 mode:'error'。四种结局都会写入最近调用记录。
     """
     _ensure_seeded()
-    rec = _get_server_or_404(sid)
+    owner_id = _actor_id(request)
+    rec = _get_server_or_404(sid, owner_id)
     expected_revision = _config_revision(rec)
     if not rec.get('enabled'):
         raise HTTPException(
@@ -1161,7 +1328,7 @@ def call_tool(sid: str, payload: CallIn) -> dict:
         # 503 —— 返回 200 会让前端把未连接渲染成灰色成功。响应体只保留
         # plan 与机器可读 reason，不含任何结果字段。
         note = 'MCP 服务器未连接，调用计划已记录'
-        _record_call(rec, payload, ok=False, mode='stub', note=note)
+        _record_call(rec, payload, ok=False, mode='stub', note=note, owner_id=owner_id)
         raise HTTPException(
             status_code=503,
             detail={
@@ -1182,14 +1349,14 @@ def call_tool(sid: str, payload: CallIn) -> dict:
     except TimeoutError:
         logger.warning('MCP 工具调用超时：server_id=%s tool=%s', sid, payload.tool, exc_info=True)
         note = '真实调用超时，请稍后重试'
-        _mark_timeout(sid, expected_revision, note)
-        _record_call(rec, payload, ok=False, mode='timeout', note=note)
+        _mark_timeout(sid, expected_revision, note, owner_id=owner_id)
+        _record_call(rec, payload, ok=False, mode='timeout', note=note, owner_id=owner_id)
         return {'ok': False, 'mode': 'timeout', 'note': note, 'plan': _redact_plan(plan)}
     except Exception:  # noqa: BLE001
         logger.exception('MCP 工具调用失败：server_id=%s tool=%s', sid, payload.tool)
         note = '真实调用失败，请检查服务器配置或运行状态'
-        _mark_error(sid, expected_revision, note)
-        _record_call(rec, payload, ok=False, mode='error', note=note)
+        _mark_error(sid, expected_revision, note, owner_id=owner_id)
+        _record_call(rec, payload, ok=False, mode='error', note=note, owner_id=owner_id)
         return {'ok': False, 'mode': 'error', 'note': note, 'plan': _redact_plan(plan)}
 
     state_applied = _update_runtime_state(
@@ -1197,13 +1364,14 @@ def call_tool(sid: str, payload: CallIn) -> dict:
         expected_revision,
         status='connected',
         last_error=None,
+        owner_id=owner_id,
     )
     note = (
         '真实转发成功'
         if state_applied
         else '真实转发成功；配置在执行期间发生变化，连接状态未写回'
     )
-    _record_call(rec, payload, ok=True, mode='live', note=note)
+    _record_call(rec, payload, ok=True, mode='live', note=note, owner_id=owner_id)
     return {'ok': True, 'mode': 'live', 'server': sid, 'tool': payload.tool, 'result': result, 'note': note}
 
 
@@ -1212,13 +1380,12 @@ def call_tool(sid: str, payload: CallIn) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get('/overview')
-def overview() -> dict:
+def overview(request: Request = None) -> dict:
     """MCP 枢纽总览：规模统计 + 最近 20 条调用记录。"""
     _ensure_seeded()
-    servers = _servers()
-    calls = _store.get(_CALLS_KEY, [])
-    if not isinstance(calls, list):
-        calls = []
+    owner_id = _actor_id(request)
+    servers = _servers(owner_id)
+    calls = _calls_for_owner(owner_id, servers)
     return {
         'servers': len(servers),
         'enabled': sum(1 for s in servers.values() if s.get('enabled')),

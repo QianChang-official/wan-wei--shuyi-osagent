@@ -33,15 +33,28 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.platform_api.guards import audit_safe
 from app.platform_api.store import JsonStore
 from app.memory_runtime.policy_gate import evaluate_policy
+from app.soul.ownership import actor_id_for_request, configured_actor_id
 from app.utils.datetime_utils import utc_now, utc_now_iso_compact
 
-router = APIRouter(prefix='/memory', tags=['memory-center'])
+
+def _require_configured_memory_owner(request: Request) -> None:
+    """Protect legacy single-node JSON memory from alternate API principals."""
+    owner_id = actor_id_for_request(request)
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
+router = APIRouter(
+    prefix='/memory',
+    tags=['memory-center'],
+    dependencies=[Depends(_require_configured_memory_owner)],
+)
 
 
 def _enforce_memory_policy(text: str) -> None:

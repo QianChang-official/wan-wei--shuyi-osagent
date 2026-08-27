@@ -32,17 +32,141 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.platform_api.deps import WORK_GEARS
 from app.platform_api.guards import audit_safe, require_gear
 from app.platform_api.store import JsonStore
+from app.security.auth import actor_id_from_api_key
 
 router = APIRouter(prefix='/automation', tags=['platform-automation'])
 
 _flows = JsonStore('flows')
 _runs = JsonStore('flow_runs')
+
+
+def _actor_id(request: Request | None = None) -> str:
+    """Return the principal for an HTTP request or a legacy direct call."""
+    if request is None:
+        return _configured_actor_id() or 'anonymous'
+    api_key = (request.headers.get('x-api-key') or '').strip()
+    return actor_id_from_api_key(api_key) if api_key else 'anonymous'
+
+
+def _configured_actor_id() -> str | None:
+    """Resolve the configured single-user actor used for legacy rows."""
+    try:
+        from app.soul.ownership import configured_actor_id
+    except Exception:  # noqa: BLE001 - compatibility lookup must not break reads
+        try:
+            from backend.app.soul.ownership import configured_actor_id
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return configured_actor_id()
+    except Exception:  # noqa: BLE001 - malformed auth config is fail-closed
+        return None
+
+
+def _legacy_owner_allowed(owner_id: str) -> bool:
+    """Only the local configured actor (or anonymous compatibility path) may adopt old rows."""
+    return owner_id == 'anonymous' or owner_id == _configured_actor_id()
+
+
+def _record_visible(record: dict[str, Any], owner_id: str) -> bool:
+    owner = record.get('owner_id')
+    if owner:
+        return str(owner) == owner_id
+    return _legacy_owner_allowed(owner_id)
+
+
+def _materialize_owner(store: JsonStore, key: str, record: dict[str, Any], owner_id: str) -> str | None:
+    """Bind an ownerless legacy record only for its compatible principal."""
+    if record.get('owner_id'):
+        return str(record['owner_id'])
+    if not _legacy_owner_allowed(owner_id):
+        return None
+    record['owner_id'] = owner_id
+    store.set(key, record)
+    return owner_id
+
+
+def _flow_owner(flow: dict, preferred_owner: str | None = None) -> str | None:
+    owner = flow.get('owner_id')
+    if owner:
+        return str(owner)
+    candidate = preferred_owner or _configured_actor_id() or 'anonymous'
+    return candidate if _legacy_owner_allowed(candidate) else None
+
+
+def _get_flow_or_404(fid: str, owner_id: str, *, materialize: bool = True) -> dict:
+    flow = _flows.get(fid)
+    if not isinstance(flow, dict) or not _record_visible(flow, owner_id):
+        if isinstance(flow, dict):
+            audit_safe('flow_access_denied', {'flow_id': fid, 'reason': 'owner_mismatch'})
+        raise HTTPException(status_code=404, detail=f'流程不存在：{fid}')
+    if materialize and not flow.get('owner_id'):
+        _materialize_owner(_flows, fid, flow, owner_id)
+    return flow
+
+
+def _owned_flow_snapshot(owner_id: str) -> list[dict]:
+    """Return visible flows and migrate compatible legacy rows."""
+    def _snapshot(data: dict) -> list[dict]:
+        visible: list[dict] = []
+        for fid, value in data.items():
+            if not isinstance(value, dict) or not _record_visible(value, owner_id):
+                continue
+            if not value.get('owner_id'):
+                value['owner_id'] = owner_id
+                data[fid] = value
+            visible.append(dict(value))
+        return visible
+
+    return _flows.mutate(_snapshot)
+
+
+def _run_owner(run: dict, preferred_owner: str | None = None) -> str | None:
+    owner = run.get('owner_id')
+    if owner:
+        return str(owner)
+    # Runs written before owner persistence inherit the owning flow where
+    # possible. A legacy flow is only claimable by the compatible actor.
+    flow_id = run.get('flow_id')
+    if flow_id:
+        flow = _flows.get(str(flow_id))
+        if isinstance(flow, dict):
+            flow_owner = _flow_owner(flow, preferred_owner)
+            if flow_owner:
+                return flow_owner
+    candidate = preferred_owner or _configured_actor_id() or 'anonymous'
+    return candidate if _legacy_owner_allowed(candidate) else None
+
+
+def _run_visible(run: dict, owner_id: str) -> bool:
+    owner = _run_owner(run, owner_id)
+    return bool(owner) and owner == owner_id
+
+
+def _materialize_run_owner(run: dict, preferred_owner: str | None = None) -> str | None:
+    if run.get('owner_id'):
+        return str(run['owner_id'])
+    owner = _run_owner(run, preferred_owner)
+    if not owner or not _legacy_owner_allowed(owner) and not run.get('flow_id'):
+        return None
+    rid = str(run.get('id') or '')
+    if not rid:
+        return None
+    run['owner_id'] = owner
+    _runs.set(rid, run)
+    return owner
+
+
+def _public_record(record: dict) -> dict:
+    public = dict(record)
+    public.pop('owner_id', None)
+    return public
 
 TRIGGERS = ('manual', 'schedule', 'event')
 TRIGGER_LABELS = {'manual': '手动触发', 'schedule': '定时触发', 'event': '事件触发'}
@@ -753,12 +877,18 @@ async def _simulate_run(run_id: str, flow: dict) -> None:
     _persist_run(run_id, run)
 
 
-def _try_create_run(flow: dict, *, triggered_by: str) -> Optional[dict]:
+def _try_create_run(
+    flow: dict,
+    *,
+    triggered_by: str,
+    owner_id: str | None = None,
+) -> Optional[dict]:
     """创建 running 记录；同流程已有 running 时返回 None（重入拒绝）。
 
     重入检查与创建写入在同一 store 锁内完成，避免并发双开。
     """
     fid = str(flow.get('id') or '')
+    owner = str(flow.get('owner_id') or owner_id or _configured_actor_id() or 'anonymous')
     rid = _new_id('run')
     run = {
         'id': rid,
@@ -771,14 +901,19 @@ def _try_create_run(flow: dict, *, triggered_by: str) -> Optional[dict]:
         'finished_at': None,
         'simulated': False,
         'triggered_by': triggered_by,
+        'owner_id': owner,
     }
     if not flow.get('enabled', True):
         run['note'] = '流程处于停用状态，本次为手动强制执行'
     with _runs._lock:  # noqa: SLF001 —— 重入检查与创建需原子
         data = _runs._read()  # noqa: SLF001
-        for existing in data.values():
+        for existing_key, existing in data.items():
             if isinstance(existing, dict) and existing.get('flow_id') == fid \
-                    and existing.get('status') == 'running':
+                    and existing.get('status') == 'running' \
+                    and (_run_owner(existing, owner) or owner) == owner:
+                if not existing.get('owner_id'):
+                    existing['owner_id'] = owner
+                    data[existing_key] = existing
                 return None
         data[rid] = run
         _runs._write(data)  # noqa: SLF001
@@ -833,6 +968,12 @@ def _scheduler_tick(now: Optional[datetime] = None) -> list[str]:
     for fid, flow in flows.items():
         if not isinstance(flow, dict):
             continue
+        # The scheduler is an internal system actor. It must preserve an
+        # existing flow owner and may only bind an ownerless legacy flow to
+        # the configured local/anonymous compatibility principal.
+        owner = _flow_owner(flow)
+        if owner and not flow.get('owner_id'):
+            _materialize_owner(_flows, str(fid), flow, owner)
         if flow.get('trigger') != 'schedule' or not flow.get('enabled', True) \
                 or not flow.get('cron'):
             _schedule_state.pop(fid, None)
@@ -845,7 +986,7 @@ def _scheduler_tick(now: Optional[datetime] = None) -> list[str]:
         due = state.get('due')
         if due is None or due > now:
             continue
-        run = _try_create_run(flow, triggered_by='schedule')
+        run = _try_create_run(flow, triggered_by='schedule', owner_id=owner)
         if run is not None:
             _launch_run(run['id'], flow)
             fired.append(run['id'])
@@ -918,7 +1059,7 @@ router.lifespan_context = asynccontextmanager(_automation_lifespan)
 def _flow_view(flow: dict) -> dict:
     """flow 对外视图：补 next_run（schedule 且 enabled 时的下一次触发
     ISO8601，否则 None）。读取时现算不落库，避免存储值过期。"""
-    view = dict(flow)
+    view = _public_record(flow)
     next_run: Optional[str] = None
     if view.get('trigger') == 'schedule' and view.get('enabled', True):
         next_run, _approx = _next_cron_run(view.get('cron'))
@@ -932,7 +1073,7 @@ def _run_view(run: dict) -> dict:
     issue #45 P0-5：simulated 默认值反转为 False——真实触发默认为非模拟，
     模拟态只能由显式模拟入口写入。
     """
-    view = dict(run)
+    view = _public_record(run)
     done = view.get('done')
     view['done'] = done if isinstance(done, bool) else str(view.get('status') or '') != 'running'
     view['simulated'] = bool(view.get('simulated', False))
@@ -1002,23 +1143,25 @@ class AiApplyIn(BaseModel):
 
 
 @router.get('/flows')
-def list_flows() -> list[dict]:
-    items = [f for f in _flows.all().values() if isinstance(f, dict)]
+def list_flows(request: Request = None) -> list[dict]:
+    items = _owned_flow_snapshot(_actor_id(request))
     items.sort(key=lambda f: str(f.get('updated_at') or ''), reverse=True)
     return [_flow_view(f) for f in items]
 
 
 @router.post('/flows', status_code=201)
-def create_flow(payload: FlowIn) -> dict:
+def create_flow(payload: FlowIn, request: Request = None) -> dict:
+    owner_id = _actor_id(request)
     fid = _new_id('flow')
     flow = _normalize_flow(payload.model_dump(), fid=fid, existing=None)
+    flow['owner_id'] = owner_id
     _store_new_flow(fid, flow)
     audit_safe('flow_created', {'flow_id': fid, 'name': flow.get('name')})
     return _flow_view(flow)
 
 
 @router.post('/flows/ai-edit')
-def ai_edit_flow(payload: AiEditIn) -> dict:
+def ai_edit_flow(payload: AiEditIn, request: Request = None) -> dict:
     """规则式中文解析（engine='rule'，非模型生成，issue #45 P0-4）。
 
     语义为「全量重建」（edit_mode='full_rebuild'）：proposed_flow 每次都
@@ -1026,12 +1169,18 @@ def ai_edit_flow(payload: AiEditIn) -> dict:
     调整；changes 如实列出重建后与现状的差异。响应显式声明「规则解析、
     非模型生成」，不允许与成功语义混同。
     """
+    owner_id = _actor_id(request)
     instruction = payload.instruction.strip()
     if not instruction:
         raise HTTPException(400, 'instruction 不能为空')
     base: Optional[dict] = None
     if payload.flow_id:
         base = _flows.get(payload.flow_id)
+        if isinstance(base, dict) and _record_visible(base, owner_id):
+            if not base.get('owner_id'):
+                _materialize_owner(_flows, payload.flow_id, base, owner_id)
+        else:
+            base = None
         if base is None:
             raise HTTPException(404, f'流程不存在：{payload.flow_id}')
     trigger, cron, _trig_desc = _parse_trigger(instruction)
@@ -1070,9 +1219,9 @@ def ai_edit_flow(payload: AiEditIn) -> dict:
 
 
 @router.get('/flows/schedule/overview')
-def schedule_overview() -> list[dict]:
+def schedule_overview(request: Request = None) -> list[dict]:
     items: list[dict] = []
-    for f in _flows.all().values():
+    for f in _owned_flow_snapshot(_actor_id(request)):
         if not isinstance(f, dict):
             continue
         if f.get('trigger') != 'schedule' or not f.get('enabled'):
@@ -1091,21 +1240,24 @@ def schedule_overview() -> list[dict]:
 
 
 @router.get('/flows/{fid}')
-def get_flow(fid: str) -> dict:
-    flow = _flows.get(fid)
+def get_flow(fid: str, request: Request = None) -> dict:
+    flow = _get_flow_or_404(fid, _actor_id(request))
     if flow is None:
         raise HTTPException(404, f'流程不存在：{fid}')
     return _flow_view(flow)
 
 
 @router.put('/flows/{fid}')
-def update_flow(fid: str, payload: FlowPatch) -> dict:
+def update_flow(fid: str, payload: FlowPatch, request: Request = None) -> dict:
+    owner_id = _actor_id(request)
     patch = payload.model_dump(exclude_unset=True)
 
     def _apply(data: dict) -> dict:
         existing = data.get(fid)
-        if not isinstance(existing, dict):
+        if not isinstance(existing, dict) or not _record_visible(existing, owner_id):
             raise HTTPException(404, f'流程不存在：{fid}')
+        if not existing.get('owner_id'):
+            _materialize_owner(_flows, fid, existing, owner_id)
         merged = dict(existing)
         merged.update(patch)
         flow = _normalize_flow(
@@ -1114,6 +1266,7 @@ def update_flow(fid: str, payload: FlowPatch) -> dict:
             existing=existing,
             preserve_existing_steps=patch.get('steps') is None,
         )
+        flow['owner_id'] = str(existing.get('owner_id') or owner_id)
         data[fid] = flow
         return flow
 
@@ -1124,11 +1277,16 @@ def update_flow(fid: str, payload: FlowPatch) -> dict:
     return _flow_view(flow)
 
 
-def _delete_runs_of_flow(fid: str) -> int:
+def _delete_runs_of_flow(fid: str, owner_id: str | None = None) -> int:
     """级联清理某流程的全部运行记录，返回清理条数。"""
     with _runs._lock:  # noqa: SLF001 —— 共享工具缺批量删除的务实兜底
         data = _runs._read()  # noqa: SLF001
-        victims = [k for k, r in data.items() if isinstance(r, dict) and r.get('flow_id') == fid]
+        victims = [
+            k for k, r in data.items()
+            if isinstance(r, dict)
+            and r.get('flow_id') == fid
+            and (owner_id is None or _run_visible(r, owner_id))
+        ]
         for k in victims:
             data.pop(k, None)
         if victims:
@@ -1137,19 +1295,34 @@ def _delete_runs_of_flow(fid: str) -> int:
 
 
 @router.delete('/flows/{fid}')
-def delete_flow(fid: str) -> dict:
+def delete_flow(fid: str, request: Request = None) -> dict:
+    owner_id = _actor_id(request)
+    flow = _get_flow_or_404(fid, owner_id)
     if not _store_delete(_flows, fid):
         raise HTTPException(404, f'流程不存在：{fid}')
-    runs_deleted = _delete_runs_of_flow(fid)
+    runs_deleted = _delete_runs_of_flow(fid, str(flow.get('owner_id') or owner_id))
     audit_safe('flow_deleted', {'flow_id': fid, 'runs_deleted': runs_deleted})
     return {'deleted': True, 'id': fid, 'runs_deleted': runs_deleted}
 
 
 @router.post('/flows/{fid}/ai-apply')
-def ai_apply_flow(fid: str, payload: AiApplyIn, response: Response, create: bool = False) -> dict:
+def ai_apply_flow(
+    fid: str,
+    payload: AiApplyIn,
+    response: Response,
+    create: bool = False,
+    request: Request = None,
+) -> dict:
     """应用 AI 提案。flow_id 不存在时 404；仅显式 create=true 才允许按
     提案新建（此前会静默创建，与写路径语义不一致）。"""
+    owner_id = _actor_id(request)
     existing = _flows.get(fid)
+    foreign_existing = isinstance(existing, dict) and not _record_visible(existing, owner_id)
+    if foreign_existing:
+        raise HTTPException(status_code=404, detail=f'流程不存在：{fid}')
+    if isinstance(existing, dict):
+        if not existing.get('owner_id'):
+            _materialize_owner(_flows, fid, existing, owner_id)
     if existing is None and not create:
         raise HTTPException(404, f'流程不存在：{fid}；如需按提案新建请显式传 create=true')
     cron = payload.proposed_flow.get('cron') if isinstance(payload.proposed_flow, dict) else None
@@ -1165,6 +1338,7 @@ def ai_apply_flow(fid: str, payload: AiApplyIn, response: Response, create: bool
         flow = _normalize_flow(payload.proposed_flow, fid=target_id, existing=existing)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    flow['owner_id'] = str(existing.get('owner_id') if existing else owner_id)
     if existing is None:
         _store_new_flow(target_id, flow)
     else:
@@ -1176,22 +1350,38 @@ def ai_apply_flow(fid: str, payload: AiApplyIn, response: Response, create: bool
 
 
 @router.post('/flows/{fid}/run', status_code=202)
-async def run_flow(fid: str) -> dict:
-    flow = _flows.get(fid)
+async def run_flow(fid: str, request: Request = None) -> dict:
+    owner_id = _actor_id(request)
+    flow = _get_flow_or_404(fid, owner_id)
     if flow is None:
         raise HTTPException(404, f'流程不存在：{fid}')
-    run = _try_create_run(flow, triggered_by='manual')
+    run = _try_create_run(
+        flow,
+        triggered_by='manual',
+        owner_id=str(flow.get('owner_id') or owner_id),
+    )
     if run is None:
         raise HTTPException(409, '该流程已有运行进行中，拒绝并发重入')
     _launch_run(run['id'], flow)
     audit_safe('flow_run_started', {'run_id': run['id'], 'flow_id': fid, 'manual': True})
-    return run
+    return _run_view(run)
 
 
 @router.get('/runs')
-def list_runs(flow_id: Optional[str] = None, limit: int = 200) -> list[dict]:
+def list_runs(
+    flow_id: Optional[str] = None,
+    limit: int = 200,
+    request: Request = None,
+) -> list[dict]:
     limit = max(1, min(limit, 500))
-    items = [r for r in _runs.all().values() if isinstance(r, dict)]
+    owner_id = _actor_id(request)
+    items = []
+    for rid, run in _runs.all().items():
+        if not isinstance(run, dict) or not _run_visible(run, owner_id):
+            continue
+        if not run.get('owner_id'):
+            _materialize_run_owner(run, owner_id)
+        items.append(run)
     if flow_id:
         items = [r for r in items if r.get('flow_id') == flow_id]
     items.sort(key=lambda r: str(r.get('started_at') or ''), reverse=True)
@@ -1199,8 +1389,14 @@ def list_runs(flow_id: Optional[str] = None, limit: int = 200) -> list[dict]:
 
 
 @router.get('/runs/{rid}')
-def get_run(rid: str) -> dict:
+def get_run(rid: str, request: Request = None) -> dict:
+    owner_id = _actor_id(request)
     run = _runs.get(rid)
+    if isinstance(run, dict) and _run_visible(run, owner_id):
+        if not run.get('owner_id'):
+            _materialize_run_owner(run, owner_id)
+    else:
+        run = None
     if run is None:
         raise HTTPException(404, f'运行记录不存在：{rid}')
     return _run_view(run)

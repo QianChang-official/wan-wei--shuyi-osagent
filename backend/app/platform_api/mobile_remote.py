@@ -21,13 +21,27 @@ from pathlib import Path
 from typing import Optional
 
 import asyncio
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from ..audit.service import list_logs, record
 from ..db import get_conn
+from ..soul.ownership import actor_id_for_request, configured_actor_id
 
-router = APIRouter(prefix='/mobile', tags=['mobile-remote'])
+
+
+def _require_mobile_owner(request: Request) -> None:
+    """Keep the single-device mobile companion state behind local admin auth."""
+    owner_id = actor_id_for_request(request)
+    if owner_id not in {'anonymous', configured_actor_id()}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+
+
+router = APIRouter(
+    prefix='/mobile',
+    tags=['mobile-remote'],
+    dependencies=[Depends(_require_mobile_owner)],
+)
 
 logger = logging.getLogger(__name__)
 
@@ -308,5 +322,4 @@ async def delete_file(file_id: str):
     record('file_delete', {'file_id': file_id})
     await _append_event({'event_type': 'file_delete', 'file_id': file_id})
     return {'deleted': file_id}
-
 

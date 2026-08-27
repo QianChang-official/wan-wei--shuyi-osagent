@@ -14,8 +14,9 @@
 - POST   /providers/auth/{pid}/begin   OAuth 设备授权开始（真实流程未接入，如实 501）
 - POST   /providers/auth/{pid}/poll    OAuth 设备授权轮询（真实流程未接入，如实 501）
 
-持久化：``JsonStore('providers')``，key 为 provider id；
-辅助模型存于保留 key ``_aux``。
+持久化：``JsonStore('providers')``，key 为 provider id；记录绑定 ``owner_id``，
+辅助模型存于保留 key ``_aux`` 并同样按主体隔离。无 owner 的历史记录仅对
+配置主体/匿名本地兼容路径可见。
 密钥加密复用 ``app.security.encryption``（Fernet，密钥派生模式与
 ``app.model_gateway.service`` 一致：优先 ``WANWEI_ENCRYPTION_KEY``，
 否则由平台 API Key 派生）。
@@ -28,12 +29,14 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.platform_api.guards import audit_safe
 from app.platform_api.store import JsonStore
 from app.security import encryption
+from app.security.auth import actor_id_from_api_key
+from app.security.redaction import redact_sensitive_text
 from app.security.ssrf import SSRFError, resolve_external_url, validate_external_url
 from app.utils.datetime_utils import utc_now_iso
 
@@ -461,6 +464,111 @@ def _get_provider_meta(pid: str) -> dict[str, Any]:
     return meta
 
 
+def _actor_id(request: Request | None = None) -> str:
+    """Resolve the request actor, retaining legacy direct-call semantics.
+
+    FastAPI always supplies ``Request`` for the HTTP routes.  A handful of
+    internal callers and older tests invoke handlers as plain functions; for
+    those calls use the configured single-user actor instead of accidentally
+    treating the operation as an anonymous principal.
+    """
+    if request is None:
+        return _configured_actor_id() or 'anonymous'
+    api_key = (request.headers.get('x-api-key') or '').strip()
+    # A loopback request without a key is the explicit anonymous compatibility
+    # principal; it must not silently become the configured API-key owner.
+    return actor_id_from_api_key(api_key) if api_key else 'anonymous'
+
+
+def _configured_actor_id() -> str | None:
+    """Resolve the configured single-user actor for legacy records."""
+    try:
+        from app.soul.ownership import configured_actor_id
+    except Exception:  # noqa: BLE001 - auth fallback must not break catalog reads
+        try:
+            from backend.app.soul.ownership import configured_actor_id
+        except Exception:  # noqa: BLE001 - auth fallback must not break catalog reads
+            return None
+    try:
+        return configured_actor_id()
+    except Exception:  # noqa: BLE001 - key/config lookup must not break catalog reads
+        return None
+
+
+def _legacy_owner_allowed(owner_id: str) -> bool:
+    return owner_id == 'anonymous' or owner_id == _configured_actor_id()
+
+
+def _record_visible(record: dict[str, Any], owner_id: str) -> bool:
+    owner = record.get('owner_id')
+    if owner:
+        return str(owner) == owner_id
+    return _legacy_owner_allowed(owner_id)
+
+
+def _materialize_record_owner(record: dict[str, Any], owner_id: str) -> str | None:
+    """Bind an ownerless legacy record to the only compatible principal."""
+    if record.get('owner_id'):
+        return str(record['owner_id'])
+    if not _legacy_owner_allowed(owner_id):
+        return None
+    record['owner_id'] = owner_id
+    return owner_id
+
+
+def _provider_record_for_owner(
+    pid: str,
+    owner_id: str | None = None,
+    *,
+    materialize: bool = False,
+) -> dict[str, Any] | None:
+    """Return a provider record only when it belongs to the requested actor."""
+    actor = owner_id or _configured_actor_id()
+    if not actor:
+        return None
+    record = _store.get(pid)
+    if not isinstance(record, dict) or not _record_visible(record, actor):
+        return None
+    if materialize and not record.get('owner_id'):
+        bound = _materialize_record_owner(record, actor)
+        if bound:
+            _store.set(pid, record)
+    return record
+
+
+def _assert_provider_access(pid: str, owner_id: str) -> dict[str, Any] | None:
+    """Reject foreign records while preserving the old absent-record contract."""
+    record = _store.get(pid)
+    if isinstance(record, dict) and not _record_visible(record, owner_id):
+        raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
+    if isinstance(record, dict) and not record.get('owner_id'):
+        bound = _materialize_record_owner(record, owner_id)
+        if bound:
+            _store.set(pid, record)
+    return record if isinstance(record, dict) else None
+
+
+def _owned_provider_snapshot(owner_id: str) -> dict[str, Any]:
+    """Snapshot provider rows visible to one actor, migrating legacy rows."""
+    def _apply(data: dict) -> dict[str, Any]:
+        visible: dict[str, Any] = {}
+        for pid, value in data.items():
+            if pid == _AUX_KEY:
+                continue
+            if not isinstance(value, dict):
+                continue
+            if not _record_visible(value, owner_id):
+                continue
+            if not value.get('owner_id'):
+                bound = _materialize_record_owner(value, owner_id)
+                if bound:
+                    data[pid] = value
+            visible[pid] = dict(value)
+        return visible
+
+    return _store.mutate(_apply)
+
+
 def _decrypt_key(record: dict[str, Any]) -> str:
     enc = record.get('api_key_encrypted') or ''
     if not enc:
@@ -471,12 +579,43 @@ def _decrypt_key(record: dict[str, Any]) -> str:
         return ''
 
 
+_SENSITIVE_EXTRA_KEY_MARKERS = (
+    'api_key', 'apikey', 'secret', 'token', 'password', 'passwd',
+    'authorization', 'credential', 'private_key', 'access_key',
+)
+
+
+def _safe_provider_extra(value: Any) -> Any:
+    """Recursively redact credential-shaped provider metadata for responses."""
+    if isinstance(value, dict):
+        safe: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key).lower().replace('-', '_')
+            if any(marker in key_text for marker in _SENSITIVE_EXTRA_KEY_MARKERS):
+                safe[key] = '***REDACTED***'
+            else:
+                safe[key] = _safe_provider_extra(item)
+        return safe
+    if isinstance(value, list):
+        return [_safe_provider_extra(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_safe_provider_extra(item) for item in value)
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
 def _masked_config(pid: str, record: Optional[dict[str, Any]]) -> dict[str, Any]:
     """把存储记录转为对外脱敏视图；record 为 None 时回目录默认值。"""
     meta = _CATALOG_BY_ID[pid]
     record = record or {}
     plain = _decrypt_key(record)
     tail = plain[-4:] if plain else ''
+    raw_extra = record.get('extra')
+    # ``extra`` is user-controlled metadata, but it is also a common place to
+    # paste provider headers or tokens.  Never echo credential-shaped values
+    # back through a config/list endpoint; keep malformed legacy values inert.
+    safe_extra = _safe_provider_extra(raw_extra) if isinstance(raw_extra, dict) else {}
     return {
         'pid': pid,
         'configured': bool(record),
@@ -486,15 +625,18 @@ def _masked_config(pid: str, record: Optional[dict[str, Any]]) -> dict[str, Any]
         'has_api_key': bool(plain),
         'api_key_tail': tail,
         'api_key_masked': f'****{tail}' if tail else '',
-        'extra': record.get('extra') or {},
+        'extra': safe_extra,
         'updated_at': record.get('updated_at') or '',
     }
 
 
-def _remove_config(pid: str) -> bool:
+def _remove_config(pid: str, owner_id: str | None = None) -> bool:
     """JsonStore 锁内删除配置，返回删除前是否存在。"""
     def _remove(data: dict) -> bool:
+        stored = data.get(pid)
         if pid not in data:
+            return False
+        if owner_id and isinstance(stored, dict) and not _record_visible(stored, owner_id):
             return False
         data.pop(pid, None)
         return True
@@ -536,15 +678,21 @@ def get_catalog() -> list[dict[str, Any]]:
 
 
 @router.get('/providers/configs')
-def list_configs() -> list[dict[str, Any]]:
+def list_configs(request: Request = None) -> list[dict[str, Any]]:
     """全部 31 家配置视图（未配置的按目录默认值占位），api_key 只回尾 4 位。"""
-    stored = _store.all()
+    stored = _owned_provider_snapshot(_actor_id(request))
     return [_masked_config(p['id'], stored.get(p['id'])) for p in CATALOG]
 
 
 @router.put('/providers/configs/{pid}')
-def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
+def put_config(
+    pid: str,
+    body: ConfigIn,
+    request: Request = None,
+) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
+    owner_id = _actor_id(request)
+    _assert_provider_access(pid, owner_id)
     patch: dict[str, Any] = {}
     clear_api_key = False
     if body.api_key is not None:
@@ -595,6 +743,10 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
     def _apply(data: dict) -> dict[str, Any]:
         stored = data.get(pid)
         record = dict(stored) if isinstance(stored, dict) else {}
+        if stored and not _record_visible(record, owner_id):
+            raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
+        if not record.get('owner_id'):
+            record['owner_id'] = owner_id
         if clear_api_key:
             record.pop('api_key_encrypted', None)
         record.update(patch)
@@ -616,9 +768,11 @@ def put_config(pid: str, body: ConfigIn) -> dict[str, Any]:
 
 
 @router.delete('/providers/configs/{pid}')
-def delete_config(pid: str) -> dict[str, Any]:
+def delete_config(pid: str, request: Request = None) -> dict[str, Any]:
     _get_provider_meta(pid)
-    removed = _remove_config(pid)
+    owner_id = _actor_id(request)
+    _assert_provider_access(pid, owner_id)
+    removed = _remove_config(pid, owner_id)
     audit_safe('provider_config_deleted', {'pid': pid, 'removed': removed})
     return {'ok': True, 'pid': pid, 'removed': removed}
 
@@ -627,9 +781,10 @@ def delete_config(pid: str) -> dict[str, Any]:
 # 连通性测试
 # ---------------------------------------------------------------------------
 @router.post('/providers/test')
-def test_provider(body: TestIn) -> dict[str, Any]:
+def test_provider(body: TestIn, request: Request = None) -> dict[str, Any]:
     meta = _get_provider_meta(body.pid)
-    record = _store.get(body.pid) or {}
+    owner_id = _actor_id(request)
+    record = _assert_provider_access(body.pid, owner_id) or {}
 
     # 本地类（lm_studio / ollama_cloud）：真实探测 base_url，3 秒超时
     if meta['kind'] in _LOCAL_KINDS:
@@ -736,13 +891,17 @@ def test_provider(body: TestIn) -> dict[str, Any]:
 # 辅助模型
 # ---------------------------------------------------------------------------
 @router.get('/providers/aux')
-def get_aux() -> dict[str, Any]:
-    stored = _store.get(_AUX_KEY) or {}
-    return {**_AUX_DEFAULT, **stored}
+def get_aux(request: Request = None) -> dict[str, Any]:
+    stored = _provider_record_for_owner(_AUX_KEY, _actor_id(request), materialize=True) or {}
+    public = {**_AUX_DEFAULT, **stored}
+    public.pop('owner_id', None)
+    return public
 
 
 @router.put('/providers/aux')
-def put_aux(body: AuxIn) -> dict[str, Any]:
+def put_aux(body: AuxIn, request: Request = None) -> dict[str, Any]:
+    owner_id = _actor_id(request)
+    _assert_provider_access(_AUX_KEY, owner_id)
     patch: dict[str, Any] = {}
     if body.pid is not None:
         pid = body.pid.strip()
@@ -760,13 +919,18 @@ def put_aux(body: AuxIn) -> dict[str, Any]:
 
     def _apply(data: dict) -> dict[str, Any]:
         stored = data.get(_AUX_KEY)
+        if isinstance(stored, dict) and not _record_visible(stored, owner_id):
+            raise HTTPException(status_code=404, detail='辅助模型配置不存在')
         current = {**_AUX_DEFAULT, **(stored if isinstance(stored, dict) else {})}
+        current['owner_id'] = current.get('owner_id') or owner_id
         current.update(patch)
         data[_AUX_KEY] = current
         return current
 
     current = _store.mutate(_apply)
-    return current
+    public = dict(current)
+    public.pop('owner_id', None)
+    return public
 
 
 # ---------------------------------------------------------------------------
@@ -789,8 +953,9 @@ _OAUTH_NOT_IMPLEMENTED = (
 
 
 @router.post('/providers/auth/{pid}/begin')
-def auth_begin(pid: str) -> dict[str, Any]:
+def auth_begin(pid: str, request: Request = None) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
+    _assert_provider_access(pid, _actor_id(request))
     if 'oauth' not in meta.get('auth_modes', []):
         raise HTTPException(status_code=400, detail=f'{meta["name"]} 不支持 OAuth 授权')
     # 无真实 OAuth 配置，诚实返回未实现，绝不伪造 verification_uri / user_code
@@ -798,8 +963,9 @@ def auth_begin(pid: str) -> dict[str, Any]:
 
 
 @router.post('/providers/auth/{pid}/poll')
-def auth_poll(pid: str) -> dict[str, Any]:
+def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
     meta = _get_provider_meta(pid)
+    _assert_provider_access(pid, _actor_id(request))
     if 'oauth' not in meta.get('auth_modes', []):
         raise HTTPException(status_code=400, detail=f'{meta["name"]} 不支持 OAuth 授权')
     # P0-2: 无真实 device authorization endpoint 时，status 只能来自真实

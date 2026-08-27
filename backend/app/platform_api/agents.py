@@ -75,9 +75,11 @@ def _actor_id(request: Request) -> str:
 def _agent_visible(agent: dict, owner_id: str) -> bool:
     owner = agent.get('owner_id')
     if not owner:
-        # owner 隔离引入前的存量记录：对任何已通过 API Key 鉴权的调用方可见，
-        # 避免升级后既有智能体集体 404（agents 路由均在鉴权中间件之后）。
-        return True
+        # Legacy rows have no reliable principal. Keeping them visible to
+        # every authenticated key would turn migration compatibility into a
+        # cross-tenant data leak. The configured local actor (or the trusted
+        # anonymous loopback path) can still recover them.
+        return owner_id == 'anonymous' or owner_id == _configured_actor_id()
     return bool(owner_id) and owner == owner_id
 
 
@@ -90,8 +92,9 @@ def _public_agent(agent: dict) -> dict:
 def _team_visible(team: dict, owner_id: str) -> bool:
     owner = team.get('owner_id')
     if not owner:
-        # 存量团队记录同理：对任何已鉴权调用方可见，避免升级后集体 404。
-        return True
+        # Apply the same fail-closed legacy policy as agents. A team can expose
+        # member names and task topology, so global visibility is unsafe.
+        return owner_id == 'anonymous' or owner_id == _configured_actor_id()
     return bool(owner_id) and owner == owner_id
 
 
@@ -106,6 +109,130 @@ def _get_team_or_404(tid: str, owner_id: str) -> dict:
 
 def _public_team(team: dict) -> dict:
     public = dict(team)
+    public.pop('owner_id', None)
+    members = public.get('members')
+    if isinstance(members, list):
+        public['members'] = [
+            _public_agent(member) if isinstance(member, dict) else member
+            for member in members
+        ]
+    return public
+
+
+def _configured_actor_id() -> str | None:
+    """Return the configured single-user actor used for unbound legacy rows."""
+    try:
+        from app.soul.ownership import configured_actor_id
+    except Exception:  # noqa: BLE001 - legacy fallback must never break a request
+        try:
+            from backend.app.soul.ownership import configured_actor_id
+        except Exception:  # noqa: BLE001 - legacy fallback must never break a request
+            return None
+    try:
+        return configured_actor_id()
+    except Exception:  # noqa: BLE001 - legacy fallback must never break a request
+        return None
+
+
+def _inferred_run_owner_id(run: dict, seen: set[str] | None = None) -> str | None:
+    """Resolve a run owner, including records written before owner persistence."""
+    if not isinstance(run, dict):
+        return None
+    owner = run.get('owner_id')
+    if owner:
+        return str(owner)
+
+    # A parent relationship is authoritative for legacy subagent rows. This
+    # prevents a malformed child linked to another agent from changing owners.
+    parent_id = run.get('parent_run_id')
+    if parent_id:
+        seen = seen or set()
+        parent_id = str(parent_id)
+        if parent_id not in seen:
+            seen.add(parent_id)
+            parent = _runs.get(parent_id)
+            if isinstance(parent, dict):
+                return _inferred_run_owner_id(parent, seen)
+
+    agent_id = run.get('agent_id')
+    if agent_id:
+        agent = _agents.get(str(agent_id))
+        if isinstance(agent, dict) and agent.get('owner_id'):
+            return str(agent['owner_id'])
+
+    team_id = run.get('team_id')
+    if team_id:
+        team = _teams_map().get(str(team_id))
+        if isinstance(team, dict) and team.get('owner_id'):
+            return str(team['owner_id'])
+    return None
+
+
+def _run_visible(run: dict, owner_id: str) -> bool:
+    """Check run ownership without exposing whether another owner's row exists."""
+    if not isinstance(run, dict) or not owner_id:
+        return False
+    run_owner = _inferred_run_owner_id(run)
+    if run_owner:
+        return run_owner == owner_id
+    # Rows with no identity at all predate ownership. Keep the old single-user
+    # behavior, but do not make them globally visible to arbitrary API keys.
+    return owner_id == 'anonymous' or owner_id == _configured_actor_id()
+
+
+def _materialize_run_owner(run: dict, preferred_owner: str | None = None) -> str | None:
+    """Persist an inferred owner for a legacy run before it is exposed."""
+    if not isinstance(run, dict):
+        return None
+    current = run.get('owner_id')
+    if current:
+        return str(current)
+    owner = _inferred_run_owner_id(run)
+    if not owner:
+        # Only the loopback/no-key compatibility principal may claim an
+        # unbound row from the request. A second API key must not adopt it.
+        owner = 'anonymous' if preferred_owner == 'anonymous' else _configured_actor_id()
+    if not owner:
+        return None
+    run['owner_id'] = str(owner)
+    rid = run.get('id')
+    if rid:
+        _runs.set(str(rid), run)
+    return str(owner)
+
+
+def _public_run(run: dict) -> dict:
+    public = dict(run)
+    public.pop('owner_id', None)
+    return public
+
+
+def _get_run_or_404(rid: str, owner_id: str) -> dict:
+    run = _runs.get(rid)
+    if isinstance(run, dict):
+        _materialize_run_owner(run, owner_id)
+    if not isinstance(run, dict) or not _run_visible(run, owner_id):
+        if isinstance(run, dict):
+            audit_safe('run_access_denied', {'run_id': rid, 'reason': 'owner_mismatch'})
+        raise HTTPException(status_code=404, detail=f'运行 {rid} 不存在')
+    return run
+
+
+def _floating_visible(session: dict, owner_id: str) -> bool:
+    if not isinstance(session, dict):
+        return False
+    session_owner = session.get('owner_id')
+    if session_owner and str(session_owner) != owner_id:
+        return False
+    run = _runs.get(str(session.get('run_id') or ''))
+    if not isinstance(run, dict):
+        return False
+    _materialize_run_owner(run, owner_id)
+    return _run_visible(run, owner_id)
+
+
+def _public_session(session: dict) -> dict:
+    public = dict(session)
     public.pop('owner_id', None)
     return public
 
@@ -374,15 +501,24 @@ def _floating_map() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _touch_floating(rid: str, status: str) -> None:
+def _touch_floating(rid: str, status: str, owner_id: str | None = None) -> None:
+    if owner_id is None:
+        run = _runs.get(rid)
+        owner_id = _materialize_run_owner(run) if isinstance(run, dict) else None
     sessions = _floating_map()
     for sid, sess in sessions.items():
-        if sess.get('run_id') == rid:
-            sess['status'] = status
-            sess['last_active_at'] = _now()
-            sessions[sid] = sess
-            _agents.set(_FLOATING_KEY, sessions)
-            return
+        if sess.get('run_id') != rid:
+            continue
+        session_owner = sess.get('owner_id')
+        if owner_id and session_owner and str(session_owner) != str(owner_id):
+            continue
+        if owner_id and not session_owner:
+            sess['owner_id'] = owner_id
+        sess['status'] = status
+        sess['last_active_at'] = _now()
+        sessions[sid] = sess
+        _agents.set(_FLOATING_KEY, sessions)
+        return
 
 
 def _register_floating(run: dict) -> dict:
@@ -391,6 +527,7 @@ def _register_floating(run: dict) -> dict:
     sess = {
         'id': sid,
         'run_id': run['id'],
+        'owner_id': run.get('owner_id'),
         'task': run['task'],
         'parent_run_id': run.get('parent_run_id'),
         'status': run['status'],
@@ -471,7 +608,11 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
             meta = providers_mod._CATALOG_BY_ID.get(pid)  # noqa: SLF001
             if meta is None:
                 return None
-            record = providers_mod._store.get(pid) or {}  # noqa: SLF001
+            owner_id = (run or {}).get('owner_id')
+            record = providers_mod._provider_record_for_owner(  # noqa: SLF001
+                pid,
+                owner_id=owner_id,
+            ) or {}
             if not record.get('enabled'):
                 return None
             api_base = (record.get('base_url') or meta.get('base_url') or '').strip()
@@ -485,6 +626,26 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
 
     def _from_model_gateway(pid: str) -> tuple[str, str, str, str] | None:
         try:
+            owner_id = (run or {}).get('owner_id')
+            # The owner-aware resolver keeps legacy SQLite compatibility for
+            # the configured actor while refusing a global credential for an
+            # explicitly different run owner.
+            resolve = getattr(mgw, 'resolve_runtime_provider', None)
+            if resolve is not None and owner_id:
+                resolved = resolve(provider=pid, owner_id=owner_id)
+                if resolved is not None:
+                    resolved_pid, api_base, api_key, model = resolved
+                    return api_base, api_key, model, resolved_pid
+                # Preserve direct/legacy test callers that stub the old
+                # private config reader, but never permit that fallback for a
+                # non-configured actor.
+                try:
+                    from app.platform_api import providers as providers_mod
+
+                    if owner_id != providers_mod._configured_actor_id():  # noqa: SLF001
+                        return None
+                except Exception:  # noqa: BLE001 - explicit owner fails closed
+                    return None
             cfg = mgw._provider_config(pid)  # noqa: SLF001
             if not cfg or not cfg.get('enabled'):
                 return None
@@ -513,25 +674,23 @@ async def _try_gateway(prompt: str, run: dict | None = None) -> tuple[str | None
     返回 (text, provider_used)：text 为 None 表示回退模拟；
     provider_used 为实际使用的 provider 标识（回退模拟时为 None）。
     """
-    def _call() -> tuple[str | None, str | None]:
-        try:
-            from app.model_gateway import service as mgw  # 延迟导入，故障隔离
-            target = _resolve_gateway_target(run)
-            if target is None:
-                return None, None
-            api_base, api_key, model, provider_label = target
-            status, _ms, text = mgw._openai_compatible_smoke(  # noqa: SLF001
-                api_base, api_key, model, prompt[:800], 384,
-            )
-            text = (text or '').strip()
-            if status == 'ok' and text:
-                return text, provider_label
-            return None, None
-        except Exception:  # noqa: BLE001 —— 网关故障不得拖垮编排
-            return None, None
-
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
+        from app.model_gateway import service as mgw  # 延迟导入，故障隔离
+
+        target = _resolve_gateway_target(run)
+        if target is None:
+            return None, None
+        api_base, api_key, model, provider_label = target
+        # Use the gateway's bounded executor/admission gate and provider
+        # dispatch.  Calling the private OpenAI helper via to_thread bypassed
+        # both controls and left timed-out network threads running.
+        status, _ms, text = await mgw._run_smoke_in_dedicated_pool_async(  # noqa: SLF001
+            provider_label, api_base, api_key, model, prompt[:800], 384,
+        )
+        text = (text or '').strip()
+        if status == 'ok' and text:
+            return text, provider_label
+        return None, None
     except Exception:  # noqa: BLE001
         return None, None
 
@@ -591,8 +750,19 @@ def _new_run(
     depth: str | None = None,
     gear: str | None = None,
     context: dict[str, Any] | str | None = None,
+    owner_id: str | None = None,
 ) -> dict:
     agent = agent or {}
+    resolved_owner = owner_id
+    if not resolved_owner and parent_run_id:
+        parent = _runs.get(str(parent_run_id))
+        resolved_owner = _inferred_run_owner_id(parent) if isinstance(parent, dict) else None
+    if not resolved_owner:
+        resolved_owner = agent.get('owner_id') or (team or {}).get('owner_id')
+    if not resolved_owner:
+        # Internal callers historically omitted an owner; bind those runs to
+        # the configured single-user actor instead of creating a global row.
+        resolved_owner = _configured_actor_id() or 'anonymous'
     resolved_depth = _valid_depth(depth or agent.get('depth'), 'medium')
     resolved_gear = _valid_gear(gear or agent.get('gear'), 'sandbox')
     # device 档默认禁用：未显式授权时降级为 sandbox 并落审计（不静默提权）
@@ -618,6 +788,7 @@ def _new_run(
         'team_name': (team or {}).get('name', ''),
         'orchestration': orchestration,
         'parent_run_id': parent_run_id,
+        'owner_id': str(resolved_owner),
         'task': task,
         'goal': goal if goal is not None else agent.get('goal', ''),
         'depth': resolved_depth,
@@ -897,29 +1068,32 @@ def delete_team(tid: str, request: Request):
 
 @router.post('/run', status_code=201)
 async def start_run(body: RunIn, request: Request):
+    owner_id = _actor_id(request)
     if bool(body.agent_id) == bool(body.team_id):
         raise HTTPException(status_code=422, detail='agent_id 与 team_id 须且仅须提供一个')
     agent = team = None
     if body.agent_id:
-        agent = _get_agent_or_404(body.agent_id, _actor_id(request))
+        agent = _get_agent_or_404(body.agent_id, owner_id)
         kind = 'solo'
     else:
-        team = _get_team_or_404(body.team_id, _actor_id(request))
+        team = _get_team_or_404(body.team_id, owner_id)
         kind = 'team'
     run = _new_run(
         kind=kind, task=body.task, agent=agent, team=team,
         goal=body.goal, depth=body.depth, gear=body.gear, context=body.context,
+        owner_id=owner_id,
     )
     audit_safe('run_created', {
         'run_id': run['id'], 'kind': kind, 'gear': run['gear'],
         'agent_id': run.get('agent_id'), 'team_id': run.get('team_id'),
     })
     _spawn(_drive_run(run['id']))
-    return run
+    return _public_run(run)
 
 
 @router.get('/runs')
 def list_runs(
+    request: Request,
     status: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -928,7 +1102,15 @@ def list_runs(
 
     total 恒为过滤后的全量条数，与是否分页无关。
     """
-    items = sorted(_runs.all().values(), key=lambda r: r.get('created_at', ''), reverse=True)
+    owner_id = _actor_id(request)
+    items = []
+    for run in _runs.all().values():
+        if not isinstance(run, dict):
+            continue
+        _materialize_run_owner(run, owner_id)
+        if _run_visible(run, owner_id):
+            items.append(run)
+    items.sort(key=lambda r: r.get('created_at', ''), reverse=True)
     if status:
         items = [r for r in items if r.get('status') == status]
     total = len(items)
@@ -936,22 +1118,26 @@ def list_runs(
         items = items[offset:]
     if limit is not None:
         items = items[:limit]
-    return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
+    return {
+        'items': [_public_run(r) for r in items],
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+    }
 
 
 @router.get('/runs/{rid}')
-def get_run(rid: str):
-    run = _runs.get(rid)
-    if not run:
-        raise HTTPException(status_code=404, detail=f'运行 {rid} 不存在')
-    return run
+def get_run(rid: str, request: Request):
+    return _public_run(_get_run_or_404(rid, _actor_id(request)))
 
 
 @router.post('/runs/{rid}/approve')
-async def approve_run(rid: str, body: ApproveIn | None = None):
-    run = _runs.get(rid)
-    if not run:
-        raise HTTPException(status_code=404, detail=f'运行 {rid} 不存在')
+async def approve_run(
+    rid: str,
+    request: Request,
+    body: ApproveIn | None = None,
+):
+    run = _get_run_or_404(rid, _actor_id(request))
     if run.get('status') != 'awaiting_review':
         raise HTTPException(status_code=409, detail=f'当前状态 {run.get("status")} 不可审批')
     idx = run.get('cursor', 0)
@@ -972,7 +1158,7 @@ async def approve_run(rid: str, body: ApproveIn | None = None):
         run['finished_at'] = _now()
         _runs.set(rid, run)
         _touch_floating(rid, 'rejected')
-        return run
+        return _public_run(run)
 
     if idx < len(run.get('steps', [])):
         step = run['steps'][idx]
@@ -986,14 +1172,12 @@ async def approve_run(rid: str, body: ApproveIn | None = None):
     _runs.set(rid, run)
     audit_safe('run_approved', {'run_id': rid, 'note': note})
     _spawn(_drive_run(rid))
-    return run
+    return _public_run(run)
 
 
 @router.post('/runs/{rid}/cancel')
-def cancel_run(rid: str):
-    run = _runs.get(rid)
-    if not run:
-        raise HTTPException(status_code=404, detail=f'运行 {rid} 不存在')
+def cancel_run(rid: str, request: Request):
+    run = _get_run_or_404(rid, _actor_id(request))
     if run.get('status') in ('done', 'failed', 'cancelled'):
         raise HTTPException(status_code=409, detail=f'当前状态 {run.get("status")} 不可取消')
     for step in run.get('steps', []):
@@ -1006,7 +1190,7 @@ def cancel_run(rid: str):
     _runs.set(rid, run)
     _touch_floating(rid, 'cancelled')
     audit_safe('run_cancelled', {'run_id': rid})
-    return run
+    return _public_run(run)
 
 
 # ---------------------------------------------------------------- 对话
@@ -1014,7 +1198,8 @@ def cancel_run(rid: str):
 @router.post('/chat')
 async def chat(body: ChatIn, request: Request):
     # `_` 前缀为保留命名空间（_teams/_floating 等），一律按不存在处理（404）
-    agent = _get_agent_or_404(body.agent_id, _actor_id(request)) if body.agent_id else None
+    owner_id = _actor_id(request)
+    agent = _get_agent_or_404(body.agent_id, owner_id) if body.agent_id else None
     depth = _valid_depth(body.depth or (agent or {}).get('depth'), 'medium')
     gear = _valid_gear(body.gear or (agent or {}).get('gear'), 'sandbox')
     goal = body.goal if body.goal is not None else (agent or {}).get('goal', '')
@@ -1026,7 +1211,15 @@ async def chat(body: ChatIn, request: Request):
         f'用户：{body.message}\n'
         f'请给出简洁的中文回复。'
     )
-    gateway_text, provider_used = await _try_gateway(prompt)
+    # Resolve the gateway with the request owner even though the synchronous
+    # chat run is only materialized after the upstream response succeeds.
+    # Without this transient context, a second API key could resolve the
+    # configured single-user provider and use its credential.
+    gateway_context = {
+        'owner_id': owner_id,
+        'provider_pid': (agent or {}).get('provider_pid', ''),
+    }
+    gateway_text, provider_used = await _try_gateway(prompt, gateway_context)
     if not gateway_text:
         # Issue #45 P0-3 / DoD-2：机器可读 error 枚举，不产出模型口吻文本。
         raise HTTPException(
@@ -1045,6 +1238,7 @@ async def chat(body: ChatIn, request: Request):
         kind='chat', task=body.message[:120], agent=agent,
         goal=goal, depth=depth, gear=gear,
         context={'attachments': [a.model_dump() for a in body.attachments]},
+        owner_id=owner_id,
     )
     # 对话即问即答：步骤同步完成，不走后台推进
     now = _now()
@@ -1076,7 +1270,7 @@ async def chat(body: ChatIn, request: Request):
 
 # ---------------------------------------------------------------- 浮动工作区 / 子代理
 
-def _subagent_depth_of(run: dict) -> int:
+def _subagent_depth_of(run: dict, owner_id: str | None = None) -> int:
     """沿 parent_run_id 链向上计算嵌套深度（自身为 0），带环保护。"""
     depth = 0
     seen: set[str] = set()
@@ -1089,6 +1283,10 @@ def _subagent_depth_of(run: dict) -> int:
         parent = _runs.get(pid)
         if not isinstance(parent, dict):
             break
+        if owner_id is not None:
+            _materialize_run_owner(parent, owner_id)
+            if not _run_visible(parent, owner_id):
+                break
         depth += 1
         current = parent
     return depth
@@ -1096,17 +1294,16 @@ def _subagent_depth_of(run: dict) -> int:
 
 @router.post('/subagent', status_code=201)
 async def spawn_subagent(body: SubagentIn, request: Request):
+    owner_id = _actor_id(request)
     parent = None
     parent_ref = (body.parent_run_id or body.parent_id or '').strip() or None
     if body.parent_run_id and body.parent_id and body.parent_run_id != body.parent_id:
         raise HTTPException(status_code=422, detail='parent_run_id 与 parent_id 不一致')
     if parent_ref:
-        parent = _runs.get(parent_ref)
-        if not parent:
-            raise HTTPException(status_code=404, detail=f'父运行 {parent_ref} 不存在')
+        parent = _get_run_or_404(parent_ref, owner_id)
     if parent is not None:
         # 嵌套上限：新 run 深度 = 父链深度 + 1，不得超过 SUBAGENT_MAX_DEPTH
-        new_depth = _subagent_depth_of(parent) + 1
+        new_depth = _subagent_depth_of(parent, owner_id) + 1
         if new_depth > SUBAGENT_MAX_DEPTH:
             raise HTTPException(
                 status_code=422,
@@ -1114,28 +1311,37 @@ async def spawn_subagent(body: SubagentIn, request: Request):
             )
     else:
         new_depth = 0
-    agent = _get_agent_or_404(body.agent_id, _actor_id(request)) if body.agent_id else None
+    agent = _get_agent_or_404(body.agent_id, owner_id) if body.agent_id else None
     run = _new_run(
         kind='subagent', task=body.task, agent=agent,
         parent_run_id=parent_ref,
         depth=body.depth or (parent or {}).get('depth'),
         gear=body.gear or (parent or {}).get('gear'),
         context={'spawned_by': parent_ref or 'manual'},
+        owner_id=owner_id,
     )
     run['subagent_depth'] = new_depth
     _runs.set(run['id'], run)
     sess = _register_floating(run)
     _spawn(_drive_run(run['id']))
-    return {'run': run, 'session': sess}
+    return {'run': _public_run(run), 'session': _public_session(sess)}
 
 
 @router.get('/workspace/floating')
-def floating_workspace():
+def floating_workspace(request: Request):
+    owner_id = _actor_id(request)
     sessions = _floating_map()
     cutoff = datetime.now().astimezone() - timedelta(minutes=30)
     items = []
     changed = False
     for sid, sess in list(sessions.items()):
+        if not _floating_visible(sess, owner_id):
+            continue
+        run_owner = _inferred_run_owner_id(_runs.get(str(sess.get('run_id') or '')) or {})
+        if not sess.get('owner_id') and run_owner:
+            sess['owner_id'] = run_owner
+            sessions[sid] = sess
+            changed = True
         run = _runs.get(sess.get('run_id', ''))
         if run and run.get('status') != sess.get('status'):
             sess['status'] = run['status']
@@ -1151,7 +1357,7 @@ def floating_workspace():
             sessions.pop(sid)
             changed = True
             continue
-        items.append(sess)
+        items.append(_public_session(sess))
     if changed:
         _agents.set(_FLOATING_KEY, sessions)
     items.sort(key=lambda s: s.get('last_active_at', ''), reverse=True)
@@ -1162,9 +1368,10 @@ def floating_workspace():
 
 @router.get('/context-size')
 def context_size(request: Request, agent_id: str | None = Query(default=None)):
+    owner_id = _actor_id(request)
     agent: dict = {}
     if agent_id:
-        agent = _get_agent_or_404(agent_id, _actor_id(request))
+        agent = _get_agent_or_404(agent_id, owner_id)
     # 系统提示基底与记忆指令：和 chat/run 注入链路同源（_base_system_text /
     # _memory_instructions_block）。C1 已保证指令写入前过 Policy Gate；
     # 此处做长度截断，失败时如实标注。两段分开统计，不重复计数。
@@ -1181,7 +1388,13 @@ def context_size(request: Request, agent_id: str | None = Query(default=None)):
         memory_text += '记忆指令：（拉取失败，本次未注入）'
     history_runs = [
         r for r in _runs.all().values()
-        if agent_id and r.get('agent_id') == agent_id
+        if (
+            agent_id
+            and isinstance(r, dict)
+            and r.get('agent_id') == agent_id
+            and _materialize_run_owner(r, owner_id)
+            and _run_visible(r, owner_id)
+        )
     ]
     history_runs.sort(key=lambda r: r.get('created_at', ''), reverse=True)
     history_text = ''.join(
@@ -1237,12 +1450,18 @@ def delete_agent(aid: str, request: Request):
     return {'ok': True, 'id': aid}
 
 
-def resume_runs() -> None:
-    """服务启动时恢复 running 状态的 run：后台任务在进程重启后丢失，需重新派发。"""
+def resume_runs(owner_id: str | None = None) -> None:
+    """重新派发 running runs；传入 owner_id 时只恢复该主体的记录。"""
     resumed = 0
     for run in _runs.all().values():
-        if isinstance(run, dict) and run.get('status') == 'running':
-            _spawn(_drive_run(run['id']))
-            resumed += 1
+        if not isinstance(run, dict) or run.get('status') != 'running':
+            continue
+        # Migrate legacy rows when their owner can be inferred from the linked
+        # agent/team/parent; unbound rows bind to the configured single user.
+        _materialize_run_owner(run)
+        if owner_id and not _run_visible(run, owner_id):
+            continue
+        _spawn(_drive_run(run['id']))
+        resumed += 1
     if resumed:
         print(f'[agents] 已恢复 {resumed} 个 running 运行')
