@@ -138,14 +138,23 @@ def test_clamp_custom_range():
 
 
 def test_extract_entities_basic():
+    """中文 + 英文混排时,正则会按「中文连续段」切分,英文被丢弃。"""
     entities = intake.extract_entities("我喜欢用Python写代码")
-    assert "我喜欢用" in entities or "喜欢用" in entities or "我喜欢" in entities
+    # 实测行为:[\u4e00-\u9fff]{2,} 贪婪匹配,「Python」不是中文被丢弃,
+    # 「我喜欢用」和「写代码」是两段独立中文,各自成实体
+    assert entities == ['我喜欢用', '写代码']
 
 
 def test_extract_entities_dedupes():
-    entities = intake.extract_entities("测试测试测试")
-    # 同一实体只出现一次
-    assert len(entities) == len(set(entities))
+    """同一段中文重复出现时,结果只保留第一次。
+
+    注意:正则 `[\u4e00-\u9fff]{2,}` 对「北京北京」会一次性匹配为「北京北京」
+    而不是拆成两个「北京」。要触发 dedup,必须用「中文-非中文-中文」结构。
+    """
+    entities = intake.extract_entities("北京,北京,上海,上海")
+    # 「,」不是中文,所以「北京」「北京」「上海」「上海」是 4 个独立匹配
+    # dedup 后应该只剩 ['北京', '上海']
+    assert entities == ['北京', '上海']
 
 
 def test_extract_entities_min_two_chars():
@@ -258,19 +267,23 @@ def test_intake_perception_idempotent_turn_id(isolated_db):
 
     r1 = intake.intake_perception(soul_id='test-soul-003', role='user', content='开心', used_capsule_ids=[], owner_id='test-owner')
     r2 = intake.intake_perception(soul_id='test-soul-003', role='user', content='开心', used_capsule_ids=[], owner_id='test-owner')
-    # 防御:两次调用都应成功返回(turn_id 唯一性靠 conversation_turns 计数验证)
-    assert r1 is not None and r2 is not None
 
-    # 验证 conversation_turns 表里至少写了 2 条(如果 intake_perception 真的写表的话)
-    try:
-        rows = conn.execute(
-            "SELECT COUNT(*) as cnt FROM conversation_turns WHERE soul_id='test-soul-003'"
-        ).fetchone()
-        # 宽松断言:先记录现状,未来如果 intake_perception 改为不写表,这条可以放宽
-        assert rows['cnt'] >= 0
-    except Exception:
-        # conversation_turns 表可能不存在,放行
-        pass
+    # 真实断言:两次调用必须产生不同的 turn_id
+    # (intake.py:118 用 uuid4 生成,撞 id 就是真 bug)
+    assert 'turn_id' in r1, 'intake_perception 返回值必须含 turn_id'
+    assert 'turn_id' in r2, 'intake_perception 返回值必须含 turn_id'
+    assert r1['turn_id'] != r2['turn_id'], \
+        f'turn_id 冲突: r1={r1["turn_id"]} r2={r2["turn_id"]}'
+    assert r1['turn_id'].startswith('turn_')
+    assert r2['turn_id'].startswith('turn_')
+
+    # 同时验证 conversation_turns 表写了 2 条
+    # (如果 intake_perception 改为不写表,这条会暴露契约漂移)
+    rows = conn.execute(
+        "SELECT COUNT(*) as cnt FROM conversation_turns WHERE soul_id='test-soul-003'"
+    ).fetchone()
+    assert rows['cnt'] == 2, \
+        f'conversation_turns 应写入 2 条记录,实际 {rows["cnt"]} 条'
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +292,15 @@ def test_intake_perception_idempotent_turn_id(isolated_db):
 
 
 def test_intake_perception_with_nonexistent_soul_uses_default_path(isolated_db):
-    """soul_id 不存在时不应抛异常,应该走默认 affect 初始化路径。"""
+    """soul_id 不存在时不应抛异常,应该走默认 affect 初始化路径。
+
+    区分两条路径:
+    - 默认初始化路径(intake.py:144-151): affect_before = {pleasure:0.5, arousal:0.4, dominance:0.5, current_mood:'calm', mood_intensity:0.3}
+    - 异常兜底路径(intake.py:266-275): affect_before = {} / affect_after = {}
+
+    只断言 'affect_before' in result 不够 — 兜底路径也有这两个键。
+    必须断言**默认值内容**,才能区分「真的走了默认分支」与「崩溃兜底」。
+    """
     result = intake.intake_perception(
         soul_id='nonexistent-soul-xyz',
         role='user',
@@ -289,6 +310,16 @@ def test_intake_perception_with_nonexistent_soul_uses_default_path(isolated_db):
     # 不应抛异常,且应该返回结构化的结果
     assert 'affect_before' in result
     assert 'affect_after' in result
+
+    # 关键:区分「默认初始化」与「异常兜底」
+    # 异常兜底的 affect_before 是 {} — 真走了默认分支应该有 5 个字段
+    assert result['affect_before'] != {}, \
+        f'走了异常兜底路径,不是默认初始化: {result}'
+    assert result['affect_before']['current_mood'] == 'calm'
+    assert result['affect_before']['pleasure'] == 0.5
+    assert result['affect_before']['arousal'] == 0.4
+    assert result['affect_before']['dominance'] == 0.5
+    assert result['affect_before']['mood_intensity'] == 0.3
 
 
 def test_intake_perception_empty_content(isolated_db):
