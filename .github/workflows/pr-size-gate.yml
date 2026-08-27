@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  checks: write
 
 jobs:
   size-gate:
@@ -46,22 +47,27 @@ jobs:
           fi
 
           if [ "$FAIL" = "1" ]; then
-            MSG=$(cat <<MSG_EOF
-          ## ⚠️ PR 体积超出可审查边界
+            # 写 step summary(GITHUB_STEP_SUMMARY 总是可写,不受 fork PR 权限影响)
+            {
+              echo "## ⚠️ PR 体积超出可审查边界"
+              echo ""
+              echo "本 PR 改动: **${FILES} 个文件, +${ADD}/-${DEL} 行**。"
+              echo ""
+              echo "阈值: ${MAX_FILES} 文件 / ${MAX_LINES} 行(参考 2026-08-27 事故复盘)。"
+              echo ""
+              echo "**为什么有这个门禁**: 单 PR 超过这个体量后,人工 review 与 AI review 都无法给出有意义的反馈,"
+              echo "「审过了」会变成一句空话。请按主题拆分为多个小 PR,每个 PR 解决一个独立问题。"
+              echo ""
+              echo "触发原因: ${REASON}"
+              echo ""
+              echo "如确属必要(例如批量重命名、依赖升级),请由 maintainer 在 PR 评论中说明理由并手动豁免。"
+            } >> "$GITHUB_STEP_SUMMARY"
 
-          本 PR 改动:**${FILES} 个文件,+${ADD}/-${DEL} 行**。
+            # 尝试向 PR 写评论(对 fork PR 可能 403 — 用 || true 兜底,summary 已经够)
+            MSG="PR 体积超出可审查边界: ${FILES} 文件 / ${TOTAL} 行(阈值 ${MAX_FILES}f/${MAX_LINES}L)。触发原因: ${REASON}。请拆分为多个小 PR,详见 Actions 日志 Step Summary。"
+            gh pr comment "$PR_NUMBER" --body "$MSG" 2>&1 || \
+              echo "::notice::无法向 PR 写评论(可能是 fork PR 权限限制),详情见 step summary"
 
-          阈值:${MAX_FILES} 文件 / ${MAX_LINES} 行(参考 2026-08-27 事故复盘)。
-
-          **为什么有这个门禁**:单 PR 超过这个体量后,人工 review 与 AI review 都无法给出有意义的反馈,
-          「审过了」会变成一句空话。请按主题拆分为多个小 PR,每个 PR 解决一个独立问题。
-
-          触发原因:${REASON}
-
-          如确属必要(例如批量重命名、依赖升级),请由 maintainer 在 PR 评论中说明理由并手动豁免。
-          MSG_EOF
-          )
-            gh pr comment "$PR_NUMBER" --body "$MSG"
             echo "::error::PR size gate failed: $REASON"
             exit 1
           fi
