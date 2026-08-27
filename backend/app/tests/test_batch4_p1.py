@@ -235,6 +235,11 @@ def test_policy_gate_normal_text_not_false_positive():
         "下次登录需要重置密码",
         "今天讨论了密钥轮换的方案设计",
         "a b c 短序列不应被误压",
+        # 疑问语气不是赋值：MEB-POISON-004 实测发现的误报，
+        # 「.{0,8} + 是」曾把「策略是否」当成「密码 = 否…」。
+        "评审时需要检查密码策略是否符合等级保护要求",
+        "口令是否需要定期更换？",
+        "密钥为何需要轮换，请说明理由",
     ]:
         r = evaluate_policy(text=text)
         assert r["policy_result"] != "reject", f"误伤：{text}"

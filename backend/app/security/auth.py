@@ -9,9 +9,9 @@
      shell persists its generated key);
   4. when all sources are missing, auto-generate ``secrets.token_hex(24)``
      and persist it at the platform default path with 0600 permissions.
-- ``WANWEI_PRODUCTION`` no longer hard-blocks startup on a missing/short key:
-  the auto-generated 48-hex key satisfies the previous strength requirement
-  by construction; a short explicit key only downgrades to a WARNING log.
+- ``WANWEI_PRODUCTION`` permits self-generated keys, but explicitly supplied
+   keys (via ``WANWEI_API_KEY`` or ``WANWEI_API_KEY_FILE``) must meet the
+   minimum strength requirement or startup fails closed.
 - Loopback exemption (P1-3/4): when ``WANWEI_HOST`` is a loopback address and
   the request peer is 127.0.0.1/::1 with no ``X-Forwarded-For`` header, the
   API key is not required, unless ``WANWEI_REQUIRE_KEY_ON_LOOPBACK=1``.
@@ -162,9 +162,12 @@ def get_api_key() -> str:
     path -> auto-generate + persist (0600). Any launch method therefore
     self-heals instead of silently falling back to a public dev constant.
     """
+    key_source: str | None = None
     key = os.getenv("WANWEI_API_KEY")
     if key is not None:
         key = key.strip()
+        if key:
+            key_source = "WANWEI_API_KEY"
 
     if not key:
         key_file = os.getenv("WANWEI_API_KEY_FILE")
@@ -173,12 +176,27 @@ def get_api_key() -> str:
                 key = Path(key_file).read_text(encoding="utf-8").strip()
             except OSError as exc:
                 raise RuntimeError("Unable to read WANWEI_API_KEY_FILE.") from exc
+            if key:
+                key_source = "WANWEI_API_KEY_FILE"
 
     if not key:
         key = _load_platform_api_key()
+        if key:
+            key_source = "platform"
 
     if not key:
         key = _auto_generate_api_key()
+        key_source = "auto-generated"
+
+    if (
+        is_production_mode()
+        and key_source in {"WANWEI_API_KEY", "WANWEI_API_KEY_FILE"}
+        and len(key) < MIN_PRODUCTION_API_KEY_LENGTH
+    ):
+        raise RuntimeError(
+            f"{key_source} must be at least {MIN_PRODUCTION_API_KEY_LENGTH} "
+            "characters in production mode."
+        )
 
     if len(key) < MIN_PRODUCTION_API_KEY_LENGTH:
         logger.warning(

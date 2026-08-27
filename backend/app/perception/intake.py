@@ -7,9 +7,13 @@ from typing import Any
 
 from ..db import get_conn, transaction
 from ..memory_runtime.capsule_store import write_capsule
+from ..memory_runtime.policy_gate import evaluate_policy
+from ..security.redaction import redact_sensitive_text
 from ..utils.datetime_utils import utc_now_iso_compact
 
 logger = logging.getLogger(__name__)
+
+_POLICY_FILTERED_CONTENT = "内容已根据安全策略过滤"
 
 
 def now() -> str:
@@ -24,6 +28,24 @@ def loads(text: str, default: Any = None) -> Any:
     if text is None:
         return default
     return json.loads(text)
+
+
+def _conversation_content_for_persistence(content: str, policy: dict[str, Any]) -> str:
+    """Return a safe representation for the durable conversation transcript.
+
+    Policy evaluation and capsule governance still receive the original text,
+    but a rejected or quarantined turn must never be copied into
+    ``conversation_turns``.  ``redact`` remains useful conversation context,
+    so use the shared redaction implementation for that policy outcome.
+    """
+    policy_result = policy.get("policy_result")
+    if policy_result in {"reject", "quarantine"}:
+        return _POLICY_FILTERED_CONTENT
+    if policy_result == "redact":
+        return redact_sensitive_text(content)
+    if policy_result in {"allow", "require_confirmation"}:
+        return content
+    return _POLICY_FILTERED_CONTENT
 
 
 def _detect_emotion(content: str) -> str:
@@ -123,8 +145,29 @@ def intake_perception(
 
         owner_id = owner_id_for_soul(soul_id)
 
+    policy_result = "reject"
     try:
         # 1. 提取情绪信号
+        # Gate the raw turn before any durable transcript write. Keep the
+        # original local value for affect analysis and capsule governance;
+        # conversation_turns receives only the policy-safe representation.
+        try:
+            policy = evaluate_policy(
+                text=content,
+                source_type="conversation",
+                write_intent="explicit",
+                affects_future_behavior=False,
+                source_trust="normal",
+                memory_class="working",
+            )
+        except Exception as e:
+            # Fail closed for persistence while keeping the chat path usable.
+            logger.warning("conversation policy evaluation failed: %s", e)
+            policy = {"policy_result": "reject"}
+        policy_result = policy.get("policy_result", "reject")
+        conversation_content = _conversation_content_for_persistence(content, policy)
+
+        # Emotion and intent remain in-memory analysis of the original turn.
         emotion_detected = _detect_emotion(content)
 
         # 2. 意图分类
@@ -215,7 +258,7 @@ def intake_perception(
                         turn_id,
                         soul_id,
                         role,
-                        content,
+                        conversation_content,
                         emotion_detected,
                         intent_classified,
                         dumps(used_capsule_ids),
@@ -260,6 +303,7 @@ def intake_perception(
             "turn_id": turn_id,
             "emotion_detected": emotion_detected,
             "intent": intent_classified,
+            "policy_result": policy_result,
             "affect_before": affect_before,
             "affect_after": affect_after,
         }
@@ -271,6 +315,7 @@ def intake_perception(
             "turn_id": turn_id,
             "emotion_detected": "neutral",
             "intent": "neutral",
+            "policy_result": policy_result,
             "affect_before": {},
             "affect_after": {},
         }

@@ -246,6 +246,13 @@ async function api(path, opts){
   return r.json();
 }
 
+// Escape API-derived values before inserting them into legacy innerHTML views.
+function esc(value){
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[ch]));
+}
+
 async function checkHealth(){
   try{
     const h = await api('/health');
@@ -274,11 +281,13 @@ function renderMetrics(m){
     const v=m[k]; const pend = v==='pending';
     const red = k==='unsafe_autonomy_rate' && v>0;
     const disp = pend?'pending':(typeof v==='number'&&v%1!==0?v.toFixed(4):v);
-    return `<div class="metric ${red?'red':''}"><div class="v ${pend?'pending':''}">${disp}</div><div class="k">${k}</div></div>`;
+    return `<div class="metric ${red?'red':''}"><div class="v ${pend?'pending':''}">${esc(disp)}</div><div class="k">${esc(k)}</div></div>`;
   }).join('');
 }
 
-function badge(v){ return `<span class="badge ${v}">${v}</span>`; }
+// Result panels use textContent (never HTML) so API-provided values cannot
+// become markup. Keep the badge cue readable without inserting a tag.
+function badge(v){ return '['+String(v ?? '')+']'; }
 
 async function doWrite(){
   const o=document.getElementById('w_out'); o.textContent='提交中…';
@@ -287,7 +296,7 @@ async function doWrite(){
     const body={memory_class:w_class.value, scene:w_scene.value, source_type:'user_input',
       write_intent:w_intent.value, affects_future_behavior:w_affect.value==='true', content};
     const r=await api('/memory/v2/capsules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    o.innerHTML='capsule_id: '+r.capsule_id+'\n'+badge(r.governance.policy_result)+badge(r.state.lifecycle)+
+    o.textContent='capsule_id: '+String(r.capsule_id ?? '')+'\n'+badge(r.governance.policy_result)+badge(r.state.lifecycle)+
       '\nsensitivity: '+r.governance.sensitivity_level+' · trust: '+r.governance.trust_score+
       '\n\n'+JSON.stringify(r.governance,null,2);
   }catch(e){o.textContent='错误：'+e.message+'（后端是否已启动？）';}
@@ -300,7 +309,7 @@ async function doSearch(){
     let out='召回 '+r.results.length+' 条\n\n';
     r.evidence_cards.forEach(c=>{ out+='▣ '+badge(c.memory_class)+' '+(c.claim||'').slice(0,80)+
       '\n  trust='+c.trust_score+' conf='+c.confidence+' used_for='+c.used_for+'\n\n'; });
-    o.innerHTML=out||'无召回';
+    o.textContent=out||'无召回';
   }catch(e){o.textContent='错误：'+e.message;}
 }
 
@@ -315,7 +324,7 @@ async function doCommand(){
       '\n确认点: '+r.confirmation_points.length+'\n\n计划:\n';
     r.recommended_plan.forEach(s=>out+='  '+s.step+'. '+s.action+' ['+s.risk_level+']\n');
     if(r.confirmation_points.length){out+='\n确认点:\n';r.confirmation_points.forEach(c=>out+='  ⚠ '+c.reason+': '+c.question+'\n');}
-    o.innerHTML=out;
+    o.textContent=out;
   }catch(e){o.textContent='错误：'+e.message;}
 }
 
@@ -328,7 +337,7 @@ async function doReflect(){
     const r=await api('/memory/v2/reflection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     let out='reflection_id: '+r.reflection_id+'\n\nevolution_actions:\n';
     (r.evolution_actions||[]).forEach(a=>out+='  · '+a.action+' → '+(a.capsule_id||'')+(a.memory_class?' ('+a.memory_class+')':'')+'\n');
-    o.innerHTML=out||'无演化动作';
+    o.textContent=out||'无演化动作';
   }catch(e){o.textContent='错误：'+e.message;}
 }
 
@@ -337,7 +346,7 @@ async function loadCapsules(){
   try{
     const r=await api('/memory/v2/capsules?limit=50');
     if(!r.items.length){o.textContent='暂无 capsule（先写入几条）';return;}
-    o.innerHTML=r.items.map(c=>{
+    o.textContent=r.items.map(c=>{
       const g=c.governance||{}, st=c.state||{};
       return badge(c.memory_class)+badge(st.lifecycle||'?')+' '+c.capsule_id+
         '\n  '+JSON.stringify(c.content).slice(0,90)+

@@ -42,6 +42,117 @@ def local_llama_settings() -> tuple[str, str, bool]:
     return base, model, bool(base and model)
 
 
+def _platform_provider_target(
+    provider: str,
+    owner_id: str | None = None,
+) -> tuple[str, str, str, str] | None:
+    """Resolve one enabled cockpit provider without exposing its ciphertext.
+
+    The cockpit stores provider settings in a JsonStore while the legacy
+    gateway stores them in SQLite.  Keeping this lookup in the gateway module
+    gives all callers the same credential and provider selection semantics.
+    """
+    try:
+        # Relative import keeps ``app`` and ``backend.app`` test/runtime
+        # imports on the same module object instead of silently splitting the
+        # provider store into two independent namespaces.
+        from ..platform_api import providers as providers_mod
+
+        meta = providers_mod._CATALOG_BY_ID.get(provider)  # noqa: SLF001
+        record = providers_mod._provider_record_for_owner(  # noqa: SLF001
+            provider,
+            owner_id=owner_id,
+        ) or {}
+        if meta is None or not isinstance(record, dict) or not record.get("enabled"):
+            return None
+        api_base = (record.get("base_url") or meta.get("base_url") or "").strip()
+        model = (record.get("model") or (meta.get("models") or [""])[0] or "").strip()
+        if not api_base or not model:
+            return None
+        api_key = providers_mod._decrypt_key(record)  # noqa: SLF001
+        return provider, api_base, api_key, model
+    except Exception:  # noqa: BLE001 - a broken optional provider must not break chat
+        return None
+
+
+def _legacy_db_owner_allowed(owner_id: str | None) -> bool:
+    """Allow global SQLite gateway rows only for legacy single-user callers.
+
+    SQLite rows predate actor ownership.  A caller that supplies an explicit
+    actor (agent runs do) must not inherit that global credential unless it is
+    the configured local actor; owner-less internal calls retain the historical
+    single-user behavior.
+    """
+    if owner_id is None:
+        return True
+    try:
+        from ..platform_api import providers as providers_mod
+
+        configured = providers_mod._configured_actor_id()  # noqa: SLF001
+    except Exception:  # noqa: BLE001 - fail closed for explicit owners
+        configured = None
+    return bool(configured and owner_id == configured)
+
+
+def resolve_runtime_provider(
+    provider: str = "default",
+    model: str = "default",
+    owner_id: str | None = None,
+) -> tuple[str, str, str, str] | None:
+    """Resolve the provider used by runtime chat/agent requests.
+
+    Return ``(provider, api_base, api_key, model)``.  Explicit SQLite or
+    cockpit configuration wins; the environment-only local endpoint remains a
+    final compatibility fallback.  ``owner_id`` scopes cockpit provider rows;
+    omitted owner_id retains the configured single-user behavior. No credential
+    is returned to API callers.
+    """
+    requested = (provider or "default").strip()
+
+    def _from_db(pid: str) -> tuple[str, str, str, str] | None:
+        cfg = _get_config(pid)
+        if not cfg or not cfg.get("enabled"):
+            return None
+        base = (cfg.get("api_base") or "").strip()
+        configured_model = (cfg.get("model") or "").strip()
+        if not base or not configured_model:
+            return None
+        return pid, base, cfg.get("api_key") or "", model if model != "default" else configured_model
+
+    # An explicit provider is authoritative and must never silently fall back
+    # to another account/provider.
+    if requested != "default":
+        target = _platform_provider_target(requested, owner_id)
+        if target is None and _legacy_db_owner_allowed(owner_id):
+            target = _from_db(requested)
+        if target is None:
+            return None
+        pid, base, key, configured_model = target
+        return pid, base, key, model if model != "default" else configured_model
+
+    # Prefer an explicitly configured legacy gateway entry, then any enabled
+    # cockpit provider in catalog order (stable and visible to the UI).
+    if _legacy_db_owner_allowed(owner_id):
+        db_target = _from_db("openai_compatible")
+        if db_target is not None:
+            return db_target
+    try:
+        from ..platform_api import providers as providers_mod
+
+        for meta in providers_mod.CATALOG:
+            target = _platform_provider_target(meta["id"], owner_id)
+            if target is not None:
+                pid, base, key, configured_model = target
+                return pid, base, key, model if model != "default" else configured_model
+    except Exception:  # noqa: BLE001
+        pass
+
+    base, env_model, configured = local_llama_settings()
+    if configured:
+        return "openai_compatible", base, "", model if model != "default" else env_model
+    return None
+
+
 def local_llama_allowlist() -> list[str] | None:
     """解析 WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST 为主机白名单列表。"""
     raw = os.getenv("WANWEI_OPENAI_COMPATIBLE_HOST_ALLOWLIST")

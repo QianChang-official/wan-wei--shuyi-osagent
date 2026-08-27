@@ -231,7 +231,11 @@ def _truncate(value: Any, limit: int = _AUDIT_TEXT_LIMIT) -> Any:
 def audit_safe(event_type: str, payload: dict[str, Any]) -> str | None:
     """platform_api 统一审计出口：截断 + 脱敏 + 落库，失败静默。"""
     try:
-        return _audit_record(event_type, redact_dict(_truncate(payload)))
+        # Apply key-aware masking before regex redaction so short secrets
+        # cannot reach the audit backend in clear text.
+        truncated = _truncate(payload)
+        masked = mask_secret_keys(truncated)
+        return _audit_record(event_type, redact_dict(masked))
     except Exception:  # noqa: BLE001 —— 审计不可用不阻断业务
         return None
 

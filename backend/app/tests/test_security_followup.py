@@ -2,21 +2,14 @@
 
 Tests core security hardening fixes.
 """
-import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-
-
-def auth_logger_name() -> str:
-    """auth 模块的 logger 名，供 caplog 过滤使用。"""
-    from backend.app.security import auth
-
-    return auth.logger.name
 
 
 def _client(tmp_path: Path, *, api_key: str = "test-key", production: bool = False):
@@ -77,18 +70,41 @@ def test_production_truthy_values_self_bootstrap(monkeypatch, tmp_path, producti
     assert len(get_api_key()) == 48
 
 
-def test_production_short_api_key_warns_but_starts(monkeypatch, tmp_path, caplog):
-    """A short explicit key downgrades to a WARNING instead of blocking startup."""
+def test_production_short_api_key_fails_closed(monkeypatch, tmp_path):
+    """Production rejects a short explicitly supplied environment key."""
     monkeypatch.setenv("WANWEI_API_KEY", "too-short")
     monkeypatch.setenv("WANWEI_PRODUCTION", "1")
     monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
 
     from backend.app.security.auth import get_api_key
 
-    with caplog.at_level(logging.WARNING, logger=auth_logger_name()):
-        assert get_api_key() == "too-short"
+    with pytest.raises(RuntimeError, match="at least 32 characters"):
+        get_api_key()
 
-    assert any("shorter than" in r.message for r in caplog.records)
+
+def test_production_short_api_key_file_fails_closed(monkeypatch, tmp_path):
+    """Production rejects a short key loaded from WANWEI_API_KEY_FILE."""
+    secret_file = tmp_path / "api-key"
+    secret_file.write_text("too-short\n", encoding="utf-8")
+    monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+    monkeypatch.setenv("WANWEI_API_KEY_FILE", str(secret_file))
+    monkeypatch.setenv("WANWEI_PRODUCTION", "true")
+
+    from backend.app.security.auth import get_api_key
+
+    with pytest.raises(RuntimeError, match="at least 32 characters"):
+        get_api_key()
+
+
+def test_development_short_api_key_remains_compatible(monkeypatch, tmp_path):
+    """Development mode keeps accepting short explicit keys."""
+    monkeypatch.setenv("WANWEI_API_KEY", "too-short")
+    monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+    monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
+
+    from backend.app.security.auth import get_api_key
+
+    assert get_api_key() == "too-short"
 
 
 def test_production_reads_api_key_file(tmp_path, monkeypatch):
@@ -340,6 +356,40 @@ def test_redaction_module_exists():
     """Verify redaction module."""
     from backend.app.security import redaction
     assert hasattr(redaction, 'redact_audit_payload')
+
+
+def test_audit_safe_masks_nested_short_secrets(monkeypatch):
+    """Audit masking covers nested short secrets before text redaction."""
+    from backend.app.platform_api import guards
+
+    captured: dict[str, Any] = {}
+
+    def fake_record(event_type: str, payload: dict[str, Any]) -> str:
+        captured["event_type"] = event_type
+        captured["payload"] = payload
+        return "audit-test-id"
+
+    monkeypatch.setattr(guards, "_audit_record", fake_record)
+    payload = {
+        "outer": {
+            "token": "x",
+            "details": [{"password": "pw"}, {"api_key": "k"}],
+            "message": "Bearer abc123",
+        },
+        "safe": "visible",
+    }
+
+    assert guards.audit_safe("secret_test", payload) == "audit-test-id"
+    assert captured["event_type"] == "secret_test"
+    assert captured["payload"] == {
+        "outer": {
+            "token": "******",
+            "details": [{"password": "******"}, {"api_key": "******"}],
+            "message": "Bearer ***REDACTED***",
+        },
+        "safe": "visible",
+    }
+    assert payload["outer"]["token"] == "x"
 
 
 def test_security_headers(tmp_path):
