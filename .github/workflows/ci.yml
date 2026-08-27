@@ -36,6 +36,23 @@ jobs:
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m compileall -q backend/app
       - run: python -m ruff check backend/app --config ruff.toml --select E9,F63,F7,F82,F811,F841
+      # bandit 安全静态扫描(非阻断):结果上传为 artifact,趋势由安全审阅例行消化。
+      # 不直接 fail 的原因:存量代码有历史告警需要逐条甄别是否误报,直接阻断会迫使团队
+      # 在最坏的时间点(紧急修复时)忽略整个工具。先建立可见性,再逐步抬基线。
+      - name: Bandit security lint (non-blocking)
+        continue-on-error: true
+        run: |
+          python -m pip install bandit
+          python -m bandit -r backend/app -f json -o bandit-report.json --exit-zero || true
+          python -m bandit -r backend/app --exit-zero || true
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report-${{ matrix.os }}-py${{ matrix.python }}
+          path: bandit-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - run: python -m pytest --basetemp .pytest-ci -p no:cacheprovider
       # Mini-MEB 记忆体验基准（规范: AI优化/MemoryOS-BenchmarkHarness.md §4）。
       # 每 PR 跑核心用例；评测在临时库里跑，产出报告后再用契约校验器把关，
