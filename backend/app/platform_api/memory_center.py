@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone, time as dt_time
@@ -140,8 +141,14 @@ def _record_governance(
             reason=f'memory_center.{action}',
             risk_class='low',
         )
-    except Exception as exc:  # noqa: BLE001 — 见 docstring:审计增强不阻断展示源
-        logger.error('memory_center governance ledger write failed: %s', exc)
+    except (sqlite3.Error, OSError) as exc:
+        # 只吞操作性异常(DB/磁盘故障)——审计增强不阻断展示源。
+        # NameError/TypeError/AttributeError/ImportError 等编程错误必须抛出,
+        # 让其在开发与测试中暴露(REVIEW.md 明文条款:宽 except 不得吞掉
+        # NameError/TypeError/AttributeError)。
+        logger.error(
+            'memory_center governance ledger write failed: %s', exc, exc_info=True
+        )
         return None
 
 
@@ -369,7 +376,10 @@ def remember(body: RememberPost) -> dict:
 
     outcome = _mutate_lines(_apply)
     if outcome['deduped']:
-        return {'ok': True, 'lines_count': outcome['lines_count'], 'deduped': True}
+        # 去重路径无新写入,不重复记账;既有内容的账目在首次写入时已登记,
+        # 治理状态完整,故 governance_recorded=True(响应形状与其他路径一致)。
+        return {'ok': True, 'lines_count': outcome['lines_count'], 'deduped': True,
+                'governance_recorded': True}
     audit_safe('memory_remember', {'lines_count': outcome['lines_count'], 'text': text})
     # 去重路径无实际变更,不重复记账;真实追加才登记治理账本
     ledger_id = _record_governance(
