@@ -13,7 +13,7 @@ EXPORT_PACKAGES = [
         "id": "test_report",
         "name_cn": "测试报告",
         "status": "partial",
-        "evidence_files": ["reports/production_memory_eval_metrics.json", "reports/production_memory_eval_report.md"],
+        "evidence_files": ["reports/production_memory_eval_metrics.json", "reports/archive/production_memory_eval_report.md"],
         "demo_path": "/console/#/",
     },
     {
