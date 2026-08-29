@@ -22,7 +22,7 @@ TECHNOLOGIES: list[ResearchTechnology] = [
             "Separate synthetic benchmark assertions from production success claims.",
             "Add misleading-memory and production-task metrics only after real instrumentation.",
         ],
-        evidence_files=["backend/app/memory_arena/runner.py", "backend/app/memory_arena/cases", "reports/production_memory_eval_report.md"],
+        evidence_files=["backend/app/memory_arena/runner.py", "backend/app/memory_arena/cases", "reports/archive/production_memory_eval_report.md"],
         source_urls=["https://arxiv.org/abs/2602.16313", "https://github.com/ZexueHe/MemoryArena"],
     ),
     ResearchTechnology(
@@ -290,7 +290,7 @@ VERSION_MAP: list[VersionMapping] = [
         completed=["FastAPI runtime", "SQLite + FTS5", "5 cases / 16 assertions", "Reflection/Evolution"],
         unfinished=["Long-session evaluation", "Production-task success metric"],
         inherited_by=["v0.7 platform", "v0.8 MemoryArena Workbench"],
-        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-v06-memoryops-runtime-eee322b3", "reports/production_memory_eval_report.md"],
+        evidence_files=["文档中心_DOCUMENTATION_HUB.md#doc-v06-memoryops-runtime-eee322b3", "reports/archive/production_memory_eval_report.md"],
     ),
     VersionMapping(
         version="v0.7",
