@@ -35,7 +35,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_run_dream_returns_placeholder_skeleton():
-    """run_dream 当前是 P1 占位:必须返回 placeholder 状态与 7 个零计数字段。
+    """run_dream 当前是 P1 占位:必须返回 placeholder 状态与 5 个零计数字段。
 
     若未来 P4 实现了真实梦境整理,这些字段应从 0 变为实测值,本测试应随之
     更新为「字段存在且为非负整数」而非「恒为 0」。
