@@ -36,6 +36,7 @@ ISO8601 秒级带 ``Z`` 序列化（与 knowledge.py 同一口径）。
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -50,6 +51,8 @@ from .store import JsonStore
 from ..memory_runtime.policy_gate import evaluate_policy
 from ..soul.ownership import actor_id_for_request, configured_actor_id
 from ..utils.datetime_utils import utc_now, utc_now_iso_compact
+
+logger = logging.getLogger(__name__)
 
 
 def _require_configured_memory_owner(request: Request) -> None:
@@ -95,6 +98,52 @@ def _enforce_memory_policy(text: str) -> None:
                 "sensitivity_level": guard.get("sensitivity_level"),
             },
         )
+
+# ---------------------------------------------------------------------------
+# 治理账本双写(方案 B:JsonStore 展示源 + memoryos 账本审计源)
+# ---------------------------------------------------------------------------
+
+# 治理轨 ID 前缀:mc-(memory_center)。账本 capsule_id 字段承载该 ID,
+# 使 verify_deletion / ledger_history 等治理查询能覆盖本模块的写入。
+_GOVERNANCE_TRACK_PREFIX = 'mc'
+
+
+def _record_governance(
+    *,
+    action: str,
+    track_id: str,
+    content: str | None,
+    before_content: str | None = None,
+) -> str | None:
+    """把 memory_center 的写入/删除同步登记到 memoryos append-only 账本。
+
+    设计口径(诚实标注,非隐藏权衡):
+    - JsonStore 是本模块的**展示事实源**;账本是**审计证据源**。两写无法
+      同事务(文件 vs SQLite),存在时序窗口。账本写失败时**不阻断**
+      JsonStore 路径——治理层故障不应拖垮 UI 偏好功能——但返回 None,
+      由调用方在响应/日志中如实暴露。
+    - ``action`` 取 'platform_memory_write' / 'platform_memory_delete'。
+    - 内容只记 hash(append_ledger 内部 content_hash),不落明文。
+
+    返回 ledger_id;失败返回 None。
+    """
+    try:
+        from ..memoryos.governance import append_ledger
+
+        return append_ledger(
+            op_type=action,
+            capsule_id=track_id,
+            actor=configured_actor_id() or 'anonymous',
+            before_content=before_content,
+            after_content=content,
+            after_state='active' if action == 'platform_memory_write' else 'forgotten',
+            reason=f'memory_center.{action}',
+            risk_class='low',
+        )
+    except Exception as exc:  # noqa: BLE001 — 见 docstring:审计增强不阻断展示源
+        logger.error('memory_center governance ledger write failed: %s', exc)
+        return None
+
 
 # ---------------------------------------------------------------------------
 # 存储与常量
@@ -248,12 +297,18 @@ def put_instructions(body: InstructionsPut) -> dict:
     for line in lines:
         _enforce_memory_policy(line)
     updated_at = _write_lines(lines)
+    ledger_id = _record_governance(
+        action='platform_memory_write',
+        track_id=f'{_GOVERNANCE_TRACK_PREFIX}-instructions',
+        content='\n'.join(lines),
+    )
     return {
         'ok': True,
         'lines': lines,
         'count': len(lines),
         'max': MAX_INSTRUCTION_LINES,
         'updated_at': updated_at,
+        'governance_recorded': ledger_id is not None,
     }
 
 
@@ -281,7 +336,14 @@ def delete_instruction(index: int) -> dict:
         return removed, len(lines)
 
     removed, count = _mutate_lines(_apply)
-    return {'ok': True, 'removed': removed, 'count': count}
+    ledger_id = _record_governance(
+        action='platform_memory_delete',
+        track_id=f'{_GOVERNANCE_TRACK_PREFIX}-instructions',
+        content=None,
+        before_content=removed,
+    )
+    return {'ok': True, 'removed': removed, 'count': count,
+            'governance_recorded': ledger_id is not None}
 
 
 @router.post('/remember')
@@ -309,7 +371,14 @@ def remember(body: RememberPost) -> dict:
     if outcome['deduped']:
         return {'ok': True, 'lines_count': outcome['lines_count'], 'deduped': True}
     audit_safe('memory_remember', {'lines_count': outcome['lines_count'], 'text': text})
-    resp: dict[str, Any] = {'ok': True, 'lines_count': outcome['lines_count']}
+    # 去重路径无实际变更,不重复记账;真实追加才登记治理账本
+    ledger_id = _record_governance(
+        action='platform_memory_write',
+        track_id=f'{_GOVERNANCE_TRACK_PREFIX}-instructions',
+        content=text,
+    )
+    resp: dict[str, Any] = {'ok': True, 'lines_count': outcome['lines_count'],
+                            'governance_recorded': ledger_id is not None}
     if outcome['evicted'] is not None:
         resp['evicted'] = outcome['evicted']
     return resp
@@ -699,7 +768,13 @@ def create_phrase(body: PhrasePost) -> dict:
     if outcome['deduped']:
         return {'ok': True, 'item': outcome['item'], 'deduped': True}
     audit_safe('phrase_created', {'phrase_id': outcome['item']['id'], 'text': text})
-    return {'ok': True, 'item': outcome['item']}
+    ledger_id = _record_governance(
+        action='platform_memory_write',
+        track_id=f"{_GOVERNANCE_TRACK_PREFIX}-phrase-{outcome['item']['id']}",
+        content=text,
+    )
+    return {'ok': True, 'item': outcome['item'],
+            'governance_recorded': ledger_id is not None}
 
 
 @router.delete('/phrases/{pid}')
@@ -712,7 +787,14 @@ def delete_phrase(pid: str) -> dict:
         raise HTTPException(status_code=404, detail=f'常用语 {pid} 不存在')
 
     removed, count = _mutate_items(_phrases_store, _apply)
-    return {'ok': True, 'removed': removed, 'count': count}
+    ledger_id = _record_governance(
+        action='platform_memory_delete',
+        track_id=f'{_GOVERNANCE_TRACK_PREFIX}-phrase-{pid}',
+        content=None,
+        before_content=str(removed.get('text', '')),
+    )
+    return {'ok': True, 'removed': removed, 'count': count,
+            'governance_recorded': ledger_id is not None}
 
 
 @router.post('/phrases/{pid}/use')
