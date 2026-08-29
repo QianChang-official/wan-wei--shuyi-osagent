@@ -1,0 +1,57 @@
+{
+  "version": "v0.9.5-workflow-persistence",
+  "kind": "osagent_control_loop_baseline",
+  "boundary": "excludes model generation latency; single-process; local sqlite; same-machine before/after only",
+  "config": {
+    "iterations": 100,
+    "warmup": 10,
+    "seed_capsules": 50
+  },
+  "paths": {
+    "policy_evaluate": {
+      "iterations": 100,
+      "mean_ms": 0.0024,
+      "p50_ms": 0.0024,
+      "p95_ms": 0.0026,
+      "p99_ms": 0.0033,
+      "min_ms": 0.0023,
+      "max_ms": 0.0067
+    },
+    "capsule_search_zh": {
+      "iterations": 100,
+      "mean_ms": 0.6087,
+      "p50_ms": 0.5907,
+      "p95_ms": 0.8072,
+      "p99_ms": 0.8455,
+      "min_ms": 0.54,
+      "max_ms": 0.9582
+    },
+    "capsule_write": {
+      "iterations": 100,
+      "mean_ms": 0.1851,
+      "p50_ms": 0.1731,
+      "p95_ms": 0.2531,
+      "p99_ms": 0.2892,
+      "min_ms": 0.1529,
+      "max_ms": 0.3158
+    },
+    "command_loop": {
+      "iterations": 100,
+      "mean_ms": 0.7255,
+      "p50_ms": 0.7243,
+      "p95_ms": 0.7948,
+      "p99_ms": 0.8397,
+      "min_ms": 0.6734,
+      "max_ms": 0.8443
+    },
+    "workflow_create_run": {
+      "iterations": 100,
+      "mean_ms": 0.2246,
+      "p50_ms": 0.2048,
+      "p95_ms": 0.2644,
+      "p99_ms": 0.4957,
+      "min_ms": 0.1816,
+      "max_ms": 1.0033
+    }
+  }
+}
