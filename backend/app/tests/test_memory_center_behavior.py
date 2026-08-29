@@ -393,3 +393,72 @@ def test_delete_instruction_writes_delete_ledger_entry(client):
     assert len(rows) >= 1, 'delete 未在治理账本留下条目'
     assert rows[0]['after_state'] == 'forgotten'
     assert rows[0]['before_hash'] is not None
+
+
+def _latest_ledger_ops() -> list[str]:
+    from backend.app.db import get_conn
+    rows = get_conn().execute(
+        "SELECT op_type FROM memory_ledger ORDER BY created_at DESC, rowid DESC"
+    ).fetchall()
+    return [r['op_type'] for r in rows]
+
+
+def test_put_instructions_writes_ledger_entry(client):
+    """整体替换指令必须登记 platform_memory_write 账目。"""
+    r = client.put('/platform/memory/instructions', json={'lines': ['新指令A']})
+    assert r.status_code == 200
+    assert r.json().get('governance_recorded') is True
+    assert 'platform_memory_write' in _latest_ledger_ops()
+
+
+def test_create_phrase_writes_ledger_entry(client):
+    """新建常用语必须登记 platform_memory_write 账目。"""
+    r = client.post('/platform/memory/phrases', json={'text': '常用语记账测试'})
+    assert r.status_code == 200
+    assert r.json().get('governance_recorded') is True
+    assert 'platform_memory_write' in _latest_ledger_ops()
+
+
+def test_delete_phrase_writes_delete_ledger_entry(client):
+    """删除常用语必须登记 platform_memory_delete 账目。"""
+    pid = client.post(
+        '/platform/memory/phrases', json={'text': '待删常用语'}
+    ).json()['item']['id']
+    r = client.delete(f'/platform/memory/phrases/{pid}')
+    assert r.status_code == 200
+    assert r.json().get('governance_recorded') is True
+    assert 'platform_memory_delete' in _latest_ledger_ops()
+
+
+def test_ledger_write_failure_does_not_block_store_write(client, monkeypatch):
+    """账本故障(操作性异常)不阻断 JsonStore 写入,但响应如实标注。
+
+    同时验证:编程错误(TypeError)不被吞咽 — REVIEW.md 明文条款。
+    """
+    import sqlite3 as _sqlite3
+    from backend.app.platform_api import memory_center
+
+    # 场景 1:操作性异常(sqlite3.Error)→ 不阻断,governance_recorded=False
+    def _raise_operational(**kwargs):
+        raise _sqlite3.OperationalError('disk I/O error (simulated)')
+
+    monkeypatch.setattr(
+        'backend.app.memoryos.governance.append_ledger', _raise_operational
+    )
+    r = client.post('/platform/memory/remember', json={'text': '账本故障场景'})
+    assert r.status_code == 200  # 展示源写入不受影响
+    assert r.json().get('governance_recorded') is False  # 如实标注
+
+    # 场景 2:编程错误(TypeError)→ 必须传播,不得吞咽。
+    # TestClient(raise_server_exceptions=False) 下,未捕获异常转为 500 响应;
+    # 500 而非 200 即证明 TypeError 穿透了 _record_governance 的 except 子句。
+    def _raise_programming(**kwargs):
+        raise TypeError('signature drift (simulated)')
+
+    monkeypatch.setattr(
+        'backend.app.memoryos.governance.append_ledger', _raise_programming
+    )
+    r = client.post('/platform/memory/remember', json={'text': '编程错误场景'})
+    assert r.status_code == 500, (
+        f'编程错误被吞咽(返回 {r.status_code} 而非 500)— REVIEW.md 条款被违反'
+    )
