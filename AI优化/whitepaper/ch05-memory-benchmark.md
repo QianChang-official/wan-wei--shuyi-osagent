@@ -102,7 +102,7 @@ Memory Trace 必存链路:query rewrite → 候选 → 过滤 → rerank → 注
     "safety_harm_inverse": 0.90,
     "product_capability": 0.80,
     "academic_alignment": 0.70,
-    "mheb_overall": 0.825
+    "mheb_overall": 0.835
   },
   "category_breakdown": {
     "preference_extraction": {"pass": 20, "total": 25, "rate": 0.80},
