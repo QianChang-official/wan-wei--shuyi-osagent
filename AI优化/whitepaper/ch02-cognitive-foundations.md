@@ -8,11 +8,11 @@
 
 最超前的历史思想不是单一「长上下文」,而是「多记忆系统协同」。
 
-## 2.2 Tulving:情景/语义记忆三分
+## 2.2 Tulving:情景/语义记忆二分
 
 Tulving 1972 年把长期记忆拆成 episodic memory(个人事件与时空关系)与 semantic memory(词、概念、关系和规则)。这一划分至今仍是认知神经科学关键概念,且 Tulving 从一开始就强调两者相互依赖。
 
-**对应现代 Agent**:会话日志/事件记忆 + 知识库/RAG + 技能/workflow 三分法。
+**对应现代 Agent**:会话日志/事件记忆 + 知识库/RAG + 技能/workflow 三分法。注意:Tulving 原始框架是 episodic/semantic 二分,procedural memory 是后续扩展;现代 Agent 的三分法是对 Tulving 的工程化扩展,不是 Tulving 本人的原始定义。
 
 ## 2.3 Marr 1971 + Hippocampal Index Theory 1986 + CLS 1995
 
