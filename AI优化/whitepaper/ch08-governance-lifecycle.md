@@ -75,6 +75,11 @@ provenance:
 
 验证方式:删除后执行 `SELECT count(*) WHERE capsule_id=?` 确认 0 行 + FTS 查询确认无命中。
 
+**向量索引与检索缓存的覆盖说明**:当前草案的 `verify_deletion` 实现只覆盖前 3 处(主记录 + FTS + 图边)。向量索引与检索缓存的验证依赖具体部署形态:
+
+- 向量索引:若启用,删除时同步调 `vector_index.delete(capsule_id)`,由向量层自身保证删除;`verify_deletion` 扩展为可选参数 `check_vector: bool = False`,启用时追加向量层计数检查。
+- 检索缓存/上下文快照:属于会话级瞬态,在下次会话重建时自然过期;不进入持久化验证范围,但必须在文档中声明此边界。
+
 ## 8.6 MHG 事故响应
 
 分级定义见第 6 章 §6.1.1(Canonical)。本节定义响应协议:
@@ -90,7 +95,13 @@ def mhg_response(mhg_level: int, incident: dict) -> dict:
     if mhg_level >= 5:
         actions.append('full_audit')
         actions.append('ledger_export')
-    return {'mhg_level': mhg_level, 'incident_id': ..., 'actions': actions, ...}
+    return {
+        'mhg_level': mhg_level,
+        'incident_id': incident.get('incident_id', 'inc_' + uuid.uuid4().hex[:10]),
+        'actions': actions,
+        'detail': incident,
+        'created_at': now_iso(),
+    }
 ```
 
 ## 8.7 SQLite 实现草案(Governance)
@@ -172,10 +183,10 @@ candidate → active → reinforced → stale → conflicted → archived → qu
 | 状态 | 含义 | 触发条件 | 允许操作 | 是否可检索 |
 |---|---|---|---|---|
 | candidate | 待确认候选 | 新写入但 require_confirmation | confirm / reject / timeout | ❌ |
-| active | 活跃记忆 | 确认通过 / 直接写入 | update / reinforce / delete | ✅ |
-| reinforced | 强化记忆 | 重复命中 ≥2 次 | update / archive / delete | ✅(高权重) |
+| active | 活跃记忆 | 确认通过 / 直接写入 | update / reinforce / archive / quarantine / delete | ✅ |
+| reinforced | 强化记忆 | 重复命中 ≥2 次 | update / archive / quarantine / delete | ✅(高权重) |
 | stale | 过期记忆 | valid_until 到期 / 长期未用 | refresh / archive / delete | ⚠️(低权重或弃权) |
-| conflicted | 冲突记忆 | 新事实与旧事实矛盾 | resolve / supersede / archive | ❌(需裁决) |
+| conflicted | 冲突记忆 | 新事实与旧事实矛盾 | resolve / supersede / archive / quarantine | ❌(需裁决) |
 | archived | 归档记忆 | 主动归档 / 自动降权 | restore / delete | ❌(不进上下文) |
 | quarantined | 隔离记忆 | 投毒/敏感/未确认 | preview / confirm / delete | ❌ |
 | deleted | 已删除 | 用户/合规删除 | 无(只留账本) | ❌ |
@@ -183,9 +194,9 @@ candidate → active → reinforced → stale → conflicted → archived → qu
 ### 8.8.2 关键规则
 
 1. **candidate 必须显式确认**才能进 active(防止噪声自动进入)
-2. **conflicted 必须裁决**:supersede(新压旧)或 resolve(合并)
+2. **conflicted 必须裁决**:supersede(新压旧)或 resolve(合并);无法自动裁决时可 archive 或 quarantine
 3. **stale 不直接删除**:refresh 或 archive,留审计
-4. **quarantined 不可检索注入**(安全底线)
+4. **quarantined 不可检索注入**(安全底线);active/reinforced 状态发现投毒或 PII 未脱敏时可随时转 quarantined(安全优先于状态机纯度)
 5. **deleted 只留账本**,物理删除或软删由策略决定
 
 ### 8.8.3 合法转移表与实现
@@ -205,11 +216,12 @@ class LifecycleState(str, Enum):
 TRANSITIONS = {
     LifecycleState.CANDIDATE: {LifecycleState.ACTIVE, LifecycleState.DELETED, LifecycleState.QUARANTINED},
     LifecycleState.ACTIVE: {LifecycleState.REINFORCED, LifecycleState.STALE, LifecycleState.CONFLICTED,
-                            LifecycleState.ARCHIVED, LifecycleState.DELETED},
+                            LifecycleState.ARCHIVED, LifecycleState.QUARANTINED, LifecycleState.DELETED},
     LifecycleState.REINFORCED: {LifecycleState.STALE, LifecycleState.CONFLICTED,
-                                LifecycleState.ARCHIVED, LifecycleState.DELETED},
+                                LifecycleState.ARCHIVED, LifecycleState.QUARANTINED, LifecycleState.DELETED},
     LifecycleState.STALE: {LifecycleState.ACTIVE, LifecycleState.ARCHIVED, LifecycleState.DELETED},
-    LifecycleState.CONFLICTED: {LifecycleState.ACTIVE, LifecycleState.DELETED, LifecycleState.QUARANTINED},
+    LifecycleState.CONFLICTED: {LifecycleState.ACTIVE, LifecycleState.ARCHIVED,
+                                LifecycleState.QUARANTINED, LifecycleState.DELETED},
     LifecycleState.ARCHIVED: {LifecycleState.ACTIVE, LifecycleState.DELETED},
     LifecycleState.QUARANTINED: {LifecycleState.ACTIVE, LifecycleState.DELETED},
     LifecycleState.DELETED: set(),
