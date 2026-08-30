@@ -8,10 +8,10 @@
 
 | 章 | 标题 | 状态 | 来源 |
 |---|---|---|---|
-| [第 1 章](ch01-vision.md) | 问题定义与 Memory OS 愿景 | 🟡 骨架(docx 待提取) | 0.docx + 4.docx |
-| [第 2 章](ch02-cognitive-foundations.md) | 认知科学根基 | 🟡 骨架(docx 待提取) | 1.docx |
+| [第 1 章](ch01-vision.md) | 问题定义与 Memory OS 愿景 | ✅ 已迁移 | 0.docx + 4.docx |
+| [第 2 章](ch02-cognitive-foundations.md) | 认知科学根基 | ✅ 已迁移 | 1.docx |
 | [第 3 章](ch03-tech-map-l0-l4.md) | 技术地图与 L0-L4 架构 | ✅ 已迁移 | 0.docx + 1.txt |
-| [第 4 章](ch04-osagent-gap.md) | OSAgent 项目现状与 Gap | 🟡 骨架(docx 待提取) | 2.docx |
+| [第 4 章](ch04-osagent-gap.md) | OSAgent 项目现状与 Gap | ✅ 已迁移 | 2.docx |
 | [第 5 章](ch05-memory-benchmark.md) | Memory Experience Benchmark | ✅ 已迁移 | 3.docx → BenchmarkHarness.md |
 | [第 6 章](ch06-harm-economics.md) | Memory Harm × Economics 标准 | ✅ 已合并 | 4.docx → Accounting + Health |
 | [第 7 章](ch07-iq-mq.md) | IQ/MQ 双轴智能模型 | ✅ 已迁移 | 5.docx → IQMQ双轴框架.md |
