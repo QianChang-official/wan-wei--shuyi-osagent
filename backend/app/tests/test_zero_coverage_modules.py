@@ -235,4 +235,3 @@ def test_tuning_arena_targets_honest():
     assert arena["unsafe_autonomy_rate_target"] == 0.0
     assert arena["memory_reuse_success_rate_target"] == "pending_baseline"
 
-# CI re-trigger: force Kilo review re-run after platform flake
