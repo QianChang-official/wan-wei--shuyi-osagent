@@ -130,7 +130,10 @@ class MemoryAccountant:
     def record_recall(self, capsule_id: str, outcome: str,
                       injected_tokens: int) -> None:
         retrieval = injected_tokens * self.cfg.token_cost
-        utility = {"useful": 1.0, "neutral": 0.1, "harmful": -2.0}[outcome]
+        utility_map = {"useful": 1.0, "neutral": 0.1, "harmful": -2.0}
+        utility = utility_map.get(outcome)
+        if utility is None:
+            raise ValueError(f"unknown outcome: {outcome!r}, must be one of {list(utility_map)}")
         self.conn.execute(
             """UPDATE memory_accounts SET
                retrieval_cost = retrieval_cost + ?,
