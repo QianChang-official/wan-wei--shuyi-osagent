@@ -363,7 +363,7 @@ def search_capsules_with_status(
         # 三级回退链: native → local_embedding → fts_fallback,状态如实上报。
         from .local_embedding import search as _local_search
 
-        local_rows = _local_search(q, top_k=top_k * 4)
+        local_rows = _local_search(q, top_k=top_k * 4, owner_id=owner_id, soul_id=soul_id)
         if local_rows is not None:
             candidate_ids = [cid for cid, _ in local_rows]
             relevance_scores = {cid: sim for cid, sim in local_rows}
