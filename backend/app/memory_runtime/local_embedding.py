@@ -83,9 +83,10 @@ def _unpack(blob: bytes) -> list[float]:
     return list(struct.unpack(f"<{n}f", blob))
 
 
-def init_schema() -> None:
-    conn = get_conn()
-    conn.execute(
+def init_schema(*, conn=None) -> None:
+    """建表/补列。传入 conn 时不 commit(提交权归调用方事务)。"""
+    target = conn if conn is not None else get_conn()
+    target.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE}(
             capsule_id TEXT PRIMARY KEY,
@@ -99,11 +100,12 @@ def init_schema() -> None:
     )
     # 兼容旧表(无 owner/soul 列):缺列时补齐。SQLite ALTER ADD COLUMN 幂等性
     # 用 PRAGMA 检测,而非 try/except 吞掉真实错误。
-    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({TABLE})").fetchall()}
+    cols = {row[1] for row in target.execute(f"PRAGMA table_info({TABLE})").fetchall()}
     for col in ("owner_id", "soul_id"):
         if col not in cols:
-            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
-    conn.commit()
+            target.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
+    if conn is None:
+        target.commit()
 
 
 def embed_and_store(
@@ -128,12 +130,21 @@ def embed_and_store(
     return True
 
 
-def delete_vector(capsule_id: str) -> None:
-    """删除路径:同步移除本地向量(删除验证的一环)。"""
+def delete_vector(capsule_id: str, *, conn=None) -> None:
+    """删除路径:同步移除本地向量(删除验证的一环)。
+
+    事务边界规则:调用方传入 ``conn`` 时只用该连接执行,**不 commit**
+    (提交权归调用方事务);不传时自建连接并自行提交。这与
+    ``vector_index.mark_vectors_delete_pending_in_transaction`` 的
+    既有模式一致 — 在 ``forget_capsules_in_transaction`` 里必须传 conn,
+    否则内部 commit 会提前提交调用方的进行中事务。
+    """
     try:
-        init_schema()
-        get_conn().execute(f"DELETE FROM {TABLE} WHERE capsule_id=?", (capsule_id,))
-        get_conn().commit()
+        init_schema(conn=conn)
+        target = conn if conn is not None else get_conn()
+        target.execute(f"DELETE FROM {TABLE} WHERE capsule_id=?", (capsule_id,))
+        if conn is None:
+            target.commit()
     except Exception as exc:
         logger.warning("local vector delete failed for %s: %s", capsule_id, exc)
 
