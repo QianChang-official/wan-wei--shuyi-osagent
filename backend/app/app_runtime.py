@@ -27,7 +27,7 @@ from .schemas import (
     LifecycleTransitionIn, LifecycleConfirmIn, LifecycleResolveConflictIn,
     LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
 )
-from .db import close_all, get_conn, transaction
+from .db import close_all, database_path, get_conn, transaction
 from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record, record_in_transaction
 from .retrieval.service import search as do_search
@@ -1187,108 +1187,124 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                 'event_ids': missing_legacy_links,
             },
         )
-    try:
-        conn.execute('BEGIN IMMEDIATE')
-        claimed = conn.execute(
-            "UPDATE memory_forget_requests SET status='processing', updated_at=? "
-            "WHERE forget_request_id=? AND (status='pending' OR "
-            "(status='processing' AND julianday(updated_at)<=julianday('now','-1 hour')))",
-            (utc_now_iso(), req.forget_request_id),
-        )
-        if claimed.rowcount != 1:
-            current = conn.execute(
-                'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
-                (req.forget_request_id,),
-            ).fetchone()
-            conn.rollback()
-            if current and current['status'] == 'completed':
-                completed = json.loads(current['result'])
-                return _replay_completed_forget(
-                    conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
-                )
-            raise HTTPException(status_code=409, detail='forget_request_in_progress')
-        # 事务内仅幂等回填物化结果（不再扫描 audit_logs）
-        for event_id, capsule_id in audit_discovered_links.items():
-            conn.execute('INSERT OR IGNORE INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
-        for event_id in event_ids:
-            legacy_capsule_id = legacy_capsule_ids.get(event_id)
-            if legacy_capsule_id and req.mode == 'hard_delete':
-                conn.execute('DELETE FROM memory_capsules WHERE capsule_id=?',(legacy_capsule_id,))
-            elif legacy_capsule_id:
-                conn.execute("UPDATE memory_capsules SET lifecycle='forgotten' WHERE capsule_id=?",(legacy_capsule_id,))
-            event_scope_sql = ""
-            event_scope_params: list[object] = []
-            if request is not None:
-                event_scope_sql = (
-                    " AND owner_id=? AND (soul_id=? OR soul_id IS NULL)"
-                )
-                event_scope_params = [ticket_owner_id, ticket_soul_id]
-            deleted_event = conn.execute(
-                f"DELETE FROM memory_events WHERE event_id=?{event_scope_sql}",
-                [event_id, *event_scope_params],
+    # Kylin V11 / SQLite 3.42.0 rollback-defect guard. On a long-lived reused
+    # worker connection, a plain ROLLBACK after a mid-transaction failure has
+    # been observed to close the transaction while leaving DELETE effects
+    # committed (audit INSERT rolled back, DELETE persisted). The defect is
+    # tied to the reused connection's WAL state: a fresh, independent
+    # connection performs the same rollback correctly (verified on the Kylin
+    # V11 VM: 20/20 pass on a fresh connection, 20/20 fail on a reused one).
+    # Forget-confirm is a low-frequency governance write, so the transaction
+    # runs on its own connection that is closed afterwards; the thread-local
+    # cache connection is intentionally left untouched.
+    with sqlite3.connect(str(database_path()), check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            claimed = conn.execute(
+                "UPDATE memory_forget_requests SET status='processing', updated_at=? "
+                "WHERE forget_request_id=? AND (status='pending' OR "
+                "(status='processing' AND julianday(updated_at)<=julianday('now','-1 hour')))",
+                (utc_now_iso(), req.forget_request_id),
             )
-            if deleted_event.rowcount:
-                conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
-        if request is not None and capsule_ids:
-            placeholders = ','.join('?' for _ in capsule_ids)
-            scoped_rows = conn.execute(
-                f"""SELECT capsule_id FROM memory_capsules_v2
-                    WHERE capsule_id IN ({placeholders})
-                      AND json_extract(provenance, '$.owner_id')=?
-                      AND (json_extract(provenance, '$.soul_id')=?
-                           OR json_extract(provenance, '$.soul_id') IS NULL)""",
-                [*capsule_ids, ticket_owner_id, ticket_soul_id],
-            ).fetchall()
-            if {row['capsule_id'] for row in scoped_rows} != set(capsule_ids):
-                raise HTTPException(
-                    status_code=404,
-                    detail={'error': 'memory_not_found'},
+            if claimed.rowcount != 1:
+                current = conn.execute(
+                    'SELECT status,result FROM memory_forget_requests WHERE forget_request_id=?',
+                    (req.forget_request_id,),
+                ).fetchone()
+                conn.rollback()
+                if current and current['status'] == 'completed':
+                    completed = json.loads(current['result'])
+                    return _replay_completed_forget(
+                        conn, req.forget_request_id, completed, capsule_ids, event_ids, req.mode
+                    )
+                raise HTTPException(status_code=409, detail='forget_request_in_progress')
+            # 事务内仅幂等回填物化结果（不再扫描 audit_logs）
+            for event_id, capsule_id in audit_discovered_links.items():
+                conn.execute('INSERT OR IGNORE INTO memory_event_capsules VALUES (?,?)',(event_id,capsule_id))
+            for event_id in event_ids:
+                legacy_capsule_id = legacy_capsule_ids.get(event_id)
+                if legacy_capsule_id and req.mode == 'hard_delete':
+                    conn.execute('DELETE FROM memory_capsules WHERE capsule_id=?',(legacy_capsule_id,))
+                elif legacy_capsule_id:
+                    conn.execute("UPDATE memory_capsules SET lifecycle='forgotten' WHERE capsule_id=?",(legacy_capsule_id,))
+                event_scope_sql = ""
+                event_scope_params: list[object] = []
+                if request is not None:
+                    event_scope_sql = (
+                        " AND owner_id=? AND (soul_id=? OR soul_id IS NULL)"
+                    )
+                    event_scope_params = [ticket_owner_id, ticket_soul_id]
+                deleted_event = conn.execute(
+                    f"DELETE FROM memory_events WHERE event_id=?{event_scope_sql}",
+                    [event_id, *event_scope_params],
                 )
-        # Keep the established helper call contract for internal extensions;
-        # the scoped membership check above executes in this same write
-        # transaction, so IDs cannot cross the owner boundary before deletion.
-        result=forget_capsules_in_transaction(conn, capsule_ids, mode=req.mode)
-        audit_id=record_in_transaction(
-            conn,
-            'forget_confirm',
-            {
-                'request': req.model_dump(),
-                'deleted_capsule_ids': result['deleted_capsule_ids'],
-                'deleted_event_ids': event_ids,
-                'native_vector': result['native_vector'],
-            },
-        )
-        response = {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids,'native_vector':result['native_vector']}
-        stored_result = {
-            **response,
-            'selected_capsule_ids': capsule_ids,
-            'selected_event_ids': event_ids,
-            'selected_mode': req.mode,
-        }
-        conn.execute(
-            "UPDATE memory_forget_requests SET status='completed', result=?, updated_at=? WHERE forget_request_id=?",
-            (json.dumps(stored_result), utc_now_iso(), req.forget_request_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+                if deleted_event.rowcount:
+                    conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
+            if request is not None and capsule_ids:
+                placeholders = ','.join('?' for _ in capsule_ids)
+                scoped_rows = conn.execute(
+                    f"""SELECT capsule_id FROM memory_capsules_v2
+                        WHERE capsule_id IN ({placeholders})
+                          AND json_extract(provenance, '$.owner_id')=?
+                          AND (json_extract(provenance, '$.soul_id')=?
+                               OR json_extract(provenance, '$.soul_id') IS NULL)""",
+                    [*capsule_ids, ticket_owner_id, ticket_soul_id],
+                ).fetchall()
+                if {row['capsule_id'] for row in scoped_rows} != set(capsule_ids):
+                    raise HTTPException(
+                        status_code=404,
+                        detail={'error': 'memory_not_found'},
+                    )
+            # Keep the established helper call contract for internal extensions;
+            # the scoped membership check above executes in this same write
+            # transaction, so IDs cannot cross the owner boundary before deletion.
+            result=forget_capsules_in_transaction(conn, capsule_ids, mode=req.mode)
+            audit_id=record_in_transaction(
+                conn,
+                'forget_confirm',
+                {
+                    'request': req.model_dump(),
+                    'deleted_capsule_ids': result['deleted_capsule_ids'],
+                    'deleted_event_ids': event_ids,
+                    'native_vector': result['native_vector'],
+                },
+            )
+            response = {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids,'native_vector':result['native_vector']}
+            stored_result = {
+                **response,
+                'selected_capsule_ids': capsule_ids,
+                'selected_event_ids': event_ids,
+                'selected_mode': req.mode,
+            }
+            conn.execute(
+                "UPDATE memory_forget_requests SET status='completed', result=?, updated_at=? WHERE forget_request_id=?",
+                (json.dumps(stored_result), utc_now_iso(), req.forget_request_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
-    from .memory_runtime.vector_index import remove_vectors
+        from .memory_runtime.vector_index import remove_vectors
 
-    try:
-        response['native_vector'] = remove_vectors(response['deleted_capsule_ids'])
-    except (RuntimeError, OSError, ConnectionError):
-        response['native_vector'] = {
-            'backend': 'fts_fallback',
-            'deleted_vector_ids': [],
-            'pending_vector_ids': result['native_vector'].get('pending_vector_ids', []),
-            'reason': 'native_delete_status_unknown',
-        }
-    stored_result['native_vector'] = response['native_vector']
-    stored_result = _persist_completed_forget_result(conn, req.forget_request_id, stored_result)
-    response['native_vector'] = stored_result['native_vector']
-    return response
+        try:
+            response['native_vector'] = remove_vectors(response['deleted_capsule_ids'])
+        except (RuntimeError, OSError, ConnectionError):
+            response['native_vector'] = {
+                'backend': 'fts_fallback',
+                'deleted_vector_ids': [],
+                'pending_vector_ids': result['native_vector'].get('pending_vector_ids', []),
+                'reason': 'native_delete_status_unknown',
+            }
+        stored_result['native_vector'] = response['native_vector']
+        stored_result = _persist_completed_forget_result(conn, req.forget_request_id, stored_result)
+        response['native_vector'] = stored_result['native_vector']
+        return response
 
 # ---------------------------------------------------------------------------
 # v0.11 Soul Awakening endpoints
