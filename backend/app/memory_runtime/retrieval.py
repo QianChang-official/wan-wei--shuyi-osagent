@@ -358,12 +358,38 @@ def search_capsules_with_status(
     fts_fallback_ids: set[str] = set()
     relevance_scores: dict[str, float] = {}
     if native_rows is None:
-        candidate_ids, relevance_scores, _ = _fts_candidates(
-            q,
-            limit=top_k * 4,
-            owner_id=owner_id,
-            soul_id=soul_id,
-        )
+        # 麒麟 SDK 缺席:先试本地语义通道(BGE 模型,可选能力)。
+        # 本地通道提供真正的语义召回;不可用(依赖/模型未配置)才退回纯词面 FTS。
+        # 三级回退链: native → local_embedding → fts_fallback,状态如实上报。
+        from .local_embedding import search as _local_search
+
+        local_rows = _local_search(q, top_k=top_k * 4)
+        if local_rows is not None:
+            candidate_ids = [cid for cid, _ in local_rows]
+            relevance_scores = {cid: sim for cid, sim in local_rows}
+            # FTS 补充词面精确命中(数字/代码/精确名),与语义候选合并
+            fts_ids, fts_relevance, _ = _fts_candidates(
+                q,
+                limit=top_k * 4,
+                owner_id=owner_id,
+                soul_id=soul_id,
+            )
+            local_ids = set(candidate_ids)
+            for capsule_id in fts_ids:
+                if capsule_id not in local_ids:
+                    candidate_ids.append(capsule_id)
+                    fts_fallback_ids.add(capsule_id)
+                    if capsule_id in fts_relevance:
+                        relevance_scores[capsule_id] = fts_relevance[capsule_id]
+            status["backend"] = "local_embedding"
+            status["local_embedding"] = {"candidates": len(local_rows)}
+        else:
+            candidate_ids, relevance_scores, _ = _fts_candidates(
+                q,
+                limit=top_k * 4,
+                owner_id=owner_id,
+                soul_id=soul_id,
+            )
     else:
         candidate_ids = []
         for capsule_id, raw_score in native_rows:
@@ -412,10 +438,16 @@ def search_capsules_with_status(
         from ..affect.emotion_detector import ranking_factor as _emotion_ranking_factor
 
         affective = _affective_score(cap) * _emotion_ranking_factor()
+        # MemoryBank 式遗忘曲线:retention 在读取时按时间衰减(只读计算,
+        # 不改存储原始值)。召回越多的记忆衰减越慢(stability 随 usage_count
+        # 增长);从未召回的记忆不衰减(新记忆宽限期)。
+        from .forgetting import effective_retention
+
+        retention_effective = effective_retention(state)
         gov_bonus = (
             weights["trust_score_weight"] * float(gov.get("trust_score", 0))
             + weights["confidence_weight"] * float(gov.get("confidence", 0))
-            + weights["retention_score_weight"] * float(state.get("retention_score", 0))
+            + weights["retention_score_weight"] * retention_effective
             + weights["emotional_salience_weight"] * affective
         )
         # issue #118：查询相关性主导排序。FTS 候选用 bm25 归一化值；LIKE 兜底
@@ -436,6 +468,7 @@ def search_capsules_with_status(
             cap["retrieval_lifecycle_penalty"] = penalty
         cap["retrieval_affective"] = round(affective, 4)
         cap["retrieval_relevance"] = round(relevance, 4)
+        cap["retrieval_retention_effective"] = retention_effective
         cap["retrieval_score"] = round(min(1.0, max(0.0, score)), 4)
         cap["retrieval_backend"] = "fts_fallback" if capsule_id in fts_fallback_ids else status["backend"]
         if capsule_id in fts_fallback_ids:
