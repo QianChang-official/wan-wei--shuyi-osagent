@@ -262,6 +262,25 @@ def write_capsule(
                 capsule_id, soul_id, exc
             )
     
+    # 冲突候选检测(规则式,只产信号不裁决 — 「conflicted 必须显式裁决」)。
+    # 失败不阻断写入:检测是增强信号,不是写入前置条件。
+    conflict_candidates: list[dict[str, Any]] = []
+    try:
+        from .conflict_detection import find_conflict_candidates_for_write
+
+        conflict_candidates = find_conflict_candidates_for_write(
+            text,
+            memory_class=memory_class,
+            owner_id=owner_id,
+            soul_id=soul_id,
+            exclude_capsule_id=capsule_id,
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "conflict detection failed for capsule_id=%s: %s", capsule_id, exc
+        )
+
     return {
         "capsule_id": capsule_id,
         "memory_class": memory_class,
@@ -269,6 +288,7 @@ def write_capsule(
         "state": state,
         "audit_id": audit_id,
         "native_index": native_index,
+        "conflict_candidates": conflict_candidates,
     }
 
 
