@@ -84,20 +84,36 @@ def _unpack(blob: bytes) -> list[float]:
 
 
 def init_schema() -> None:
-    get_conn().execute(
+    conn = get_conn()
+    conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE}(
             capsule_id TEXT PRIMARY KEY,
             embedding  BLOB NOT NULL,
             dim        INTEGER NOT NULL,
+            owner_id   TEXT,
+            soul_id    TEXT,
             updated_at TEXT NOT NULL
         )
         """
     )
-    get_conn().commit()
+    # 兼容旧表(无 owner/soul 列):缺列时补齐。SQLite ALTER ADD COLUMN 幂等性
+    # 用 PRAGMA 检测,而非 try/except 吞掉真实错误。
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({TABLE})").fetchall()}
+    for col in ("owner_id", "soul_id"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
+    conn.commit()
 
 
-def embed_and_store(capsule_id: str, text: str, *, ts: str) -> bool:
+def embed_and_store(
+    capsule_id: str,
+    text: str,
+    *,
+    ts: str,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> bool:
     """写入路径:编码并存向量。通道不可用时返回 False(调用方忽略)。"""
     model = _get_model()
     if model is None or not text:
@@ -105,8 +121,8 @@ def embed_and_store(capsule_id: str, text: str, *, ts: str) -> bool:
     vec = model.encode([text], normalize_embeddings=True)[0].tolist()
     init_schema()
     get_conn().execute(
-        f"INSERT OR REPLACE INTO {TABLE}(capsule_id, embedding, dim, updated_at) VALUES(?,?,?,?)",
-        (capsule_id, _pack(vec), len(vec), ts),
+        f"INSERT OR REPLACE INTO {TABLE}(capsule_id, embedding, dim, owner_id, soul_id, updated_at) VALUES(?,?,?,?,?,?)",
+        (capsule_id, _pack(vec), len(vec), owner_id, soul_id, ts),
     )
     get_conn().commit()
     return True
@@ -122,16 +138,37 @@ def delete_vector(capsule_id: str) -> None:
         logger.warning("local vector delete failed for %s: %s", capsule_id, exc)
 
 
-def search(text: str, *, top_k: int = 20) -> list[tuple[str, float]] | None:
+def search(
+    text: str,
+    *,
+    top_k: int = 20,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> list[tuple[str, float]] | None:
     """语义检索:返回 [(capsule_id, cosine_sim)] 按相似度降序。
 
     通道不可用或索引为空时返回 None(调用方据此回退 FTS)。
+
+    **scope 隔离**:与 FTS 路径同口径 — owner_id 有值时严格匹配;
+    soul_id 有值时严格匹配(legacy 空值记录不可见,与 #153 修复后的
+    诚实口径一致)。两者皆 None 为未鉴权内部调用,不过滤。
     """
     model = _get_model()
     if model is None:
         return None
     init_schema()
-    rows = get_conn().execute(f"SELECT capsule_id, embedding FROM {TABLE}").fetchall()
+    clauses: list[str] = []
+    params: list[Any] = []
+    if owner_id is not None:
+        clauses.append("owner_id=?")
+        params.append(owner_id)
+    if soul_id is not None:
+        clauses.append("soul_id=?")
+        params.append(soul_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = get_conn().execute(
+        f"SELECT capsule_id, embedding FROM {TABLE}{where}", params
+    ).fetchall()
     if not rows:
         return None
     q = model.encode([text], normalize_embeddings=True)[0].tolist()
