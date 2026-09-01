@@ -245,7 +245,7 @@ def write_capsule(
         # 通道不可用(依赖/模型未配置)时静默跳过,不阻断写入。
         from .local_embedding import embed_and_store
 
-        if embed_and_store(capsule_id, text, ts=created):
+        if embed_and_store(capsule_id, text, ts=created, owner_id=owner_id, soul_id=soul_id):
             native_index = {**native_index, "local_embedding": True}
 
     
