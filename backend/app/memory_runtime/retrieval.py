@@ -412,10 +412,16 @@ def search_capsules_with_status(
         from ..affect.emotion_detector import ranking_factor as _emotion_ranking_factor
 
         affective = _affective_score(cap) * _emotion_ranking_factor()
+        # MemoryBank 式遗忘曲线:retention 在读取时按时间衰减(只读计算,
+        # 不改存储原始值)。召回越多的记忆衰减越慢(stability 随 usage_count
+        # 增长);从未召回的记忆不衰减(新记忆宽限期)。
+        from .forgetting import effective_retention
+
+        retention_effective = effective_retention(state)
         gov_bonus = (
             weights["trust_score_weight"] * float(gov.get("trust_score", 0))
             + weights["confidence_weight"] * float(gov.get("confidence", 0))
-            + weights["retention_score_weight"] * float(state.get("retention_score", 0))
+            + weights["retention_score_weight"] * retention_effective
             + weights["emotional_salience_weight"] * affective
         )
         # issue #118：查询相关性主导排序。FTS 候选用 bm25 归一化值；LIKE 兜底
@@ -436,6 +442,7 @@ def search_capsules_with_status(
             cap["retrieval_lifecycle_penalty"] = penalty
         cap["retrieval_affective"] = round(affective, 4)
         cap["retrieval_relevance"] = round(relevance, 4)
+        cap["retrieval_retention_effective"] = retention_effective
         cap["retrieval_score"] = round(min(1.0, max(0.0, score)), 4)
         cap["retrieval_backend"] = "fts_fallback" if capsule_id in fts_fallback_ids else status["backend"]
         if capsule_id in fts_fallback_ids:
