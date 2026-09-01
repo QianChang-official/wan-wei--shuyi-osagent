@@ -1390,12 +1390,14 @@ def test_forget_replay_repairs_result_after_vendor_delete_then_ticket_write_fail
             headers=headers,
         ).json()
         payload = {"forget_request_id": preview["forget_request_id"], "capsule_ids": [written["capsule_id"]]}
-        actual_get_conn = runtime_module.get_conn
+        actual_connect = runtime_module._connect_forget_tx
 
         class FailFinalResultUpdate:
             def __init__(self, connection):
                 self.connection = connection
                 self.completed_update_seen = False
+                # closing() 关闭后无法再读 in_transaction,close 时先记录
+                self.in_tx_at_close = None
 
             def execute(self, sql, parameters=()):
                 normalized = " ".join(sql.split())
@@ -1405,16 +1407,27 @@ def test_forget_replay_repairs_result_after_vendor_delete_then_ticket_write_fail
                     raise RuntimeError("injected final ticket result write failure")
                 return self.connection.execute(sql, parameters)
 
+            def close(self):
+                self.in_tx_at_close = self.connection.in_transaction
+                return self.connection.close()
+
             def __getattr__(self, name):
                 return getattr(self.connection, name)
 
-        proxy = FailFinalResultUpdate(actual_get_conn())
-        monkeypatch.setattr(runtime_module, "get_conn", lambda: proxy)
+        proxy_holder: dict = {}
+
+        def _proxied_connect():
+            proxy = FailFinalResultUpdate(actual_connect())
+            proxy_holder["proxy"] = proxy
+            return proxy
+
+        monkeypatch.setattr(runtime_module, "_connect_forget_tx", _proxied_connect)
         first = client.post("/memory/forget/confirm", json=payload, headers=headers)
-        monkeypatch.setattr(runtime_module, "get_conn", actual_get_conn)
+        monkeypatch.setattr(runtime_module, "_connect_forget_tx", actual_connect)
+        proxy = proxy_holder["proxy"]
 
         assert first.status_code == 500
-        assert proxy.connection.in_transaction is False
+        assert proxy.in_tx_at_close is False
         assert get_conn().execute(
             "SELECT status FROM memory_vector_refs WHERE vector_id=?", (vector_id,)
         ).fetchone()["status"] == "deleted"
