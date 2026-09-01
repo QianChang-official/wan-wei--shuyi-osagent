@@ -5,7 +5,7 @@ import uuid
 import sqlite3
 import threading
 from pathlib import Path
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as ApiPath
 from starlette.middleware.cors import CORSMiddleware
@@ -28,6 +28,28 @@ from .schemas import (
     LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
 )
 from .db import close_all, database_path, get_conn, transaction
+
+# forget_confirm 治理事务的进程级串行锁:独立连接方案(VM 实测回滚正确)打掉了
+# thread-local 共享连接的隐式串行,并发 confirm 会在 SQLite 层竞争写锁。
+# 锁必须在连接创建**之前**获取 — 等待时不持有任何数据库连接,
+# 竞争点在 Python 锁层而非 busy_timeout。治理写低频,串行语义与共享连接等价。
+_FORGET_CONFIRM_LOCK = threading.Lock()
+
+
+def _connect_forget_tx() -> sqlite3.Connection:
+    """forget_confirm 事务的独立连接工厂(模块级,供测试 patch 注入故障)。
+
+    与 db.get_conn 的 PRAGMA 口径保持一致;独立存在的原因是麒麟 V11 VM 上
+    复用连接的 ROLLBACK 不可靠(见 forget_confirm 内注释)。
+    """
+    conn = sqlite3.connect(str(database_path()), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
 from .memory_runtime.policy_gate import evaluate_policy
 from .audit.service import list_logs, record, record_in_transaction
 from .retrieval.service import search as do_search
@@ -1197,12 +1219,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
     # Forget-confirm is a low-frequency governance write, so the transaction
     # runs on its own connection that is closed afterwards; the thread-local
     # cache connection is intentionally left untouched.
-    with sqlite3.connect(str(database_path()), check_same_thread=False) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
+    with _FORGET_CONFIRM_LOCK, closing(_connect_forget_tx()) as conn:
         try:
             conn.execute('BEGIN IMMEDIATE')
             claimed = conn.execute(
