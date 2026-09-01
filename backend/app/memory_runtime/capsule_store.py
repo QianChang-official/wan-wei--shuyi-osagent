@@ -241,6 +241,13 @@ def write_capsule(
         except Exception:
             record("kylin_sdk_vector_index", {"capsule_id": capsule_id, "status": "fallback"})
             native_index = {"backend": "fts_fallback", "indexed": False, "reason": "native_index_exception"}
+        # 本地语义通道:麒麟 SDK 缺席时,BGE 本地模型提供真正的语义召回。
+        # 通道不可用(依赖/模型未配置)时静默跳过,不阻断写入。
+        from .local_embedding import embed_and_store
+
+        if embed_and_store(capsule_id, text, ts=created):
+            native_index = {**native_index, "local_embedding": True}
+
     
     # 04-#02: Bind affect to capsule when soul_id is provided and lifecycle is active.
     # This closes the affective-aware memory write loop: emotion_memory writes the
@@ -262,6 +269,25 @@ def write_capsule(
                 capsule_id, soul_id, exc
             )
     
+    # 冲突候选检测(规则式,只产信号不裁决 — 「conflicted 必须显式裁决」)。
+    # 失败不阻断写入:检测是增强信号,不是写入前置条件。
+    conflict_candidates: list[dict[str, Any]] = []
+    try:
+        from .conflict_detection import find_conflict_candidates_for_write
+
+        conflict_candidates = find_conflict_candidates_for_write(
+            text,
+            memory_class=memory_class,
+            owner_id=owner_id,
+            soul_id=soul_id,
+            exclude_capsule_id=capsule_id,
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "conflict detection failed for capsule_id=%s: %s", capsule_id, exc
+        )
+
     return {
         "capsule_id": capsule_id,
         "memory_class": memory_class,
@@ -269,6 +295,7 @@ def write_capsule(
         "state": state,
         "audit_id": audit_id,
         "native_index": native_index,
+        "conflict_candidates": conflict_candidates,
     }
 
 
@@ -566,6 +593,10 @@ def forget_capsules_in_transaction(
                 (dumps(state), timestamp, capsule_id),
             )
         conn.execute("DELETE FROM memory_capsules_v2_fts WHERE capsule_id=?", (capsule_id,))
+        # 本地向量同步删除(删除验证的一环:主记录/FTS/向量三处一致)
+        from .local_embedding import delete_vector
+
+        delete_vector(capsule_id)
         provenance = loads(row["provenance"], {}) or {}
         ledger_entries.append({
             "op_type": "delete",
