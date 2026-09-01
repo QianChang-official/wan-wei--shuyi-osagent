@@ -593,10 +593,12 @@ def forget_capsules_in_transaction(
                 (dumps(state), timestamp, capsule_id),
             )
         conn.execute("DELETE FROM memory_capsules_v2_fts WHERE capsule_id=?", (capsule_id,))
-        # 本地向量同步删除(删除验证的一环:主记录/FTS/向量三处一致)
+        # 本地向量同步删除(删除验证的一环:主记录/FTS/向量三处一致)。
+        # 必须传入 conn:delete_vector 在传入连接时不自行 commit,
+        # 提交权归本事务(避免提前提交破坏回滚能力)。
         from .local_embedding import delete_vector
 
-        delete_vector(capsule_id)
+        delete_vector(capsule_id, conn=conn)
         provenance = loads(row["provenance"], {}) or {}
         ledger_entries.append({
             "op_type": "delete",
