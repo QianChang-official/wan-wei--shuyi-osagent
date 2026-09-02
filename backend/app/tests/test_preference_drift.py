@@ -83,6 +83,17 @@ def test_insufficient_short_samples_no_drift(isolated_db):
     assert compute_preference_drift() == []
 
 
+def test_insufficient_long_samples_no_drift(isolated_db):
+    """长期只有 1 条(< MIN_LONG_SAMPLES=2)→ 单条旧记录不能主导判定基准。"""
+    from backend.app.memory_runtime.capsule_store import write_capsule
+
+    _write_pref(write_capsule, "beverage", days_ago=40, reinforce_n=10)
+    _write_pref(write_capsule, "beverage", days_ago=0, reinforce_n=0)
+    _write_pref(write_capsule, "beverage", days_ago=1, reinforce_n=0)
+
+    assert compute_preference_drift() == []
+
+
 def test_no_long_profile_no_drift(isolated_db):
     """全新主题(无长期画像)→ 不报漂移。"""
     from backend.app.memory_runtime.capsule_store import write_capsule
