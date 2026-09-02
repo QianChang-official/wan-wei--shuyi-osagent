@@ -30,7 +30,12 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_REPO = Path(__file__).resolve().parent.parent
+# 仓库根与 backend 都需入 path(与 scripts/run_meb.py 同口径,仓内并存
+# backend.app.* 与 app.* 两种导入风格)。放 sys.path 末尾,避免遮蔽同名包。
+for _p in (str(_REPO), str(_REPO / "backend")):
+    if _p not in sys.path:
+        sys.path.append(_p)
 
 # 50 条不同主题的中文 query(覆盖偏好/知识/任务/情感)
 QUERIES = [
@@ -65,39 +70,22 @@ def _gen_corpus(n: int, seed: int = 42) -> list[str]:
 
 
 def _seed_db(db_path: str, corpus: list[str]) -> None:
-    """向指定 db 写入语料(直接 SQL 批量,绕过 policy gate 提速)。"""
-    import sqlite3
+    """向指定 db 写入语料。
 
+    诚实口径: 用正常 write_capsule 路径写入(过 policy gate + 生命周期),
+    不直写 SQL 伪造 lifecycle/governance — 语料必须与真实写入同构,
+    否则 baseline 测的不是真实检索路径。语料构造是一次性成本,可接受慢。
+    """
     os.environ["WANWEI_MEMORY_DB"] = db_path
-    # 重置 db 模块的连接缓存到目标 db,并用 init_db.main() 建 schema
     import backend.app.db as dbmod
     from backend.app import init_db
 
     dbmod.close_all()
     init_db.main()
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    now = "2026-09-02T00:00:00Z"
-    rows = [
-        (
-            f"cap_bench_{i}", "knowledge", json.dumps({"text": text}),
-            json.dumps({"lifecycle": "active"}), json.dumps({"policy_result": "allow"}),
-            now, now,
-        )
-        for i, text in enumerate(corpus)
-    ]
-    conn.executemany(
-        "INSERT INTO memory_capsules_v2 (capsule_id, memory_class, content, state, governance, created_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,?)",
-        rows,
-    )
-    # FTS 索引(检索走这条路)
-    from backend.app.utils.cjk_text import cjk_space
+    from backend.app.memory_runtime.capsule_store import write_capsule
 
-    fts_rows = [(f"cap_bench_{i}", cjk_space(text)) for i, text in enumerate(corpus)]
-    conn.executemany("INSERT INTO memory_capsules_v2_fts (capsule_id, text) VALUES (?,?)", fts_rows)
-    conn.commit()
-    conn.close()
+    for text in corpus:
+        write_capsule(memory_class="knowledge", content={"text": text})
     dbmod.close_all()
 
 
@@ -109,9 +97,10 @@ def _bench_one(db_path: str, queries: list[str], warm: bool) -> list[float]:
     dbmod.close_all()
     from backend.app.memory_runtime.retrieval import search_capsules
 
-    # 热态先空跑一次预热
+    # 热态:先跑完整一遍预热 OS page cache,再计时
     if warm:
-        search_capsules(queries[0], top_k=5)
+        for q in queries:
+            search_capsules(q, top_k=5)
     lat = []
     for q in queries:
         t0 = time.perf_counter()
@@ -134,27 +123,41 @@ def main() -> int:
             "backend": "fts5_sqlite",
             "sizes": args.sizes,
             "query_count": len(queries),
-            "note": "端侧 SQLite FTS5 检索,冷/热两态,逐次原始延迟",
+            "platform": __import__("platform").platform(),
+            "python": __import__("platform").python_version(),
+            "sqlite": __import__("sqlite3").sqlite_version,
+            "cpu": __import__("platform").processor() or "unknown",
+            "note": "端侧 SQLite FTS5 检索,冷/热两态,逐次原始延迟;p95/p99 用 inclusive 分位法(不超实测 max)",
         },
         "runs": [],
     }
 
     for size in args.sizes:
         corpus = _gen_corpus(size)
-        db_path = os.path.join(tempfile.mkdtemp(), f"bench_{size}.db")
-        t_seed = time.perf_counter()
-        _seed_db(db_path, corpus)
-        seed_s = time.perf_counter() - t_seed
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, f"bench_{size}.db")
+        try:
+            t_seed = time.perf_counter()
+            _seed_db(db_path, corpus)
+            seed_s = time.perf_counter() - t_seed
 
-        cold = _bench_one(db_path, queries, warm=False)
-        hot = _bench_one(db_path, queries, warm=True)
+            cold = _bench_one(db_path, queries, warm=False)
+            hot = _bench_one(db_path, queries, warm=True)
+        finally:
+            import shutil
+
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
         def stats(xs: list[float]) -> dict:
+            # 小样本(50)用 inclusive 分位法:不会外推超出实测 max,数字自洽。
+            # (此前误用默认 exclusive 法,p99 会插值超出 max,被 review 抓出)
+            qs = statistics.quantiles(xs, n=100, method="inclusive")
             return {
                 "p50": round(statistics.median(xs), 2),
-                "p95": round(statistics.quantiles(xs, n=100)[94], 2),
-                "p99": round(statistics.quantiles(xs, n=100)[98], 2),
+                "p95": round(qs[94], 2),
+                "p99": round(qs[98], 2),
                 "max": round(max(xs), 2),
+                "n": len(xs),
             }
 
         result["runs"].append({
