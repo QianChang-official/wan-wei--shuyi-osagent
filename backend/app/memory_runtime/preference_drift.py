@@ -31,6 +31,9 @@ SHORT_WINDOW_DAYS = 7
 #: 参与判定的最小样本量:短期窗口内该主题少于 N 条不报漂移(噪声保护)
 MIN_SHORT_SAMPLES = 2
 
+#: 长期画像同样需要最小样本:单条旧记录不能主导「长期偏好」的判定基准
+MIN_LONG_SAMPLES = 2
+
 
 def _parse_ts(value: Any) -> datetime | None:
     if not value or not isinstance(value, str):
@@ -53,10 +56,15 @@ def compute_preference_drift(
     每个事件: {preference_type, mean_short, mean_long, distance, short_n, long_n}
     无漂移返回空列表。
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    from ..memoryos.lifecycle import retrievable_sql_list
 
+    cutoff_epoch = (
+        datetime.now(timezone.utc) - timedelta(days=window_days)
+    ).timestamp()
+
+    # 生命周期过滤复用 lifecycle 单一事实源,不与状态机各持一份
     clauses = ["memory_class='preference'",
-               "json_extract(state,'$.lifecycle') IN ('active','reinforced','stale')"]
+               f"json_extract(state,'$.lifecycle') IN ({retrievable_sql_list()})"]
     params: list[Any] = []
     if owner_id is not None:
         clauses.append("json_extract(provenance,'$.owner_id')=?")
@@ -71,7 +79,7 @@ def compute_preference_drift(
         params,
     ).fetchall()
 
-    # 按 preference_type 分组,拆短期/长期两窗口
+    # 按 preference_type 分组,拆短期/长期两窗口(epoch 数值比较,不拼字符串)
     groups: dict[str, dict[str, list[dict]]] = {}
     for row in rows:
         state = _load_json(row["state"])
@@ -80,7 +88,7 @@ def compute_preference_drift(
         entry = {"state": state, "created_at": row["created_at"]}
         bucket = groups.setdefault(ptype, {"short": [], "long": []})
         created = _parse_ts(row["created_at"])
-        if created and created.isoformat() >= cutoff:
+        if created and created.timestamp() >= cutoff_epoch:
             bucket["short"].append(entry)
         else:
             bucket["long"].append(entry)
@@ -88,7 +96,8 @@ def compute_preference_drift(
     events: list[dict[str, Any]] = []
     for ptype, bucket in groups.items():
         short, long_ = bucket["short"], bucket["long"]
-        if len(short) < MIN_SHORT_SAMPLES or not long_:
+        # 双侧最小样本保护:单条旧记录不能主导「长期画像」
+        if len(short) < MIN_SHORT_SAMPLES or len(long_) < MIN_LONG_SAMPLES:
             continue
         mean_short = _group_mean(short)
         mean_long = _group_mean(long_)
