@@ -1,0 +1,127 @@
+{
+  "meta": {
+    "date": "2026-09-02",
+    "suite": "MEB full(公开集)",
+    "official": false,
+    "note": "消融对比:四组检索/治理配置。official=False,不冒充官方成绩。",
+    "skipped": [],
+    "has_local_embedding_model": true
+  },
+  "groups": {
+    "hybrid": {
+      "pass_rate": 0.9833,
+      "passed": 59,
+      "total": 60,
+      "preference_extraction_accuracy": 0.9167,
+      "knowledge_recall": 1.0,
+      "conflict_correctness": 1.0,
+      "retrieval_latency_p95_ms": 8.13,
+      "mheb_overall": 0.9862,
+      "failures": [
+        {
+          "case_id": "MEB-PREF-003",
+          "reason": "must_not_contain 泄漏: '地铁'"
+        }
+      ]
+    },
+    "fts_only": {
+      "pass_rate": 1.0,
+      "passed": 60,
+      "total": 60,
+      "preference_extraction_accuracy": 1.0,
+      "knowledge_recall": 1.0,
+      "conflict_correctness": 1.0,
+      "retrieval_latency_p95_ms": 1.01,
+      "mheb_overall": 1.0,
+      "failures": []
+    },
+    "vector_only": {
+      "pass_rate": 0.9667,
+      "passed": 58,
+      "total": 60,
+      "preference_extraction_accuracy": 0.8333,
+      "knowledge_recall": 1.0,
+      "conflict_correctness": 1.0,
+      "retrieval_latency_p95_ms": 7.37,
+      "mheb_overall": 0.9724,
+      "failures": [
+        {
+          "case_id": "MEB-PREF-002",
+          "reason": "must_contain 未命中: '深色主题'（召回 0 条）"
+        },
+        {
+          "case_id": "MEB-PREF-003",
+          "reason": "must_not_contain 泄漏: '地铁'"
+        }
+      ]
+    },
+    "no_governance": {
+      "pass_rate": 0.7667,
+      "passed": 46,
+      "total": 60,
+      "preference_extraction_accuracy": 0.9167,
+      "knowledge_recall": 1.0,
+      "conflict_correctness": 0.0,
+      "retrieval_latency_p95_ms": 7.92,
+      "mheb_overall": 0.6259,
+      "failures": [
+        {
+          "case_id": "MEB-CONF-001",
+          "reason": "must_not_contain 泄漏: '8000'"
+        },
+        {
+          "case_id": "MEB-CONF-002",
+          "reason": "召回条数 2 > max_hits 0"
+        },
+        {
+          "case_id": "MEB-CONF-003",
+          "reason": "must_not_contain 泄漏: 'v1 为当前版本'"
+        },
+        {
+          "case_id": "MEB-CONF-004",
+          "reason": "召回条数 1 > max_hits 0"
+        },
+        {
+          "case_id": "MEB-CONF-E01",
+          "reason": "不应召回 ref#0 (cap_fc57e7b5440d) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E02",
+          "reason": "不应召回 ref#0 (cap_36ee3fabe9b7) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E03",
+          "reason": "不应召回 ref#0 (cap_7fe91f841b56) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E04",
+          "reason": "不应召回 ref#0 (cap_248baf6b5b55) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E05",
+          "reason": "不应召回 ref#0 (cap_687e5adf1740) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E06",
+          "reason": "不应召回 ref#0 (cap_1027bedc5ccf) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E07",
+          "reason": "不应召回 ref#0 (cap_e7b48dbf27c9) 但出现了"
+        },
+        {
+          "case_id": "MEB-CONF-E08",
+          "reason": "不应召回 ref#0 (cap_341fb10c006d) 但出现了"
+        },
+        {
+          "case_id": "MEB-KNOW-004",
+          "reason": "must_not_contain 泄漏: 'legacy 前缀'"
+        },
+        {
+          "case_id": "MEB-PREF-003",
+          "reason": "must_not_contain 泄漏: '地铁'"
+        }
+      ]
+    }
+  }
+}
