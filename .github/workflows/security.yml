@@ -73,8 +73,8 @@ jobs:
           context: .
           load: true
           tags: wanwei-shuyi:security-scan
-          # 安全扫描必须基于当前依赖解析结果。启用 gha 缓存会让 pip install 层
-          # 冻结在历史解析快照上,Trivy DB 演进后对冻结层误报 HIGH(全 PR 连锁红)。
+          # 安全扫描应基于当前依赖解析结果,不用 gha 缓存(缓存层冻结历史解析快照,
+          # 会放大诊断噪音;本仓库镜像全量构建实测仅约 30s)。
           no-cache: true
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -82,6 +82,11 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
+          # trivy-action 的 SARIF 分支默认 unset severity 做全量扫描,exit-code 会
+          # 对 MEDIUM 级也判 1(门禁实为"任何级别零容忍",与本处声明的 HIGH,CRITICAL
+          # 口径不符——这是此前 main 与全部 PR 连锁红的主因: pip 26.1.2 的 MEDIUM
+          # CVE-2026-13346 全量命中)。设为 true 使 SARIF 与门禁同口径。
+          limit-severities-for-sarif: "true"
           ignore-unfixed: true
           exit-code: "1"
           version: "v0.74.0"
