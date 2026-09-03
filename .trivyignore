@@ -1,16 +1,19 @@
-# GHSA-6v7p-g79w-8964 — msgpack 1.1.2（pip 26.2.x vendored 依赖）
+# 豁免对象: pip 26.2.x vendored 依赖（经 pip/_vendor/bom.cdx.json 被 trivy ≥0.74 检出）
 #
-# 检出路径: trivy ≥0.74 解析 pip/_vendor/bom.cdx.json（第三方 SBOM）。
-# pip 26.1.x 时代同一 vendored msgpack 已存在，但因无 SBOM 元数据处于检测盲区——
-# 升级 26.2.0 使该风险透明化，而非新增风险。
-#
-# 可利用性评估（本镜像语境: 极低）:
-# 1. 漏洞触发条件: msgpack Unpacker 在捕获异常后被复用 → 越界读/崩溃（仅可用性影响，
-#    无代码执行/信息泄露）。
+# 共同论证（本镜像语境，可利用性: 极低）:
+# 1. pip 在 26.1.x 即 vendored 相同版本（无 SBOM 元数据，检测盲区）；升级 26.2.0
+#    使风险透明化，而非新增。
 # 2. 本镜像中 pip 仅在镜像构建期执行；运行时（USER 10001, WANWEI_PRODUCTION=1）
-#    不调用 pip，无不可信数据进入 msgpack Unpacker 代码路径。
-# 3. 上游无修复版可升：pip 26.2.1（当前最新）仍 vendor msgpack 1.1.2。
+#    不调用 pip，无不可信数据进入 vendored 代码路径。
+# 3. 上游无修复版可升：pip 26.2.1（当前最新）仍 vendor msgpack 1.1.2 与 setuptools 70.3.0。
 #
-# 移除条件: pip 发布 vendor msgpack>=1.2.1 的版本后，升级 Dockerfile PIP_VERSION
-# 并删除本条豁免。
+# 移除条件: pip 发布 vendor msgpack>=1.2.1 且 setuptools>=78.1.1 的版本后，
+# 升级 Dockerfile PIP_VERSION 并删除对应豁免条目。
+
+# msgpack 1.1.2 — Unpacker 捕获异常后复用导致越界读/崩溃（仅可用性影响，
+# 触发需攻击者控制的数据进入 Unpacker 且发生异常复用路径）
 GHSA-6v7p-g79w-8964
+
+# setuptools 70.3.0 — PackageIndex 路径遍历（触发需使用 legacy easy_install/PackageIndex
+# 路径处理恶意索引；pip 26.x 不使用该代码路径安装包）
+CVE-2025-47273

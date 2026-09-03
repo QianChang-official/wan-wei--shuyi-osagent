@@ -90,6 +90,9 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           version: "v0.74.0"
+          # 显式声明豁免文件(trivy 对 image 扫描的 cwd 默认读取不可靠,实证未生效;
+          # action 的 trivyignores 机制会 export TRIVY_IGNOREFILE,实证生效)
+          trivyignores: .trivyignore
       - if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
