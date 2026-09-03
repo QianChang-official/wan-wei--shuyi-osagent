@@ -8,6 +8,8 @@
 5. 每次转移写入账本
 """
 
+import json
+
 import pytest
 
 from backend.app.memoryos import lifecycle as lc
@@ -24,6 +26,32 @@ def _write(statement: str, **kwargs) -> str:
         **kwargs,
     )
     return result["capsule_id"]
+
+
+def _backdate_last_accessed(days: int = 2) -> None:
+    """把全库记忆的 ``state.last_accessed_at`` 回拨到 ``days`` 天前。
+
+    用于消除闲置扫描测试的时间竞态：判定依据由「真实执行耗时」改为
+    「显式构造的时间差」，使断言与机器快慢无关。
+    """
+    from datetime import timedelta
+
+    from backend.app.db import get_conn
+    from backend.app.utils.datetime_utils import utc_now
+
+    past = (utc_now() - timedelta(days=days)).isoformat()
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT capsule_id, state FROM memory_capsules_v2"
+    ).fetchall()
+    for row in rows:
+        state = json.loads(row["state"]) if isinstance(row["state"], str) else dict(row["state"])
+        state["last_accessed_at"] = past
+        conn.execute(
+            "UPDATE memory_capsules_v2 SET state=? WHERE capsule_id=?",
+            (json.dumps(state), row["capsule_id"]),
+        )
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +438,13 @@ def test_scan_stale_idle_scan_disabled_by_default(isolated_db):
     assert result["idle_scan_enabled"] is False
     assert result["marked_count"] == 0
 
-    # 显式开启后才按闲置判定（阈值 0 天 = 全部视为闲置）
-    opted_in = lc.scan_stale(idle_days=0.0000001)
+    # 显式开启后才按闲置判定。
+    # 注意：不能用极小阈值（如 0.0000001 天 ≈ 8.6ms）来触发"全部闲置"——
+    # 那是拿"写入到扫描之间的真实耗时"当判定依据，属时间竞态：CI 机器快时
+    # 差值不足 8.6ms，marked_count 恒为 0（曾致 py3.12 job 偶发红）。
+    # 正确做法：把 last_accessed_at 显式回拨到过去，让判定与执行耗时无关。
+    _backdate_last_accessed(days=2)
+    opted_in = lc.scan_stale(idle_days=1)
     assert opted_in["idle_scan_enabled"] is True
     assert opted_in["marked_count"] >= 1
 
