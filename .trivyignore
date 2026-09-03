@@ -1,0 +1,16 @@
+# GHSA-6v7p-g79w-8964 — msgpack 1.1.2（pip 26.2.x vendored 依赖）
+#
+# 检出路径: trivy ≥0.74 解析 pip/_vendor/bom.cdx.json（第三方 SBOM）。
+# pip 26.1.x 时代同一 vendored msgpack 已存在，但因无 SBOM 元数据处于检测盲区——
+# 升级 26.2.0 使该风险透明化，而非新增风险。
+#
+# 可利用性评估（本镜像语境: 极低）:
+# 1. 漏洞触发条件: msgpack Unpacker 在捕获异常后被复用 → 越界读/崩溃（仅可用性影响，
+#    无代码执行/信息泄露）。
+# 2. 本镜像中 pip 仅在镜像构建期执行；运行时（USER 10001, WANWEI_PRODUCTION=1）
+#    不调用 pip，无不可信数据进入 msgpack Unpacker 代码路径。
+# 3. 上游无修复版可升：pip 26.2.1（当前最新）仍 vendor msgpack 1.1.2。
+#
+# 移除条件: pip 发布 vendor msgpack>=1.2.1 的版本后，升级 Dockerfile PIP_VERSION
+# 并删除本条豁免。
+GHSA-6v7p-g79w-8964
