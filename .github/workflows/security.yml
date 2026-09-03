@@ -73,7 +73,9 @@ jobs:
           context: .
           load: true
           tags: wanwei-shuyi:security-scan
-          cache-from: type=gha
+          # 安全扫描必须基于当前依赖解析结果。启用 gha 缓存会让 pip install 层
+          # 冻结在历史解析快照上,Trivy DB 演进后对冻结层误报 HIGH(全 PR 连锁红)。
+          no-cache: true
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: wanwei-shuyi:security-scan
@@ -82,6 +84,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          version: "0.74.0"
       - if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
