@@ -17,7 +17,7 @@ ENV PYTHONUNBUFFERED=1     PYTHONDONTWRITEBYTECODE=1     PYTHONPATH=/app/backend
 RUN addgroup --system --gid 10001 wanwei     && adduser --system --uid 10001 --ingroup wanwei --home /nonexistent --no-create-home wanwei
 
 WORKDIR /app
-ARG PIP_VERSION=26.1.2
+ARG PIP_VERSION=26.2.0
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN python -m pip install --no-cache-dir --disable-pip-version-check --upgrade "pip==${PIP_VERSION}"     && python -m pip install --no-cache-dir --disable-pip-version-check -r /app/backend/requirements.txt
 
