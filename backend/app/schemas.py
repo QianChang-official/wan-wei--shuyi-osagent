@@ -188,3 +188,38 @@ class PreferenceRerankIn(BaseModel):
     weight: float = Field(default=0.30, ge=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1, le=200)
     soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+# v0.13.x Knowledge Evolution schemas（issue #202：知识冲突消解与知识演化）
+#
+# 边类型 Literal 与 memory_runtime.knowledge_evolution.KNOWLEDGE_EDGE_TYPES 对齐。
+
+class KnowledgeConflictDetectIn(BaseModel):
+    """对一条 knowledge 胶囊做四类冲突检测（只产信号，不动生命周期）。"""
+    capsule_id: str = Field(min_length=1, max_length=64)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeEvolutionIn(BaseModel):
+    """记录知识演化边（supersedes/invalidates 转移旧知识，derived_from/
+    conflicts_with 只写边）。"""
+    new_capsule_id: str = Field(min_length=1, max_length=64)
+    old_capsule_id: str = Field(min_length=1, max_length=64)
+    edge_type: Literal[
+        'supersedes', 'conflicts_with', 'derived_from', 'invalidates',
+    ] = 'supersedes'
+    conflict_type: Literal['fact', 'status', 'config', 'temporal'] | None = None
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeActiveSuggestIn(BaseModel):
+    """对一组冲突知识建议 active knowledge（只建议，不执行）。"""
+    capsule_ids: list[str] = Field(min_length=1, max_length=50)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeRerankIn(BaseModel):
+    """对候选胶囊按知识版本状态加权重排（只读）。"""
+    capsule_ids: list[str] = Field(min_length=1, max_length=200)
+    top_k: int | None = Field(default=None, ge=1, le=200)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
