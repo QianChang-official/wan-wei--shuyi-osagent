@@ -90,13 +90,15 @@ def test_rerank_unknown_candidate_gets_neutral_multiplier(isolated_db):
     pref = _pref("lang")
     # 不做任何 reinforce —— 偏好仍应在图里（active），先验证正常路径
     out = pg.preference_rerank([_cand(pref, "preference", 0.5)], weight=0.5)
-    # 在图视图内的候选带真实分数
-    assert "preference_multiplier" in out[0]
+    # 在图视图内的候选带真实分数（实测值，非 None）
+    assert out[0]["preference_multiplier"] is not None
+    assert out[0]["preference_score"] is not None
 
-    # 伪造一个不在库里的偏好候选 → 中性 0.5
+    # 伪造一个不在库里的偏好候选 → 无信号：乘子中性，分数明示 None
+    # （「没测到」与「测出来恰好 0.5」必须可区分，telemetry 不能混用）
     out2 = pg.preference_rerank([_cand("cap_missing", "preference", 0.5)], weight=0.5)
     assert out2[0]["preference_multiplier"] == pytest.approx(0.75, abs=1e-6)  # (1-0.5)+0.5*0.5
-    assert out2[0]["preference_score"] == 0.5
+    assert out2[0]["preference_score"] is None
 
 
 def test_rerank_is_readonly(isolated_db):
@@ -221,5 +223,40 @@ def test_forgotten_preference_drops_out_of_retrieval_view(isolated_db):
     g = pg.load_preference_graph()
     assert pref not in g["nodes"]
     out = pg.preference_rerank([_cand(pref, "preference", 0.5)], weight=0.3)
-    # 候选仍在输入里（caller 给的），但拿中性乘子（不在图视图）
-    assert out[0]["preference_score"] == 0.5
+    # 候选仍在输入里（caller 给的），但已无信号：中性乘子 + None 分数
+    assert out[0]["preference_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# 评审修复回归（PR #200 review）
+# ---------------------------------------------------------------------------
+
+def test_cascade_reports_depth_truncation(isolated_db):
+    """replaces 链超过 MAX_CHAIN_DEPTH 时如实上报 depth_truncated，不挂死。"""
+    from backend.app.memory_runtime.capsule_store import update_capsule
+
+    nodes = [_pref("editor", f"版本{i}") for i in range(pg.MAX_CHAIN_DEPTH + 5)]
+    # 串成一条超过限深的线性链: root → v1 → v2 → ...
+    for src, dst in zip(nodes, nodes[1:]):
+        update_capsule(src, relation_edges=[{"target": dst, "type": "replaces"}])
+
+    res = pg.cascade_forget_preference(nodes[0])
+    assert res["cascade"]["depth_truncated"] is True
+    # 只处理限深范围内的链节点（root + MAX_CHAIN_DEPTH 个）
+    assert len(res["deleted_capsule_ids"]) <= pg.MAX_CHAIN_DEPTH + 1
+    # 未被遗忘的链尾仍可读（不炸、不半删）
+    tail = get_capsule(nodes[-1])
+    assert tail is not None
+
+
+def test_cascade_normal_chain_not_truncated(isolated_db):
+    """正常短链不误报截断。"""
+    old = _pref("editor", "A")
+    mid = _pref("editor", "B")
+    new = _pref("editor", "C")
+    pg.record_preference_evolution(new, mid)
+    pg.record_preference_evolution(mid, old)
+
+    res = pg.cascade_forget_preference(new)
+    assert res["cascade"]["depth_truncated"] is False
+    assert set(res["cascade"]["replaces_chain_forgotten"]) == {mid, old}

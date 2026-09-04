@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+### 2026-09-04 - Preference Graph 评审修复（PR #200 review）
+- 幂等修复：`record_preference_evolution(replaces)` 重复调用不再无条件重跑 `apply_transition`（旧版本会重复生命周期 UPDATE + FTS 同步 + 追加 transition 账目，正是 apply_transition 文档警告的账本噪音）；版本链是否需要追加以事务内读到的 state 为准，本地死代码快照突变已移除。
+- 级联限深：replaces 链回溯新增 `MAX_CHAIN_DEPTH=100` 上限——`seen` 集合只防环不防退化 DAG，被污染数据串起的超长链会拖成全表遍历并锁死请求路径；截断时记 warning 并在结果里如实上报 `cascade.depth_truncated`。
+- `_load_raw_out_edges` 截断可观测：多取一行探测 LIMIT 命中，命中即记 warning（链可能不完整，宁可漏不可挂死口径），不再静默丢弃。
+- 重排无信号可区分：偏好候选不在图视图时 `preference_score=None`（「没测到」）而非 0.5（「实测中性」），乘子仍按中性 0.5——telemetry/门控消费方不再拿到安静的假信号。
+- 异常口径收窄：级联删除重验的兜底 except 从裸 `Exception` 收窄为 `(sqlite3.Error, RuntimeError, OSError)` 并加 `exc_info=True`——宽 except 会吞 NameError/TypeError/AttributeError（本仓真实事故：静默失效的采样器让 benchmark 假绿）。
+- 新增回归测试 3 条：幂等重调零 transition 账目、深度截断如实上报（含正常短链不误报）、无信号 None 分数。
+
 ### 2026-09-04 - Preference Graph 偏好记忆图与偏好演化机制（#198）
 - 新增 `backend/app/memory_runtime/preference_graph.py`：在既有 capsule 之上建偏好图视图——节点（preference/evidence/constraint，由 memory_class 推断、`content.preference_graph_node_type` 显式覆盖）与受控词表边（evidence_for / emotion_for / constraint_of / replaces / conflicts_with / derived_from），边写入既有 relation_edges JSON 列（零新表、与 RRF 图通道键名兼容）。
 - preference_score 四因子评分模型：emotion(0.35) + recency(0.25) + frequency(0.20) + evidence(0.20)，权重进 tuning `preference_graph` 段可调；四因子分解随分数返回（可解释）。

@@ -193,3 +193,42 @@ def test_suggest_active_empty_input_degrades_honestly(isolated_db):
     assert suggestion["suggested_active"] is None
     suggestion2 = pg.suggest_active_preference(["cap_missing"])
     assert suggestion2["suggested_active"] is None
+
+
+# ---------------------------------------------------------------------------
+# 评审修复回归（PR #200 review）
+# ---------------------------------------------------------------------------
+
+def test_replaces_idempotent_no_ledger_noise(isolated_db):
+    """幂等重调不再重复跑 apply_transition——账本不追加 transition 行。
+
+    PR #200 评审：旧实现对每次 replaces 调用都无条件 apply_transition，
+    幂等重调（test_replaces_idempotent 锁定的场景）会重复生命周期 UPDATE
+    + FTS 同步 + 追加一条新 transition 账目，正是 apply_transition 文档
+    警告的「账本噪音」。
+    """
+    from backend.app.db import get_conn
+
+    old = _pref("editor", "A")
+    new = _pref("editor", "B")
+
+    first = pg.record_preference_evolution(new, old)
+    _count = get_conn().execute(
+        "SELECT COUNT(*) FROM memory_ledger WHERE capsule_id=? AND op_type='transition'",
+        (old,),
+    ).fetchone()[0]
+    ledger_after_first = _count
+
+    second = pg.record_preference_evolution(new, old)
+    assert first["lifecycle_transitioned"] is True
+    assert second["lifecycle_transitioned"] is False  # 版本链已就位 → 不再转移
+    ledger_after_second = get_conn().execute(
+        "SELECT COUNT(*) FROM memory_ledger WHERE capsule_id=? AND op_type='transition'",
+        (old,),
+    ).fetchone()[0]
+    # 没有新的 transition 账目产生（preference_evolution 留痕不算 transition）
+    assert ledger_after_second == ledger_after_first
+    # 终态一致：旧偏好 deprecated、版本链一条
+    old_cap = get_capsule(old)
+    assert old_cap["state"]["lifecycle"] == "deprecated"
+    assert old_cap["state"]["superseded_by"] == [new]

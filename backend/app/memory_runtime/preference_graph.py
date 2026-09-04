@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -118,6 +119,11 @@ _EVIDENCE_LOG_BASE = 50.0
 
 #: 图读取上限（端侧小图全内存，与 rrf_fusion.GRAPH_LOAD_LIMIT 同口径）。
 GRAPH_LOAD_LIMIT = 2000
+
+#: 级联遗忘的 replaces 链回溯深度上限。环由 seen 集合防；此限防退化 DAG
+#: （被污染数据串起超长替换链）把回溯 + strip 循环拖成全表遍历。真实偏好
+#: 演化链远短于此；命中即截断并在结果里如实标 ``depth_truncated``。
+MAX_CHAIN_DEPTH = 100
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -488,29 +494,28 @@ def record_preference_evolution(
 
     if edge_type == "replaces":
         from ..memoryos.governance import append_ledger
-        from ..memoryos.lifecycle import LifecycleState
+        from ..memoryos.lifecycle import LifecycleState, apply_transition
 
-        old_state = dict(old_cap["state"] or {})
-        superseded_by = list(old_state.get("superseded_by") or [])
-        if new_capsule_id not in superseded_by:
+        # 版本链以 apply_transition 事务内读到的 state 为准（它有自己的
+        # BEGIN IMMEDIATE，本地修改不会也不会需要参与写入）。这里只从
+        # 快照算「是否需要追加」，避免幂等重调时重复写转移/账本。
+        superseded_by = list((old_cap["state"] or {}).get("superseded_by") or [])
+        chain_mutated = new_capsule_id not in superseded_by
+        if chain_mutated:
             superseded_by.append(new_capsule_id)
-        old_state["superseded_by"] = superseded_by
-        old_state["deprecation_reason"] = f"replaced_by:{new_capsule_id}"
-        from ..memoryos.lifecycle import apply_transition
-
-        apply_transition(
-            old_capsule_id,
-            LifecycleState.DEPRECATED.value,
-            f"preference_replaced_by:{new_capsule_id}",
-            actor=actor,
-            owner_id=owner_id,
-            soul_id=soul_id,
-            state_patch={
-                "superseded_by": superseded_by,
-                "deprecation_reason": f"replaced_by:{new_capsule_id}",
-            },
-        )
-        result["lifecycle_transitioned"] = True
+            apply_transition(
+                old_capsule_id,
+                LifecycleState.DEPRECATED.value,
+                f"preference_replaced_by:{new_capsule_id}",
+                actor=actor,
+                owner_id=owner_id,
+                soul_id=soul_id,
+                state_patch={
+                    "superseded_by": superseded_by,
+                    "deprecation_reason": f"replaced_by:{new_capsule_id}",
+                },
+            )
+        result["lifecycle_transitioned"] = chain_mutated
         append_ledger(
             op_type="preference_evolution",
             capsule_id=new_capsule_id,
@@ -605,6 +610,11 @@ def _load_raw_out_edges(
     仅供级联遗忘的 replaces 链回溯使用：旧偏好在落 replaces 边时已被转
     ``deprecated``，不在可检索图视图里，链回溯必须看原始边才能穿过
     deprecated 节点继续向前追溯。
+
+    诚实边界：``load_limit`` 是**软截断**（``relation_edges`` JSON 列无索引，
+    无界全表读对端侧不可接受）。达到上限时如实记 warning——链上被截掉的
+    旧版本不会被本次级联遗忘（宁可漏不可挂死的同一口径）。排序不保证，
+    上限内的取集是「取到哪算哪」；真实端侧数据远低于该上限。
     """
     from .capsule_store import _scope_predicate
 
@@ -613,12 +623,21 @@ def _load_raw_out_edges(
     params: list[Any] = list(scope_params)
     if scope_sql:
         where += f" AND {scope_sql}"
-    params.append(int(load_limit))
+    # 多取一行探测截断：返回 load_limit+1 行说明还有剩余没读进来。
+    params.append(int(load_limit) + 1)
     rows = get_conn().execute(
         f"SELECT capsule_id, relation_edges FROM memory_capsules_v2 "
         f"WHERE {where} LIMIT ?",
         params,
     ).fetchall()
+    truncated = len(rows) > load_limit
+    if truncated:
+        rows = rows[:load_limit]
+        logger.warning(
+            "_load_raw_out_edges 命中 %d 行上限，剩余带边胶囊未读入——"
+            "级联遗忘的 replaces 链可能不完整（宁可漏不可挂死）",
+            load_limit,
+        )
     out: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         cid = row["capsule_id"]
@@ -667,7 +686,11 @@ def cascade_forget_preference(
     graph = load_preference_graph(owner_id=owner_id, soul_id=soul_id)
     edges = graph.get("edges") or {}
 
-    # 1) replaces 链回溯（限深防环：图上历史边可能成环，宁可漏不可挂死）。
+    # 1) replaces 链回溯。两层保护：
+    #    - ``seen`` 集合防环（图上历史边可能成环）；
+    #    - ``MAX_CHAIN_DEPTH`` 限深防退化 DAG：深度无界的替换链（如被污染
+    #      数据从单根串起超长链）会让回溯 + strip 循环跑遍全表并锁死请求
+    #      路径，宁可漏忘（partial 标记如实上报）不可挂死。
     # 注意不能用上面的可检索图视图做链回溯：record_preference_evolution 落
     # replaces 边的同时会把旧偏好转 deprecated，而 deprecated 不在可检索集，
     # 用可检索视图回溯会得到空链。这里直接读原始 relation_edges（含
@@ -677,7 +700,10 @@ def cascade_forget_preference(
     chain: list[str] = []
     seen = {capsule_id}
     frontier = [capsule_id]
-    while frontier:
+    depth_truncated = False
+    for _ in range(MAX_CHAIN_DEPTH):
+        if not frontier:
+            break
         nxt: list[str] = []
         for src in frontier:
             for edge in raw_edges.get(src) or []:
@@ -686,6 +712,14 @@ def cascade_forget_preference(
                     chain.append(edge["target"])
                     nxt.append(edge["target"])
         frontier = nxt
+    else:
+        if frontier:
+            depth_truncated = True
+            logger.warning(
+                "replaces 链深度超过 %d（capsule_id=%s），级联遗忘只处理前 %d 个"
+                "旧版本，剩余链路保留待查（数据可能被污染）",
+                MAX_CHAIN_DEPTH, capsule_id, len(chain),
+            )
 
     # 2) 摘除指向目标的 evidence_for / emotion_for 入边（源胶囊保留）。
     detached: list[str] = []
@@ -751,18 +785,29 @@ def cascade_forget_preference(
         # 边清理后再验一次删除完整性：forget_capsules 响应里的证据是在
         # strip 之前算的，如实上报会永远带一条已消除的残留。级联语义的
         # 「删除完成」以 strip 之后为准（复用同一 verify_deletions，不另
-        # 写第二套口径）。
+        # 写第二套口径）。异常口径收窄到 sqlite/运行时/OS 层：宽 except 会
+        # 吞掉 NameError/TypeError/AttributeError（本仓真实事故：静默失效的
+        # 快照采样器让整个 benchmark 假绿），这些是代码 bug 必须炸出来。
         try:
             from ..memoryos.governance import verify_deletions
 
             result["deletion_verification"] = verify_deletions(
                 result["deleted_capsule_ids"]
             )
-        except Exception as exc:  # pragma: no cover - 验证失败不反噬删除事实
-            logger.warning("cascade deletion re-verification failed: %s", exc)
+        except (sqlite3.Error, RuntimeError, OSError):
+            # pragma: no cover - 验证失败不反噬删除事实（删除已提交），
+            # exc_info=True 让静默降级路径在日志里留下完整栈。
+            logger.warning(
+                "cascade deletion re-verification failed, "
+                "deletion_verification 保留 forget 时的原值",
+                exc_info=True,
+            )
     result["cascade"] = {
         "replaces_chain_forgotten": chain,
         "evidence_edges_detached_from": detached,
+        # 限深截断如实上报：截断时链上剩余旧版本未遗忘，调用方需要知道
+        # 级联是 partial 的，不能把「 forgotten」当成完整语义消费。
+        "depth_truncated": depth_truncated,
     }
     return result
 
@@ -789,10 +834,12 @@ def preference_rerank(
       偏好」，不是「知识是否相关」）。
     - ``weight=0`` 时严格恒等（消融基线：关掉偏好通道，同一套数据流）。
     - 偏好候选不在图视图里（刚写还没进可检索集）时乘子按中性 0.5 处理，
-      不惩罚也不加成。
+      不惩罚也不加成；此时 ``preference_score=None`` 明示「无信号」，
+      与「实测恰好 0.5」可区分（telemetry/门控消费方不得混用两者）。
     - 只读重排：**不 bump usage_count、不改任何库内状态**；caller 拿到的
       顺序变了，原始 retrieval_score 字段保留不动，新字段
-      ``preference_multiplier`` / ``preference_score_final`` 随结果返回。
+      ``preference_multiplier`` / ``preference_score`` /
+      ``preference_score_final`` 随结果返回。
     """
     if not candidates:
         return []
@@ -813,18 +860,23 @@ def preference_rerank(
     out = []
     for cap in candidates:
         if cap.get("memory_class") == "preference" and weight > 0.0:
+            measured = cap["capsule_id"] in scores
+            # 不在图视图（刚写未入可检索集 / 已遗忘等）→ 无信号：乘子按
+            # 中性 0.5，但 ``preference_score=None`` 如实区分「没测到」与
+            # 「测出来正好 0.5」——telemetry/门控消费方不能把前者当后者。
             ps = scores.get(cap["capsule_id"], 0.5)
             multiplier = (1.0 - weight) + weight * ps
         else:
             ps = None
+            measured = False
             multiplier = 1.0
         base = float(cap.get("retrieval_score") or 0.0)
         final = base * multiplier
         cap = dict(cap)
         cap["preference_score_final"] = round(final, 4)
-        if ps is not None:
+        if cap.get("memory_class") == "preference" and weight > 0.0:
             cap["preference_multiplier"] = round(multiplier, 4)
-            cap["preference_score"] = round(ps, 4)
+            cap["preference_score"] = round(ps, 4) if measured else None
         out.append((final, cap))
     out.sort(key=lambda item: (-item[0], item[1]["capsule_id"]))
     ranked = [cap for _, cap in out]
@@ -841,6 +893,7 @@ __all__ = [
     "EDGE_TYPES",
     "DEFAULT_SCORE_WEIGHTS",
     "GRAPH_LOAD_LIMIT",
+    "MAX_CHAIN_DEPTH",
     "load_preference_graph",
     "compute_preference_scores",
     "record_preference_evolution",
