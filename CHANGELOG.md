@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### 2026-09-04 - Knowledge Conflict Resolution & Evolution（#202）
+- 新增 `backend/app/memory_runtime/knowledge_evolution.py`：知识冲突消解与演化机制，与偏好演化（#198）形成双演化体系。零新表：节点即 knowledge capsule、边即 relation_edges（与 preference_graph 同一存储口径），知识状态机不发明新状态（active/superseded/deprecated/conflicted/forgotten 映射到既有 lifecycle）。
+- 冲突检测四分类（规则式、每类带触发证据）：fact（同 key 异 value，K=V 抽取兼容中英文等号/冒号/is/为/是）、status（互斥状态词组 + 共享主语，CJK bigram 分词）、config（同参数不同数值）、temporal（覆盖标记词）。值恰为互斥状态对时 fact 升级为 status（redis is online/offline）。
+- Knowledge Version：`state.knowledge_version` 随 supersedes 演化递增（Firefox→Chrome→Edge = 1→2→3）；invalidates 证伪失效不递增版本（无继任）；derived_from 只写边不动版本。
+- 版本演化：`evolve_knowledge` 落 supersedes/invalidates/conflicts_with/derived_from 边；旧知识经状态机转 deprecated + 版本链字段（幂等——版本链已就位则跳过转移，零 transition 账本噪音，与 #200 评审修复后的同一口径）；演化链回溯限深防退化 DAG（MAX_EVOLUTION_DEPTH=100）+ 环防护。
+- Active Knowledge Selection：`knowledge_confidence = 0.30×recency + 0.30×trust + 0.25×source_authority + 0.15×usage`（trust 复用 policy_gate 的 trust_score、source 复用 conflict_resolution 分级表）；`suggest_active_knowledge` 只建议不执行（auto_execute 恒 False），同分决胜按 created_at 新者在前。
+- Knowledge Explain：`explain_knowledge` 一次返回当前版本/状态/四因子置信度/演化链/双向冲突记录/裁决建议/来源证据。
+- 检索增强：`knowledge_rerank` 只读重排，active→1.0、stale→0.85、conflicted→0.60、deprecated→0.5^代数（传递深度计算）封底 0.1；基础分缺省中性 0.5（真实胶囊无 retrieval_score 字段，按 0 处理会退化为 id 字典序）；非知识候选恒等通过；不 bump usage_count。
+- 新增 API：POST `/memory/knowledge-evolution/detect-conflicts`、`/evolve`、`/active-suggest`、`/rerank`、GET `/explain/{capsule_id}`（Literal 受控边名，非法值 422）。
+- 新增测试 49 条（验收要求的四件套）：test_knowledge_conflict / test_knowledge_evolution / test_active_knowledge / test_conflict_retrieval，覆盖四类冲突检测、版本链、幂等、限深/环防护、四因子因果方向、建议式裁决边界、检索降权、explain 全景与端到端闭环。
+
 ### 2026-09-04 - Preference Graph 评审修复（PR #200 review）
 - 幂等修复：`record_preference_evolution(replaces)` 重复调用不再无条件重跑 `apply_transition`（旧版本会重复生命周期 UPDATE + FTS 同步 + 追加 transition 账目，正是 apply_transition 文档警告的账本噪音）；版本链是否需要追加以事务内读到的 state 为准，本地死代码快照突变已移除。
 - 级联限深：replaces 链回溯新增 `MAX_CHAIN_DEPTH=100` 上限——`seen` 集合只防环不防退化 DAG，被污染数据串起的超长链会拖成全表遍历并锁死请求路径；截断时记 warning 并在结果里如实上报 `cascade.depth_truncated`。

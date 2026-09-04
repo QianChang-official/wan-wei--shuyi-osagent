@@ -29,6 +29,8 @@ from .schemas import (
     LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
     PreferenceEvolutionIn, PreferenceActiveSuggestIn,
     PreferenceCascadeForgetIn, PreferenceRerankIn,
+    KnowledgeConflictDetectIn, KnowledgeEvolutionIn,
+    KnowledgeActiveSuggestIn, KnowledgeRerankIn,
 )
 from .db import close_all, database_path, get_conn, transaction
 
@@ -2669,6 +2671,136 @@ def memory_preference_graph_rerank(req: PreferenceRerankIn, request: Request = N
             for c in ranked
         ],
         "weight": req.weight,
+        "input_count": len(candidates),
+    }
+
+
+# ── Knowledge Evolution 知识冲突消解与演化（issue #202）─────────────────────
+
+@memory_router.post('/memory/knowledge-evolution/detect-conflicts')
+def memory_knowledge_detect_conflicts(
+    req: KnowledgeConflictDetectIn, request: Request = None,
+):
+    """对一条 knowledge 胶囊做四类冲突检测（fact/status/config/temporal）。
+
+    只产出信号：**不转移任何生命周期**（治理底线：冲突必须显式裁决）。
+    返回每个命中候选的冲突类型、主语、新旧值与触发证据。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.knowledge_evolution import detect_knowledge_conflicts
+
+    _require_visible_capsule(req.capsule_id, scope)
+    return {
+        "capsule_id": req.capsule_id,
+        "conflicts": detect_knowledge_conflicts(
+            req.capsule_id,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        ),
+    }
+
+
+@memory_router.post('/memory/knowledge-evolution/evolve')
+def memory_knowledge_evolution(req: KnowledgeEvolutionIn, request: Request = None):
+    """记录知识演化边：``supersedes``/``invalidates`` 把旧知识转 deprecated
+    （版本号递增仅 supersedes），``derived_from``/``conflicts_with`` 只写边。"""
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.knowledge_evolution import evolve_knowledge
+
+    try:
+        return evolve_knowledge(
+            req.new_capsule_id,
+            req.old_capsule_id,
+            edge_type=req.edge_type,
+            conflict_type=req.conflict_type,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
+
+
+@memory_router.post('/memory/knowledge-evolution/active-suggest')
+def memory_knowledge_active_suggest(
+    req: KnowledgeActiveSuggestIn, request: Request = None,
+):
+    """对一组（冲突中的）知识建议 active knowledge（四因子置信度排序）。
+
+    **只建议，不执行**：实际生效走 ``/evolve`` 或
+    ``/memory/lifecycle/resolve-conflict``。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.knowledge_evolution import suggest_active_knowledge
+
+    return suggest_active_knowledge(
+        req.capsule_ids,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@memory_router.get('/memory/knowledge-evolution/explain/{capsule_id}')
+def memory_knowledge_explain(capsule_id: str, request: Request = None):
+    """Knowledge Explain：为什么使用该知识？
+
+    返回当前版本/状态、四因子置信度、演化链（历史版本路径）、冲突记录、
+    裁决建议与来源证据。
+    """
+    from .memory_runtime.knowledge_evolution import explain_knowledge
+
+    # explain 不接受 soul_id 参数（与 lifecycle 端点同口径，按请求身份取域）。
+    scope = _scope_of(request, None)
+    try:
+        return explain_knowledge(
+            capsule_id,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+
+
+@memory_router.post('/memory/knowledge-evolution/rerank')
+def memory_knowledge_rerank(req: KnowledgeRerankIn, request: Request = None):
+    """对候选胶囊按知识版本状态加权重排（只读；不 bump usage）。
+
+    active→1.0、stale→0.85、conflicted→0.60、deprecated→0.5^代数 封底
+    0.1。与 preference-graph/rerank 平行：偏好管「该信谁」，知识管「哪个
+    版本」。生产检索路径接线另行评审。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.capsule_store import get_capsules_batch
+    from .memory_runtime.knowledge_evolution import knowledge_rerank
+
+    by_id = get_capsules_batch(
+        req.capsule_ids,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    candidates = [by_id[cid] for cid in req.capsule_ids if cid in by_id]
+    if not candidates:
+        raise HTTPException(
+            status_code=404,
+            detail={'error': 'not_found', 'note': '给定 capsule_ids 均不在作用域内'},
+        )
+    ranked = knowledge_rerank(
+        candidates,
+        top_k=req.top_k,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    return {
+        "ranked": [
+            {
+                "capsule_id": c["capsule_id"],
+                "memory_class": c.get("memory_class"),
+                "knowledge_multiplier": c.get("knowledge_multiplier"),
+                "superseded_depth": c.get("superseded_depth"),
+            }
+            for c in ranked
+        ],
         "input_count": len(candidates),
     }
 
