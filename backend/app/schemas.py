@@ -154,3 +154,37 @@ class MemoryHealthSnapshotIn(BaseModel):
     source: str = Field(default='manual', min_length=1, max_length=64)
     soul_id: str | None = Field(default=None, min_length=1, max_length=128)
 
+
+
+# v0.13.x Preference Graph schemas（issue #198：偏好记忆图与偏好演化机制）
+#
+# 边类型用 Literal 与 memory_runtime.preference_graph.EDGE_TYPES 对齐，
+# 非法边名在 Pydantic 层就 422。
+
+class PreferenceEvolutionIn(BaseModel):
+    """记录一条偏好演化边（replaces 演化 / conflicts_with 冲突标记）。"""
+    new_capsule_id: str = Field(min_length=1, max_length=64)
+    old_capsule_id: str = Field(min_length=1, max_length=64)
+    edge_type: Literal['replaces', 'conflicts_with'] = 'replaces'
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class PreferenceActiveSuggestIn(BaseModel):
+    """对一组冲突偏好给出「当前应信谁」的建议（只建议，不执行）。"""
+    capsule_ids: list[str] = Field(min_length=1, max_length=50)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class PreferenceCascadeForgetIn(BaseModel):
+    """级联遗忘一条偏好（含 replaces 链回溯与证据边摘除）。"""
+    capsule_id: str = Field(min_length=1, max_length=64)
+    mode: Literal['soft_delete', 'hard_delete'] = 'soft_delete'
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class PreferenceRerankIn(BaseModel):
+    """对一批候选胶囊做 preference-aware 重排（只读，不改库）。"""
+    capsule_ids: list[str] = Field(min_length=1, max_length=200)
+    weight: float = Field(default=0.30, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1, le=200)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)

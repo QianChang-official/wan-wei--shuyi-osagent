@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+### 2026-09-04 - Preference Graph 评审修复（PR #200 review）
+- 幂等修复：`record_preference_evolution(replaces)` 重复调用不再无条件重跑 `apply_transition`（旧版本会重复生命周期 UPDATE + FTS 同步 + 追加 transition 账目，正是 apply_transition 文档警告的账本噪音）；版本链是否需要追加以事务内读到的 state 为准，本地死代码快照突变已移除。
+- 级联限深：replaces 链回溯新增 `MAX_CHAIN_DEPTH=100` 上限——`seen` 集合只防环不防退化 DAG，被污染数据串起的超长链会拖成全表遍历并锁死请求路径；截断时记 warning 并在结果里如实上报 `cascade.depth_truncated`。
+- `_load_raw_out_edges` 截断可观测：多取一行探测 LIMIT 命中，命中即记 warning（链可能不完整，宁可漏不可挂死口径），不再静默丢弃。
+- 重排无信号可区分：偏好候选不在图视图时 `preference_score=None`（「没测到」）而非 0.5（「实测中性」），乘子仍按中性 0.5——telemetry/门控消费方不再拿到安静的假信号。
+- 异常口径收窄：级联删除重验的兜底 except 从裸 `Exception` 收窄为 `(sqlite3.Error, RuntimeError, OSError)` 并加 `exc_info=True`——宽 except 会吞 NameError/TypeError/AttributeError（本仓真实事故：静默失效的采样器让 benchmark 假绿）。
+- 新增回归测试 3 条：幂等重调零 transition 账目、深度截断如实上报（含正常短链不误报）、无信号 None 分数。
+
+### 2026-09-04 - Preference Graph 偏好记忆图与偏好演化机制（#198）
+- 新增 `backend/app/memory_runtime/preference_graph.py`：在既有 capsule 之上建偏好图视图——节点（preference/evidence/constraint，由 memory_class 推断、`content.preference_graph_node_type` 显式覆盖）与受控词表边（evidence_for / emotion_for / constraint_of / replaces / conflicts_with / derived_from），边写入既有 relation_edges JSON 列（零新表、与 RRF 图通道键名兼容）。
+- preference_score 四因子评分模型：emotion(0.35) + recency(0.25) + frequency(0.20) + evidence(0.20)，权重进 tuning `preference_graph` 段可调；四因子分解随分数返回（可解释）。
+- 偏好演化：`record_preference_evolution` 落 replaces 边并把旧偏好经状态机转 deprecated（版本链 superseded_by 维护、幂等）；conflicts_with 只标记冲突不动生命周期（治理底线：冲突必须显式裁决）。
+- 建议式冲突裁决：`suggest_active_preference` 按多因子权重给出 active_preference 建议，auto_execute 恒 False，生效路径仍是 `lifecycle.resolve_conflict(actor='human')`。
+- 级联遗忘：`cascade_forget_preference` 沿 replaces 链回溯遗忘旧版本（限深防环）、摘除指向目标的 evidence_for/emotion_for 边（证据胶囊保留）、strip 已忘胶囊间的死边后重验删除完整性（all_complete 以 strip 后为准）。
+- preference-aware retrieval：`preference_rerank` 只读重排，`final = retrieval_score × (1−w + w×preference_score)`，只影响 preference 类候选；w=0 严格恒等（消融基线）；不 bump usage_count。生产检索路径未接线（纯增量口径，与 RRF 融合入口同策略）。
+- 新增 API：GET `/memory/preference-graph`、POST `/memory/preference-graph/evolution`、`/active-suggest`、`/cascade-forget`、`/rerank`（schemas 用 Literal 受控边名，非法值 422）。
+- 新增测试 42 条：test_preference_graph / test_preference_evolution / test_preference_conflict / test_preference_retrieval，覆盖节点推断、边词表、评分因子因果、演化幂等、冲突治理边界、级联遗忘（含环防护与删除完整性）、重排恒等基线。
+
 ### 2026-09-03 - 工具调用序列偏好挖掘（#164 B2）
 - 新增序列模式挖掘独立模块与建议式偏好闸门函数（evaluate_preference_candidate，强制 requires_confirmation）；尚未接入主链路（无生产调用方），接线与调用时机另行评审。
 
