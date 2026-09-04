@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### 2026-09-04 - Knowledge Evolution 评审修复（PR #203 review）
+- 事务顺序改为「先建后拆」：新胶囊的边/版本先落库、旧胶囊的生命周期转移在后——转移失败留下的是可重试中间态（重调幂等收敛），不再出现「旧知识已归档、演化证据丢失」的破坏态；版本链判定改用转移前的新鲜读收窄 TOCTOU 窗口，残余竞态最坏后果（幂等 update 账目一条）在 docstring 诚实标注。
+- 自指演化边（new==old）显式拒绝：会形成单节点环并把自己转 deprecated。
+- 英文状态词改词边界匹配：phone/condition/offer 不再误命中 on/off 组（CJK 保持子串——中文无词边界）。
+- rerank 不可见状态显式归零：forgotten/deleted/quarantined/rejected/candidate 乘子 0.0，不按 active 缺省 1.0 对待。
+- rerank 混合类缺省基础分统一 0.5（知识与非知识一致）：此前知识 0.5、非知识 0.0，active 知识会无条件碾压非知识候选，跨类比较失去意义。
+- explain 不再外发 provenance.writer_identity（作者身份最小披露，读端点只留 source_type 与 verified）。
+- tuning 权重读取的兜底 except 从裸 Exception 收窄为 (ImportError, AttributeError)——knowledge_evolution 与 preference_graph 两处同口径修复（宽 except 吞代码 bug 的教训见 PR #200）。
+- explain 一次加载原始边表、演化链回溯与冲突扫描复用（原先一次请求 3 次无索引全表读）。
+- 新增回归测试 7 条：自指拒绝、先建后拆、英文词边界（正反例）、不可见状态归零、混合类公平基础分、writer_identity 不外发。
+
 ### 2026-09-04 - Knowledge Conflict Resolution & Evolution（#202）
 - 新增 `backend/app/memory_runtime/knowledge_evolution.py`：知识冲突消解与演化机制，与偏好演化（#198）形成双演化体系。零新表：节点即 knowledge capsule、边即 relation_edges（与 preference_graph 同一存储口径），知识状态机不发明新状态（active/superseded/deprecated/conflicted/forgotten 映射到既有 lifecycle）。
 - 冲突检测四分类（规则式、每类带触发证据）：fact（同 key 异 value，K=V 抽取兼容中英文等号/冒号/is/为/是）、status（互斥状态词组 + 共享主语，CJK bigram 分词）、config（同参数不同数值）、temporal（覆盖标记词）。值恰为互斥状态对时 fact 升级为 status（redis is online/offline）。

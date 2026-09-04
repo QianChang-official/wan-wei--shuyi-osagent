@@ -127,3 +127,15 @@ def test_detect_conflicts_requires_knowledge_class(isolated_db):
 
 def test_detect_conflicts_missing_capsule(isolated_db):
     assert ke.detect_knowledge_conflicts("cap_missing") == []
+
+
+def test_english_word_boundary_no_false_positive():
+    """英文状态词按词边界匹配：phone/condition 不误命中 on/off 组。"""
+    assert ke.classify_conflict("phone is online", "conditions were met") is None
+    assert ke.classify_conflict("the offer expired", "discount on") is None
+
+
+def test_english_word_boundary_real_hits():
+    """真英文状态对仍命中。"""
+    v = ke.classify_conflict("redis is online", "redis is offline")
+    assert v is not None and v["type"] == "status"

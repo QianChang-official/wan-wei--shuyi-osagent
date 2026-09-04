@@ -219,3 +219,40 @@ def test_conflict_to_evolution_to_retrieval_e2e(isolated_db):
         _cand(new, "knowledge", 0.9, "active"),
     ])
     assert out[0]["capsule_id"] == new
+
+
+# ---------------------------------------------------------------------------
+# 评审修复回归（PR #203 review）
+# ---------------------------------------------------------------------------
+
+def test_rerank_invisible_lifecycle_zero_multiplier(isolated_db):
+    """forgotten/quarantined/rejected 乘子显式归零，不按 active 缺省 1.0。"""
+    for lifecycle in ("forgotten", "quarantined", "rejected", "candidate", "deleted"):
+        out = ke.knowledge_rerank([_cand("cap_x", "knowledge", 0.9, lifecycle)])
+        assert out[0]["knowledge_multiplier"] == 0.0, lifecycle
+
+
+def test_rerank_mixed_classes_fair_base(isolated_db):
+    """混合重排的缺省基础分跨类一致（都 0.5）：
+
+    知识缺省 0.5 而非知识缺省 0.0 时，active 知识会无条件碾压非知识
+    候选——跨类比较失去意义。
+    """
+    k = _know("知识")
+    out = ke.knowledge_rerank([
+        _cand(k, "knowledge", 0.9, "active"),
+        {"capsule_id": "cap_pref", "memory_class": "preference",
+         "state": {"lifecycle": "active"}},  # 无 retrieval_score 字段
+    ])
+    # 非知识候选缺省 0.5×1.0 = 0.5；active 知识 0.9×1.0 = 0.9 排前
+    assert out[0]["capsule_id"] == k
+    # 两者都有意义的分数（非 0.0 一边倒）
+    assert out[0]["knowledge_multiplier"] == 1.0
+
+
+def test_explain_no_writer_identity(isolated_db):
+    """explain 不外发 writer_identity（作者身份最小披露）。"""
+    old = _know("默认浏览器 = Firefox")
+    exp = ke.explain_knowledge(old)
+    assert "writer_identity" not in exp["provenance"]
+    assert "source_type" in exp["provenance"]

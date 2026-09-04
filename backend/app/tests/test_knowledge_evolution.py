@@ -179,3 +179,36 @@ def test_trace_evolution_cycle_safe(isolated_db):
 
     path = ke.trace_evolution(c)
     assert len(path) <= 3  # 环闭合不重入
+
+
+# ---------------------------------------------------------------------------
+# 评审修复回归（PR #203 review）
+# ---------------------------------------------------------------------------
+
+def test_self_edge_rejected(isolated_db):
+    """new == old 的自指演化边拒绝：会形成单节点环并把自己转 deprecated。"""
+    a = _know("知识 A")
+    with pytest.raises(ValueError, match="自指"):
+        ke.evolve_knowledge(a, a)
+
+
+def test_evolution_edge_written_before_transition(isolated_db):
+    """先建后拆：新胶囊的边与版本先落库，旧知识转移在后。
+
+    转移失败时留下的是「边已写、旧知识未归档」的可重试中间态——
+    重调幂等收敛，不会出现旧知识已归档而演化证据丢失的破坏态。
+    """
+    old = _know("端口 = 8080")
+    new = _know("端口 = 9000")
+
+    res = ke.evolve_knowledge(new, old)
+    assert res["edge_added"] is True
+    # 新胶囊的边与版本号已落库
+    new_cap = get_capsule(new)
+    assert any(
+        isinstance(e, dict) and e.get("type") == "supersedes"
+        for e in new_cap["relation_edges"]
+    )
+    assert new_cap["state"]["knowledge_version"] == 2
+    # 旧知识也已转移（完整成功路径）
+    assert get_capsule(old)["state"]["lifecycle"] == "deprecated"

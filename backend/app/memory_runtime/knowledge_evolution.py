@@ -156,14 +156,22 @@ def _kv_pairs(text: str) -> dict[str, str]:
 
 
 def _status_words(text: str) -> set[str]:
-    """命中的互斥状态词（小写归一）。"""
+    """命中的互斥状态词（小写归一）。
+
+    匹配口径：CJK 词按子串（中文无词边界）；英文按**词边界**——裸子串
+    会让 "phone"/"condition" 命中 on/off、"offer" 命中 off，全部误报。
+    """
     lowered = (text or "").lower()
-    return {
-        w
-        for group in _MUTUAL_EXCLUSION_GROUPS
-        for w in group
-        if w.lower() in lowered
-    }
+    hits: set[str] = set()
+    for group in _MUTUAL_EXCLUSION_GROUPS:
+        for w in group:
+            wl = w.lower()
+            if re.search(r"[a-z]", wl):
+                if re.search(rf"\b{re.escape(wl)}\b", lowered):
+                    hits.add(w)
+            elif wl in lowered:  # CJK 无词边界
+                hits.add(w)
+    return hits
 
 
 def _is_numeric(value: str) -> bool:
@@ -386,7 +394,10 @@ def knowledge_confidence(
                 value = published.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     w[key] = float(value)
-        except Exception as exc:  # noqa: BLE001 —— 调参模块不可用时回落常量
+        except (ImportError, AttributeError) as exc:
+            # 只捕获「调参模块缺席/字段缺席」两类预期降级。宽 except 会吞
+            # NameError/TypeError/AttributeError 以外的代码 bug（本仓真实
+            # 事故：静默失效的采样器让 benchmark 假绿），必须炸出来。
             logger.warning(
                 "tuning defaults 不可用，knowledge_confidence 权重回落内置常量: %s", exc
             )
@@ -513,11 +524,25 @@ def evolve_knowledge(
 
     Raises:
         KeyError: 胶囊不存在。
-        ValueError: 非法 edge_type / 非 knowledge 类胶囊。
+        ValueError: 非法 edge_type / 非 knowledge 类胶囊 / 自指（new==old）。
+
+    并发口径（诚实标注）：新胶囊的边/版本写入与旧胶囊的生命周期转移是
+    **两个事务**（apply_transition 是独立事务，无法从外部合并）。写入顺序
+    刻意为「先建后拆」——先落新胶囊的边与版本、再转移旧胶囊；第二步失败
+    时留下的是「边已写、旧知识未归档」的**可重试**中间态（重调幂等收敛），
+    而不是「旧知识已归档、演化证据丢失」的破坏态。版本链判定用转移前的
+    **新鲜读**（get_capsule 重读）尽量收窄 TOCTOU 窗口；apply_transition
+    自身的 BEGIN IMMEDIATE 保证单次转移原子，残余竞态最坏后果是并发重试
+    产生一条幂等 update 账目，不是状态损坏。
     """
     if edge_type not in KNOWLEDGE_EDGE_TYPES:
         raise ValueError(
             f"edge_type 必须是 {sorted(KNOWLEDGE_EDGE_TYPES)} 之一: {edge_type!r}"
+        )
+    if new_capsule_id == old_capsule_id:
+        raise ValueError(
+            "new_capsule_id 与 old_capsule_id 不能相同: 自指演化边会形成"
+            "单节点环，且会把该胶囊自己转 deprecated"
         )
     from .capsule_store import get_capsule, update_capsule
 
@@ -561,12 +586,39 @@ def evolve_knowledge(
         "version_assigned": None,
     }
 
-    # 版本号：supersedes 语义下新知识 = 旧版本+1（演化链长度即版本号）。
+    if edge_type == "supersedes":
+        # 版本号：新知识 = 旧版本+1（演化链长度即版本号）。仅首次分配——
+        # 已有版本号说明它已在链上（多代演化的中间版本），不覆盖。
+        new_state = dict(new_cap["state"] or {})
+        if "knowledge_version" not in new_state:
+            new_state["knowledge_version"] = _ensure_version(old_cap) + 1
+            result["version_assigned"] = new_state["knowledge_version"]
+
+    # 先建后拆：新胶囊的边（+首次版本号）先落库。此步失败则什么都没发生；
+    # 后续转移失败时重调本函数可幂等收敛（边已存在 → edge_added=False）。
+    if edge_added or result["version_assigned"] is not None:
+        patch_state = None
+        if result["version_assigned"] is not None:
+            patch_state = dict(new_cap["state"] or {})
+            patch_state["knowledge_version"] = result["version_assigned"]
+        update_capsule(
+            new_capsule_id,
+            state=patch_state,
+            relation_edges=new_edges if edge_added else None,
+            owner_id=owner_id,
+            soul_id=soul_id,
+            actor=actor,
+            reason=f"knowledge_evolution:{edge_type}",
+        )
+
     if edge_type in ("supersedes", "invalidates"):
         from ..memoryos.governance import append_ledger
         from ..memoryos.lifecycle import LifecycleState, apply_transition
 
-        superseded_by = list((old_cap["state"] or {}).get("superseded_by") or [])
+        # 版本链判定用转移前的新鲜读（收窄 TOCTOU 窗口）：入口处的 old_cap
+        # 快照可能已被并发演化更新过。
+        fresh_old = get_capsule(old_capsule_id, owner_id=owner_id, soul_id=soul_id)
+        superseded_by = list(((fresh_old or old_cap)["state"] or {}).get("superseded_by") or [])
         chain_mutated = new_capsule_id not in superseded_by
         if chain_mutated:
             superseded_by.append(new_capsule_id)
@@ -584,22 +636,6 @@ def evolve_knowledge(
                 },
             )
         result["lifecycle_transitioned"] = chain_mutated
-        if edge_type == "supersedes":
-            new_state = dict(new_cap["state"] or {})
-            if "knowledge_version" not in new_state:
-                new_state["knowledge_version"] = _ensure_version(old_cap) + 1
-                result["version_assigned"] = new_state["knowledge_version"]
-                # 版本号与边同一事务写入（update_capsule 自带 before/after 账本）。
-                if not edge_added:
-                    update_capsule(
-                        new_capsule_id, state=new_state,
-                        owner_id=owner_id, soul_id=soul_id, actor=actor,
-                        reason="knowledge_version_assign",
-                    )
-                else:
-                    # edge_added 路径下面 update_capsule 会带 relation_edges，
-                    # 这里把 state 一并传下去，避免两次写。
-                    pass
         append_ledger(
             op_type="knowledge_evolution",
             capsule_id=new_capsule_id,
@@ -618,21 +654,6 @@ def evolve_knowledge(
             reason=f"{edge_type}:{old_capsule_id}",
             owner_id=owner_id or (new_cap.get("provenance") or {}).get("owner_id"),
             soul_id=soul_id or (new_cap.get("provenance") or {}).get("soul_id"),
-        )
-
-    if edge_added:
-        patch_state = None
-        if edge_type == "supersedes" and result["version_assigned"] is not None:
-            patch_state = dict(new_cap["state"] or {})
-            patch_state["knowledge_version"] = result["version_assigned"]
-        update_capsule(
-            new_capsule_id,
-            state=patch_state,
-            relation_edges=new_edges,
-            owner_id=owner_id,
-            soul_id=soul_id,
-            actor=actor,
-            reason=f"knowledge_evolution:{edge_type}",
         )
     return result
 
@@ -690,15 +711,19 @@ def trace_evolution(
     owner_id: str | None = None,
     soul_id: str | None = None,
     max_depth: int = MAX_EVOLUTION_DEPTH,
+    raw_edges: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """沿 supersedes 出边回溯演化链（新 → 旧），返回版本路径。
 
     限深防退化 DAG（环由 seen 防）。返回逐节点摘要（id / 版本 / 状态 /
-    文本预览），无链返回空列表。
+    文本预览），无链返回空列表。``raw_edges`` 可注入已加载的边表（如
+    ``explain_knowledge`` 一次加载、多处复用，避免重复全表读）。
     """
     from .capsule_store import get_capsules_batch
 
-    raw = _load_knowledge_raw_edges(owner_id=owner_id, soul_id=soul_id)
+    raw = raw_edges if raw_edges is not None else _load_knowledge_raw_edges(
+        owner_id=owner_id, soul_id=soul_id
+    )
     chain_ids: list[str] = []
     seen = {capsule_id}
     frontier = [capsule_id]
@@ -758,13 +783,15 @@ def explain_knowledge(
     if not cap:
         raise KeyError(capsule_id)
 
+    # 一次加载原始边表，演化链回溯与冲突扫描复用（该读取是无索引全表扫，
+    # 重复加载是纯浪费）。
+    raw = _load_knowledge_raw_edges(owner_id=owner_id, soul_id=soul_id)
     evolution_path = trace_evolution(
-        capsule_id, owner_id=owner_id, soul_id=soul_id
+        capsule_id, owner_id=owner_id, soul_id=soul_id, raw_edges=raw
     )
     kc = knowledge_confidence(cap, at=at)
 
     # 冲突记录：双向 conflicts_with 边。
-    raw = _load_knowledge_raw_edges(owner_id=owner_id, soul_id=soul_id)
     out_conflicts = [
         {"with": e["target"], "direction": "outgoing"}
         for e in raw.get(capsule_id, []) if e["type"] == "conflicts_with"
@@ -794,10 +821,11 @@ def explain_knowledge(
         "evolution_path": evolution_path,
         "conflicts": conflicts,
         "resolution_suggestion": suggestion,
+        # 来源证据只暴露来源类型与验证位；writer_identity（谁写的——
+        # human/agent/插件名）是作者身份信息，读端点不外发（最小披露）。
         "provenance": {
             "source_type": prov.get("source_type") or prov.get("origin"),
             "verified": prov.get("verified"),
-            "writer_identity": prov.get("writer_identity"),
         },
     }
 
@@ -806,13 +834,20 @@ def explain_knowledge(
 # 检索增强（只读）
 # ---------------------------------------------------------------------------
 
-#: 各 lifecycle 状态的知识乘子（active 1.0；stale 0.85 与检索惩罚同族；
-#: conflicted 降权但仍可见——裁决界面要能检索到它）。
+#: 各 lifecycle 状态的知识乘子。**不可见状态显式归零**（forgotten/deleted/
+#: quarantined/rejected/candidate）——这些记忆本就不该进入候选集，漏进来
+#: 也不能按 active（缺省 1.0）对待。stale 0.85 与检索惩罚同族；conflicted
+#: 降权但可见（裁决界面要能检索到它）。
 _LIFECYCLE_MULTIPLIER = {
     "active": 1.0,
     "reinforced": 1.0,
     "stale": 0.85,
     "conflicted": 0.60,
+    "forgotten": 0.0,
+    "deleted": 0.0,
+    "quarantined": 0.0,
+    "rejected": 0.0,
+    "candidate": 0.0,
 }
 
 #: superseded/deprecated 的链深衰减：每被一层替换衰减一档（0.5^depth，
@@ -889,7 +924,10 @@ def knowledge_rerank(
         if cap.get("memory_class") != "knowledge":
             cap = dict(cap)
             cap["knowledge_multiplier"] = 1.0
-            out.append((float(cap.get("retrieval_score") or 0.0), cap))
+            # 基础分缺省口径与知识候选一致（0.5）：若知识缺省 0.5 而非知识
+            # 缺省 0.0，混合重排里所有 active 知识无条件碾压所有非知识候选，
+            # 跨类比较失去意义。
+            out.append((float(cap.get("retrieval_score", 0.5)), cap))
             continue
         cap = dict(cap)
         state = cap.get("state") or {}

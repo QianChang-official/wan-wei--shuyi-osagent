@@ -387,7 +387,9 @@ def compute_preference_scores(
                 value = published.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     w[key] = float(value)
-        except Exception as exc:  # noqa: BLE001 —— 调参模块不可用时回落常量
+        except (ImportError, AttributeError) as exc:
+            # 只捕获「调参模块缺席/字段缺席」两类预期降级；代码 bug
+            # （NameError/TypeError 等）必须炸出来，不能假绿。
             logger.warning(
                 "tuning defaults 不可用，preference_score 权重回落到内置常量: %s", exc
             )
