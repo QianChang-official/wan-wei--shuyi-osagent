@@ -67,6 +67,14 @@ python scripts/demo_governance.py --api-key <key>
 
 **长期协作**：AI 逐步了解工作习惯、项目背景、组织流程，形成专属数字助手——且这一切可审计。
 
+## 竞赛交付
+
+竞赛答辩入口：[competition/](competition/)
+
+## 创新点
+
+五项创新及其代码与证据：[docs/INNOVATIONS.md](docs/INNOVATIONS.md)
+
 ---
 
 ## 完整功能
@@ -142,7 +150,7 @@ bash scripts/run_dev.sh
 
 ## 文档中心
 
-[文档中心](文档中心_DOCUMENTATION_HUB.md)收录历史整合文档与分类索引。
+[根目录文档中心](文档中心_DOCUMENTATION_HUB.md)是历史合集与分类索引；当前竞赛交付见 [competition/](competition/)，技术创新见 [docs/INNOVATIONS.md](docs/INNOVATIONS.md)。
 
 ---
 
