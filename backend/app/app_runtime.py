@@ -27,6 +27,8 @@ from .schemas import (
     SoulPersonaUpdateIn, SoulDreamIn, TierTransitionIn, TierAutoFlowIn,
     LifecycleTransitionIn, LifecycleConfirmIn, LifecycleResolveConflictIn,
     LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
+    PreferenceEvolutionIn, PreferenceActiveSuggestIn,
+    PreferenceCascadeForgetIn, PreferenceRerankIn,
 )
 from .db import close_all, database_path, get_conn, transaction
 
@@ -2522,6 +2524,153 @@ def memory_identity_revoke(
         status = 404 if reason == "key_not_registered" else 409
         raise HTTPException(status_code=status, detail=reason)
     return result
+
+
+# ── Preference Graph 偏好记忆图（issue #198）───────────────────────────────
+
+@memory_router.get('/memory/preference-graph')
+def memory_preference_graph(
+    with_scores: bool = Query(default=True),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """偏好记忆图视图：节点（preference/evidence/constraint）+ 受控词表内的边。
+
+    ``with_scores=True`` 时附带每个 preference 节点的 preference_score
+    四因子分解（emotion/recency/frequency/evidence）。只读，不改库。
+    """
+    scope = _scope_of(request, soul_id)
+    from .memory_runtime.preference_graph import (
+        compute_preference_scores,
+        load_preference_graph,
+    )
+
+    graph = load_preference_graph(
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    if with_scores:
+        graph["scores"] = compute_preference_scores(graph)
+    # 节点表里的 state/content 全量返回对列表端点太重，压成摘要。
+    graph["nodes"] = {
+        cid: {
+            "node_type": meta["node_type"],
+            "name": meta["name"],
+            "polarity": meta["polarity"],
+            "lifecycle": (meta.get("state") or {}).get("lifecycle"),
+            "created_at": meta.get("created_at"),
+        }
+        for cid, meta in graph["nodes"].items()
+    }
+    return graph
+
+
+@memory_router.post('/memory/preference-graph/evolution')
+def memory_preference_graph_evolution(req: PreferenceEvolutionIn, request: Request = None):
+    """记录偏好演化边：``replaces``（新替旧，旧偏好转 deprecated）或
+    ``conflicts_with``（只标记冲突，不转移生命周期——裁决须显式确认）。"""
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.preference_graph import record_preference_evolution
+
+    try:
+        return record_preference_evolution(
+            req.new_capsule_id,
+            req.old_capsule_id,
+            edge_type=req.edge_type,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
+
+
+@memory_router.post('/memory/preference-graph/active-suggest')
+def memory_preference_graph_active_suggest(
+    req: PreferenceActiveSuggestIn, request: Request = None,
+):
+    """对一组（冲突中的）偏好给出「当前应信谁」的建议。
+
+    **只建议，不执行**：实际裁决仍须 ``/memory/lifecycle/resolve-conflict``
+    显式确认（治理底线：conflicted 必须显式裁决，不自动覆盖）。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.preference_graph import suggest_active_preference
+
+    return suggest_active_preference(
+        req.capsule_ids,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+@memory_router.post('/memory/preference-graph/cascade-forget')
+def memory_preference_graph_cascade_forget(
+    req: PreferenceCascadeForgetIn, request: Request = None,
+):
+    """级联遗忘一条偏好：replaces 链上的旧版本一并遗忘，指向它的
+    evidence_for / emotion_for 边摘除（证据胶囊本身保留）。"""
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.preference_graph import cascade_forget_preference
+
+    _require_visible_capsule(req.capsule_id, scope)
+    try:
+        return cascade_forget_preference(
+            req.capsule_id,
+            mode=req.mode,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
+
+
+@memory_router.post('/memory/preference-graph/rerank')
+def memory_preference_graph_rerank(req: PreferenceRerankIn, request: Request = None):
+    """对一批候选胶囊做 preference-aware 重排（只读；不改 usage 统计）。
+
+    供评测与前端调试用：生产检索路径接不接偏好通道另行评审（纯增量口径，
+    与 RRF 融合入口同一策略）。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.capsule_store import get_capsules_batch
+    from .memory_runtime.preference_graph import preference_rerank
+
+    by_id = get_capsules_batch(
+        req.capsule_ids,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    candidates = [by_id[cid] for cid in req.capsule_ids if cid in by_id]
+    if not candidates:
+        raise HTTPException(
+            status_code=404,
+            detail={'error': 'not_found', 'note': '给定 capsule_ids 均不在作用域内'},
+        )
+    ranked = preference_rerank(
+        candidates,
+        weight=req.weight,
+        top_k=req.top_k,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+    return {
+        "ranked": [
+            {
+                "capsule_id": c["capsule_id"],
+                "memory_class": c.get("memory_class"),
+                "preference_score_final": c.get("preference_score_final"),
+                "preference_multiplier": c.get("preference_multiplier"),
+                "preference_score": c.get("preference_score"),
+            }
+            for c in ranked
+        ],
+        "weight": req.weight,
+        "input_count": len(candidates),
+    }
 
 
 @memoryos_router.get('/memoryos/bench/report')
