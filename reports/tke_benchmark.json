@@ -1,0 +1,236 @@
+{
+  "meta": {
+    "benchmark": "TKE",
+    "note": "Active Knowledge Accuracy=as-of(truth)正确率;Evolution Chain Accuracy=链重建全对率。真实写路径,每场景独立临时库。"
+  },
+  "scenarios": [
+    {
+      "scenario": "software_evolution",
+      "desc": "Firefox → Chrome → Edge(软件演化)",
+      "active_knowledge_accuracy": 1.0,
+      "as_of_samples": [
+        {
+          "at": "2025-01-01T00:00:00Z",
+          "expected": "默认浏览器 = Firefox",
+          "got": "默认浏览器 = Firefox",
+          "pass": true
+        },
+        {
+          "at": "2025-05-02T12:00:00Z",
+          "expected": "默认浏览器 = Firefox",
+          "got": "默认浏览器 = Firefox",
+          "pass": true
+        },
+        {
+          "at": "2025-08-31T23:59:59Z",
+          "expected": "默认浏览器 = Firefox",
+          "got": "默认浏览器 = Firefox",
+          "pass": true
+        },
+        {
+          "at": "2025-09-01T00:00:00Z",
+          "expected": "默认浏览器 = Chrome",
+          "got": "默认浏览器 = Chrome",
+          "pass": true
+        },
+        {
+          "at": "2025-12-31T00:00:00Z",
+          "expected": "默认浏览器 = Chrome",
+          "got": "默认浏览器 = Chrome",
+          "pass": true
+        },
+        {
+          "at": "2026-04-30T23:59:59Z",
+          "expected": "默认浏览器 = Chrome",
+          "got": "默认浏览器 = Chrome",
+          "pass": true
+        },
+        {
+          "at": "2026-05-01T00:00:00Z",
+          "expected": "默认浏览器 = Edge",
+          "got": "默认浏览器 = Edge",
+          "pass": true
+        },
+        {
+          "at": "2026-05-02T00:00:00Z",
+          "expected": "默认浏览器 = Edge",
+          "got": "默认浏览器 = Edge",
+          "pass": true
+        }
+      ],
+      "evolution_chain_accuracy": 1.0,
+      "chain_rebuilt": [
+        "cap_b91ebaeb5981",
+        "cap_57473fec1d67",
+        "cap_433d5fe0f43f"
+      ],
+      "chain_expected": [
+        "cap_b91ebaeb5981",
+        "cap_57473fec1d67",
+        "cap_433d5fe0f43f"
+      ]
+    },
+    {
+      "scenario": "workflow_evolution",
+      "desc": "工作流 v1 → v2 → v3(流程演化)",
+      "active_knowledge_accuracy": 1.0,
+      "as_of_samples": [
+        {
+          "at": "2025-03-01T00:00:00Z",
+          "expected": "构建流程 = 单体脚本",
+          "got": "构建流程 = 单体脚本",
+          "pass": true
+        },
+        {
+          "at": "2025-07-16T12:00:00Z",
+          "expected": "构建流程 = 单体脚本",
+          "got": "构建流程 = 单体脚本",
+          "pass": true
+        },
+        {
+          "at": "2025-11-30T23:59:59Z",
+          "expected": "构建流程 = 单体脚本",
+          "got": "构建流程 = 单体脚本",
+          "pass": true
+        },
+        {
+          "at": "2025-12-01T00:00:00Z",
+          "expected": "构建流程 = Makefile",
+          "got": "构建流程 = Makefile",
+          "pass": true
+        },
+        {
+          "at": "2026-03-02T00:00:00Z",
+          "expected": "构建流程 = Makefile",
+          "got": "构建流程 = Makefile",
+          "pass": true
+        },
+        {
+          "at": "2026-05-31T23:59:59Z",
+          "expected": "构建流程 = Makefile",
+          "got": "构建流程 = Makefile",
+          "pass": true
+        },
+        {
+          "at": "2026-06-01T00:00:00Z",
+          "expected": "构建流程 = CI 流水线",
+          "got": "构建流程 = CI 流水线",
+          "pass": true
+        },
+        {
+          "at": "2026-06-02T00:00:00Z",
+          "expected": "构建流程 = CI 流水线",
+          "got": "构建流程 = CI 流水线",
+          "pass": true
+        }
+      ],
+      "evolution_chain_accuracy": 1.0,
+      "chain_rebuilt": [
+        "cap_ada86272e69b",
+        "cap_64877237ee16",
+        "cap_63ddce93c395"
+      ],
+      "chain_expected": [
+        "cap_ada86272e69b",
+        "cap_64877237ee16",
+        "cap_63ddce93c395"
+      ]
+    },
+    {
+      "scenario": "spec_replacement",
+      "desc": "旧规范 → 新规范(规范替换)",
+      "active_knowledge_accuracy": 1.0,
+      "as_of_samples": [
+        {
+          "at": "2025-06-01T00:00:00Z",
+          "expected": "代码规范 = Google Style",
+          "got": "代码规范 = Google Style",
+          "pass": true
+        },
+        {
+          "at": "2025-10-01T12:00:00Z",
+          "expected": "代码规范 = Google Style",
+          "got": "代码规范 = Google Style",
+          "pass": true
+        },
+        {
+          "at": "2026-01-31T23:59:59Z",
+          "expected": "代码规范 = Google Style",
+          "got": "代码规范 = Google Style",
+          "pass": true
+        },
+        {
+          "at": "2026-02-01T00:00:00Z",
+          "expected": "代码规范 = PEP 8 扩展版",
+          "got": "代码规范 = PEP 8 扩展版",
+          "pass": true
+        },
+        {
+          "at": "2026-02-02T00:00:00Z",
+          "expected": "代码规范 = PEP 8 扩展版",
+          "got": "代码规范 = PEP 8 扩展版",
+          "pass": true
+        }
+      ],
+      "evolution_chain_accuracy": 1.0,
+      "chain_rebuilt": [
+        "cap_5d9dbe93a2c2",
+        "cap_6769a6830eb9"
+      ],
+      "chain_expected": [
+        "cap_5d9dbe93a2c2",
+        "cap_6769a6830eb9"
+      ]
+    },
+    {
+      "scenario": "delayed_import",
+      "desc": "历史知识延迟导入(transaction_time 与 valid_time 错位)",
+      "active_knowledge_accuracy": 1.0,
+      "as_of_samples": [
+        {
+          "at": "2025-01-01T00:00:00Z",
+          "expected": "服务器地址 = 192.168.1.10",
+          "got": "服务器地址 = 192.168.1.10",
+          "pass": true
+        },
+        {
+          "at": "2025-05-17T12:00:00Z",
+          "expected": "服务器地址 = 192.168.1.10",
+          "got": "服务器地址 = 192.168.1.10",
+          "pass": true
+        },
+        {
+          "at": "2025-09-30T23:59:59Z",
+          "expected": "服务器地址 = 192.168.1.10",
+          "got": "服务器地址 = 192.168.1.10",
+          "pass": true
+        },
+        {
+          "at": "2025-10-01T00:00:00Z",
+          "expected": "服务器地址 = 192.168.1.20",
+          "got": "服务器地址 = 192.168.1.20",
+          "pass": true
+        },
+        {
+          "at": "2025-10-02T00:00:00Z",
+          "expected": "服务器地址 = 192.168.1.20",
+          "got": "服务器地址 = 192.168.1.20",
+          "pass": true
+        }
+      ],
+      "evolution_chain_accuracy": 1.0,
+      "chain_rebuilt": [
+        "cap_4eefb13940dd",
+        "cap_5327be566204"
+      ],
+      "chain_expected": [
+        "cap_4eefb13940dd",
+        "cap_5327be566204"
+      ]
+    }
+  ],
+  "summary": {
+    "active_knowledge_accuracy": 1.0,
+    "evolution_chain_accuracy": 1.0
+  }
+}

@@ -290,8 +290,14 @@ def detect_knowledge_conflicts(
     （与 conflict_detection.find_conflict_candidates_for_write 同口径——
     已归档/隔离的知识不参与判定），逐对跑 ``classify_conflict`` 四类
     检测。**只产出信号，不转移生命周期**（治理底线）。
+
+    TKE（#204）升级：双方都有显式 valid_time 时先跑 ``classify_temporal_relation``
+    区间判定——区间不重叠的先后真值是**版本演化不是冲突**（从命中里剔除，
+    避免把正常演化误报成待裁决冲突）；区间重叠才按 temporal 冲突计入。
+    无显式 valid_time 的胶囊维持标记词口径（行为不变）。
     """
     from .capsule_store import get_capsule, list_capsules
+    from .temporal_knowledge import classify_temporal_relation
 
     cap = get_capsule(new_capsule_id, owner_id=owner_id, soul_id=soul_id)
     if not cap or cap.get("memory_class") != "knowledge":
@@ -305,12 +311,25 @@ def detect_knowledge_conflicts(
             continue
         if str((existing.get("state") or {}).get("lifecycle") or "") not in ("active", "reinforced"):
             continue
+        # 区间判定优先（TKE）：不重叠 → 演化，跳过词面检测。
+        temporal = classify_temporal_relation(cap, existing)
+        if temporal is not None and temporal["relation"] == "evolution":
+            continue
         verdict = classify_conflict(new_text, _text_of(existing))
+        if temporal is not None and temporal["relation"] == "conflict":
+            # 区间重叠是真 temporal 冲突，覆盖标记词判定（证据更硬）。
+            verdict = {
+                "type": "temporal",
+                "subject": None,
+                "new_value": None,
+                "old_value": None,
+                "evidence": temporal["evidence"],
+            }
         if verdict:
             hits.append({
                 "capsule_id": cid,
                 "old_text_preview": _text_of(existing)[:80],
-                "detector": "knowledge_v1",
+                "detector": "knowledge_tke_v1" if temporal is not None else "knowledge_v1",
                 **verdict,
             })
     return hits
@@ -320,19 +339,58 @@ def detect_knowledge_conflicts(
 # knowledge_confidence 四因子
 # ---------------------------------------------------------------------------
 
-def _recency_factor(cap: dict[str, Any], *, at: datetime | None) -> float:
-    """时间新近性：30 天半衰（与 conflict_resolution._recency_factor 同族）。"""
+def _recency_factor(
+    cap: dict[str, Any],
+    *,
+    at: datetime | None,
+    raw_edges: dict[str, list[dict[str, Any]]] | None = None,
+) -> float:
+    """freshness 因子（TKE #204 升级版）：时间衰减 + 验证时间 + 引用稳定度。
+
+    三路信号取合成（可解释、缺哪路降级哪路）：
+    1. **时间衰减**（#202 原口径）：``last_accessed_at``/``updated_at`` 的
+       30 天半衰——最常用的「最近被用过」信号；
+    2. **验证时间**（TKE 新增）：``state.verified_at`` 同族半衰——「多久前
+       验证过」与「验证过」的区分就在这一路（无 verified_at 时退化为
+       衰减信号，不虚增）；
+    3. **引用稳定度**（TKE 新增）：被 evidence_for/derived_from 指向的
+       次数 log 压缩——被反复引用的知识即使久未触碰也未必陈旧。
+
+    衰减取两路时间信号中**较新**者（最近一次被确认的时间）；引用稳定度
+    以 0.3 权重并进（有引用证据时才起作用，零引用不惩罚——新写入的
+    知识不该因没人引用而被压分）。``raw_edges`` 由批量调用方预加载传入
+    （N 个候选共享一次全表读，避免 N 次扫描）。
+    """
+    from .temporal_knowledge import get_verified_at, reference_count
+
     state = _load_json(cap.get("state"), {}) or {}
-    last = _parse_ts(
-        state.get("last_accessed_at") or cap.get("updated_at") or cap.get("created_at")
-    )
-    if last is None:
-        return 0.5
     now = at or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    days = max(0.0, (now - last).total_seconds() / 86400.0)
-    return math.exp(-(math.log(2.0) / 30.0) * days)
+
+    last_used = _parse_ts(
+        state.get("last_accessed_at") or cap.get("updated_at") or cap.get("created_at")
+    )
+    last_verified = get_verified_at(cap)
+    # 最近一次「被确认」的时间：使用与验证取较新（None 视为最旧）。
+    confirmed = max(
+        (t for t in (last_used, last_verified) if t is not None),
+        default=None,
+    )
+    if confirmed is None:
+        decay = 0.5  # 无任何时间信号（脏数据）：中性，不猜方向
+    else:
+        days = max(0.0, (now - confirmed).total_seconds() / 86400.0)
+        decay = math.exp(-(math.log(2.0) / 30.0) * days)
+
+    refs = reference_count(cap.get("capsule_id") or "", raw_edges=raw_edges)
+    if refs > 0:
+        stability = math.log1p(refs) / math.log1p(20.0)  # 20 条引用 ≈ 1.0
+        # 引用稳定度是**兜底不是掺水**：时间信号新鲜（decay≈1）时引用不能
+        # 把分数拉低（新鲜就是新鲜）；时间信号衰减后引用把它托起来。
+        # max 语义保证「有引用只会更好，绝不会更差」。
+        return round(max(decay, 0.7 * decay + 0.3 * stability), 4)
+    return round(decay, 4)
 
 
 def _trust_factor(cap: dict[str, Any]) -> float:
@@ -372,10 +430,15 @@ def knowledge_confidence(
     *,
     weights: dict[str, float] | None = None,
     at: datetime | None = None,
+    raw_edges: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """单条知识的四因子置信度（可解释分解随分数返回）。
 
     ``knowledge_confidence = 0.30×recency + 0.30×trust + 0.25×source + 0.15×usage``
+
+    recency 因子为 TKE（#204）升级的 freshness 口径（时间衰减 + verified_at
+    + 引用稳定度，见 ``_recency_factor``）。``raw_edges`` 由批量调用方预加载
+    传入（N 个候选共享一次全表读）；单条调用缺省时自行加载。
 
     显式 ``weights`` 参数优先；缺省读 tuning ``knowledge_evolution`` 段
     （缺失/异常回落内置常量）。
@@ -402,7 +465,7 @@ def knowledge_confidence(
                 "tuning defaults 不可用，knowledge_confidence 权重回落内置常量: %s", exc
             )
     factors = {
-        "recency": round(_recency_factor(capsule, at=at), 4),
+        "recency": round(_recency_factor(capsule, at=at, raw_edges=raw_edges), 4),
         "trust": round(_trust_factor(capsule), 4),
         "source_authority": round(_source_factor(capsule), 4),
         "usage": round(_usage_factor(capsule), 4),
@@ -443,8 +506,12 @@ def suggest_active_knowledge(
             "unknown_ids": [cid for cid in capsule_ids if cid not in by_id],
         }
     scored: list[tuple[str, dict[str, Any]]] = []
+    # 预加载一次边表，N 个候选的 freshness 引用计数共享（避免 N 次全表读）。
+    raw_edges = _load_knowledge_raw_edges(owner_id=owner_id, soul_id=soul_id)
     for cid in known:
-        kc = knowledge_confidence(by_id[cid], weights=weights, at=at)
+        kc = knowledge_confidence(
+            by_id[cid], weights=weights, at=at, raw_edges=raw_edges
+        )
         scored.append((cid, kc))
 
     # 决胜序：分数降序 → created_at **新者在前**（同秒写入的 capsule 四因子
@@ -789,7 +856,7 @@ def explain_knowledge(
     evolution_path = trace_evolution(
         capsule_id, owner_id=owner_id, soul_id=soul_id, raw_edges=raw
     )
-    kc = knowledge_confidence(cap, at=at)
+    kc = knowledge_confidence(cap, at=at, raw_edges=raw)
 
     # 冲突记录：双向 conflicts_with 边。
     out_conflicts = [

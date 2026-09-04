@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+### 2026-09-04 - TKE Temporal Knowledge Evolution 知识双时态与演化时间轴（#204）
+- 新增 `backend/app/memory_runtime/temporal_knowledge.py`：TKE 时序核心，扩展 #202 的 knowledge_evolution（不新建平行体系，边词表对齐既有四类）。命名定档 TKE（Temporal Knowledge Evolution），与 EGPM 构成双体系叙事（偏好：情感→偏好→演化 ｜ 知识：时间→真值→演化）。
+- 双时态：`state.valid_from` 补全 valid_time 区间（`valid_until` 已有，scan_stale 消费）；`set_valid_time` 经 update_capsule 写入（账本留痕、区间自洽校验、显式清空语义）。
+- as-of 历史回放（两种模式诚实区分）：`truth`（世界真值，valid_time 判定——延迟导入场景「今天录入 2025 年历史知识仍可回答过去时刻」，命中者 recorded_at 暴露事后导入）；`belief`（系统当时认知，valid_time+transaction_time 双过滤——严格双时态口径）。全不命中如实返回 None + 各阶段淘汰名单。
+- 时效冲突升级为区间判定：`classify_temporal_relation` 在双方都有显式 valid_time 时——区间不重叠 → 演化（不再误报冲突，detector 标注 knowledge_tke_v1）；区间重叠 → 真 temporal 冲突（证据更硬，覆盖标记词判定）；无显式区间行为与 #202 完全一致。
+- Knowledge Timeline：`knowledge_timeline` 聚合演化链 + 账本事件（ledger_history 数据已在，缺的就是聚合层）+ 双时态区间为升序事件流；未知 op_type 原样透传；附 as-of 回放演示点。
+- freshness（knowledge_confidence.recency 的 TKE 升级口径）：时间衰减 + `verified_at`（mark_verified 写 state，provenance 布尔位不覆盖）+ 引用稳定度（evidence_for/derived_from 入边实时计数不落库）；引用稳定度是 **max 兜底不是掺水**——时间信号新鲜时不拉低分数，衰减后托起（被反复引用的知识未必陈旧）。批量调用方预加载边表共享一次全表读。
+- TKE Benchmark（`scripts/bench_tke.py` + `reports/tke_benchmark.json/report.md`）：四场景（软件演化/流程演化/规范替换/延迟导入）真实写路径，**Active Knowledge Accuracy 100%、Evolution Chain Accuracy 100%**，原始逐采样判定留 JSON 可复现。
+- 新增 API：POST `/memory/knowledge-evolution/valid-time`、`/as-of`、`/verify`、GET `/timeline/{capsule_id}`（Literal 受控 mode，非法值 422）。
+- 新增测试 40 条：test_temporal_knowledge / test_knowledge_timeline / test_freshness_scoring，覆盖双时态读写、as-of 双模式、半开区间边界、区间判定集成、时间轴聚合与回放、freshness 因果方向（含引用不惩罚回归）。全量 1719 passed / 6 skipped / 0 failed。
+
 ### 2026-09-04 - Knowledge Evolution 评审修复（PR #203 review）
 - 事务顺序改为「先建后拆」：新胶囊的边/版本先落库、旧胶囊的生命周期转移在后——转移失败留下的是可重试中间态（重调幂等收敛），不再出现「旧知识已归档、演化证据丢失」的破坏态；版本链判定改用转移前的新鲜读收窄 TOCTOU 窗口，残余竞态最坏后果（幂等 update 账目一条）在 docstring 诚实标注。
 - 自指演化边（new==old）显式拒绝：会形成单节点环并把自己转 deprecated。

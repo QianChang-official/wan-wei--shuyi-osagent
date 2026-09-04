@@ -31,6 +31,7 @@ from .schemas import (
     PreferenceCascadeForgetIn, PreferenceRerankIn,
     KnowledgeConflictDetectIn, KnowledgeEvolutionIn,
     KnowledgeActiveSuggestIn, KnowledgeRerankIn,
+    KnowledgeValidTimeIn, KnowledgeAsOfIn, KnowledgeVerifyIn,
 )
 from .db import close_all, database_path, get_conn, transaction
 
@@ -2803,6 +2804,100 @@ def memory_knowledge_rerank(req: KnowledgeRerankIn, request: Request = None):
         ],
         "input_count": len(candidates),
     }
+
+
+# ── TKE 知识双时态与演化时间轴（issue #204）─────────────────────────────────
+
+@memory_router.post('/memory/knowledge-evolution/valid-time')
+def memory_knowledge_valid_time(req: KnowledgeValidTimeIn, request: Request = None):
+    """写入知识的 valid_time 区间（双时态的真值时间轴）。
+
+    ``valid_until`` 与 ``lifecycle.scan_stale`` 的到期扫描同源；本端点补上
+    ``valid_from`` 使区间完整。空字符串显式清空端点（无界）；None 不改。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.temporal_knowledge import set_valid_time
+
+    try:
+        return set_valid_time(
+            req.capsule_id,
+            valid_from=req.valid_from,
+            valid_until=req.valid_until,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
+
+
+@memory_router.post('/memory/knowledge-evolution/as-of')
+def memory_knowledge_as_of(req: KnowledgeAsOfIn, request: Request = None):
+    """as-of 历史回放：时刻 ``at`` 的 active knowledge。
+
+    - ``mode=truth``（默认）：世界真值——只按 valid_time 判定。延迟导入
+      场景（今天录入 2025 年的历史知识）由它回答；命中者的记录时间随结果
+      返回，「事后导入」可辨识。
+    - ``mode=belief``：系统当时认知——valid_time 且 transaction_time 双
+      过滤（严格双时态），今天才导入的知识在历史时刻上系统并不认识。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.temporal_knowledge import knowledge_as_of
+
+    try:
+        return knowledge_as_of(
+            req.capsule_ids,
+            at=req.at,
+            mode=req.mode,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
+
+
+@memory_router.get('/memory/knowledge-evolution/timeline/{capsule_id}')
+def memory_knowledge_timeline(capsule_id: str, request: Request = None):
+    """Knowledge Timeline：单条知识（含演化链）的完整时间轴。
+
+    账本事件（write/update/transition/evolution_edge/…）+ 演化链 + 双时态
+    区间聚合成升序事件流，附 as-of 回放演示点。
+    """
+    scope = _scope_of(request, None)
+    from .memory_runtime.temporal_knowledge import knowledge_timeline
+
+    try:
+        return knowledge_timeline(
+            capsule_id,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+
+
+@memory_router.post('/memory/knowledge-evolution/verify')
+def memory_knowledge_verify(req: KnowledgeVerifyIn, request: Request = None):
+    """记录知识的最近验证时间（``state.verified_at``，freshness 输入）。
+
+    provenance 的 ``verified`` 布尔位由写入路径按 source_type 自动判定，
+    本端点补时间戳——区分「验证过」与「多久前验证过」。
+    """
+    scope = _scope_of(request, req.soul_id)
+    from .memory_runtime.temporal_knowledge import mark_verified
+
+    try:
+        return mark_verified(
+            req.capsule_id,
+            verified_at=req.verified_at,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={'error': str(exc)}) from exc
 
 
 @memoryos_router.get('/memoryos/bench/report')
