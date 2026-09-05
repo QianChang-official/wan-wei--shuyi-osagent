@@ -26,7 +26,7 @@ def configured_chat_gateway(monkeypatch):
     """
     from backend.app.model_gateway import service
 
-    monkeypatch.setattr(service, "active_chat_provider", lambda: None)
+    monkeypatch.setattr(service, "active_chat_provider", lambda owner_id=None: None)
     monkeypatch.setattr(
         service,
         "local_llama_settings",

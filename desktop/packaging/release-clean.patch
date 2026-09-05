@@ -1,5 +1,5 @@
 diff --git a/backend/app/platform_api/_system_svc_runtime.py b/backend/app/platform_api/_system_svc_runtime.py
-index db4400c..78dbfa8 100644
+index bdbfa1e..5ea7173 100644
 --- a/backend/app/platform_api/_system_svc_runtime.py
 +++ b/backend/app/platform_api/_system_svc_runtime.py
 @@ -12,7 +12,6 @@
@@ -10,7 +10,7 @@ index db4400c..78dbfa8 100644
  - 沙盒命令执行（白名单 + cwd 监禁 + 5s 超时 + 4KB 截断）
  - wanwei CLI 使用指南（静态文档）
  
-@@ -26,14 +25,11 @@ import logging
+@@ -26,14 +25,11 @@
  import math
  import os
  import re
@@ -25,7 +25,32 @@ index db4400c..78dbfa8 100644
  from pathlib import Path, PureWindowsPath
  from typing import Any, Literal
  from urllib.parse import urlparse, urlsplit, urlunsplit
-@@ -97,7 +93,6 @@ _BACKGROUND_DATA_MIMES = frozenset({'image/png', 'image/jpeg', 'image/webp', 'im
+@@ -45,7 +41,7 @@
+ from .deps import WORK_GEARS
+ from .guards import audit_safe, require_gear
+ from .store import JsonStore
+-from ..security.auth import LAN_VERIFY_PATH, issue_lan_session, revoke_lan_sessions
++from ..security.auth import revoke_lan_sessions
+ from ..security.ssrf import SSRFError, resolve_external_url
+ from ..soul.ownership import actor_id_for_request, configured_actor_id
+ from ..utils.datetime_utils import utc_now_iso
+@@ -55,13 +51,10 @@
+     """Keep device-level state behind the configured local principal.
+ 
+     The system service controls one physical desktop (voice history, browser
+-    rules, emulator jobs and LAN pairing), rather than a tenant-owned object.
++    rules and emulator jobs), rather than a tenant-owned object.
+     Until a separate device-admin role exists, alternate API principals must
+-    not be able to read or mutate that shared state. The exact pairing verify
+-    route is intentionally token-only and validates its token in the handler.
++    not be able to read or mutate that shared state.
+     """
+-    if request.method == 'POST' and request.url.path == LAN_VERIFY_PATH:
+-        return
+     owner_id = actor_id_for_request(request)
+     if owner_id not in {'anonymous', configured_actor_id()}:
+         raise HTTPException(status_code=404, detail={'error': 'not_found'})
+@@ -101,7 +94,6 @@
  _BACKGROUND_UNSAFE_CHARS = re.compile(r'["\'()\\<>\r\n]')
  _SANDBOX_TIMEOUT_S = 5
  _SANDBOX_TRUNCATE = 4096
@@ -33,10 +58,12 @@ index db4400c..78dbfa8 100644
  
  # 沙盒执行环境：仅保留运行白名单内系统命令所必需的最小环境变量，
  # 绝不继承任何 WANWEI_* 变量，避免通过 `env` 等命令泄露主 API Key。
-@@ -238,16 +233,6 @@ class BrowserLaunchIn(BaseModel):
+@@ -240,16 +232,6 @@
+         if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+             raise ValueError('browser launch URL only allows http/https absolute URLs')
          return v.strip()
- 
- 
+-
+-
 -class LanEnableIn(BaseModel):
 -    model_config = ConfigDict(extra='forbid')
 -    gear: str = Field(min_length=1, max_length=32)
@@ -45,12 +72,10 @@ index db4400c..78dbfa8 100644
 -class LanVerifyIn(BaseModel):
 -    model_config = ConfigDict(extra='forbid')
 -    token: str = Field(min_length=1, max_length=128)
--
--
+ 
+ 
  class SandboxExecIn(BaseModel):
-     model_config = ConfigDict(extra='forbid')
-     command: str = Field(min_length=1, max_length=500)
-@@ -1204,153 +1189,6 @@ def emulator_download_cancel(did: str) -> dict:
+@@ -1208,130 +1190,13 @@
      return {**rec, 'ok': True}
  
  
@@ -60,6 +85,7 @@ index db4400c..78dbfa8 100644
 -
 -_LAN_NOTE = '需桌面端切换监听 0.0.0.0 后生效'
 -_LAN_TOKEN_TTL_S = 15 * 60  # 配对 token 有效期 15 分钟：短时用途凭证，超时需重新生成
+-_LAN_SESSION_TTL_S = 15 * 60  # 配对成功后的 LAN 会话凭证同样短期有效
 -
 -
 -def _lan_state() -> dict:
@@ -133,26 +159,30 @@ index db4400c..78dbfa8 100644
 -    denied = require_gear(req.gear, action='lan_enable', context={'surface': 'lan'})
 -    if denied:
 -        raise HTTPException(status_code=403, detail='device 档默认禁用，设 WANWEI_DEVICE_GEAR_ENABLED=1 后才允许开启局域网暴露面')
--    token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
--    ip = _detect_lan_ip()
--    ip_placeholder = ip is None
--    if ip_placeholder:
--        ip = '192.168.1.100'
--    # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
--    base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
--    _sys_store.set('lan', {
--        'enabled': True,
--        'bind': '0.0.0.0',
--        'token': token,
--        'lan_url': base_lan_url,
--        'port': _LAN_DEFAULT_PORT,
--        'ip': ip,
--        'ip_placeholder': ip_placeholder,
--        'enabled_at': utc_now_iso(),
--        'token_created_at': utc_now_iso(),
--        'token_ttl_s': _LAN_TOKEN_TTL_S,
--        'token_consumed': False,
--    })
+-    # Re-enabling starts a new pairing epoch and invalidates every older LAN
+-    # session, including sessions issued by a previous enable operation.
+-    with _sys_store._lock:
+-        revoke_lan_sessions()
+-        token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
+-        ip = _detect_lan_ip()
+-        ip_placeholder = ip is None
+-        if ip_placeholder:
+-            ip = '192.168.1.100'
+-        # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
+-        base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
+-        _sys_store.set('lan', {
+-            'enabled': True,
+-            'bind': '0.0.0.0',
+-            'token': token,
+-            'lan_url': base_lan_url,
+-            'port': _LAN_DEFAULT_PORT,
+-            'ip': ip,
+-            'ip_placeholder': ip_placeholder,
+-            'enabled_at': utc_now_iso(),
+-            'token_created_at': utc_now_iso(),
+-            'token_ttl_s': _LAN_TOKEN_TTL_S,
+-            'token_consumed': False,
+-        })
 -    audit_safe('lan_enabled', {'ip': ip, 'port': _LAN_DEFAULT_PORT, 'ip_placeholder': ip_placeholder})
 -    result = {
 -        'enabled': True,
@@ -168,48 +198,83 @@ index db4400c..78dbfa8 100644
 -    return result
 -
 -
--@router.post('/system/lan/disable')
--def lan_disable() -> dict:
--    lan = _lan_state()
--    lan['enabled'] = False
--    lan['bind'] = '127.0.0.1'
--    lan['lan_url'] = None
--    lan['token'] = None  # 关闭即作废，旧 token 立即失效
--    lan['token_created_at'] = None
--    lan['token_consumed'] = False
--    _sys_store.set('lan', lan)
--    return lan_status()
++# Cold-start cleanup remains available to revoke sessions from older builds.
+ @router.post('/system/lan/disable')
+ def lan_disable() -> dict:
+     with _sys_store._lock:
+         revoked_sessions = revoke_lan_sessions()
+-        lan = _lan_state()
++        stored = _sys_store.get('lan')
++        lan = stored if isinstance(stored, dict) else {}
+         lan['enabled'] = False
+         lan['bind'] = '127.0.0.1'
+         lan['lan_url'] = None
+@@ -1339,54 +1204,12 @@
+         lan['token_created_at'] = None
+         lan['token_consumed'] = False
+         _sys_store.set('lan', lan)
+-        result = lan_status()
+-        result['revoked_sessions'] = revoked_sessions
+-        return result
 -
 -
 -@router.post('/system/lan/verify')
 -def lan_verify(req: LanVerifyIn) -> dict:
--    lan = _lan_state()
--    stored = lan.get('token') or ''
--    if not lan.get('enabled'):
--        return {'ok': False, 'reason': '未启用'}
--    if not stored or not secrets.compare_digest(stored, req.token):
--        return {'ok': False, 'reason': 'token 不匹配'}
--    state = _lan_token_state(lan)
--    if state == 'consumed':
--        return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
--    if state == 'expired':
--        return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
--    # 一次性使用限制：首次验证通过即作废，配对成功以本次 ok:true 为准
--    lan['token_consumed'] = True
--    _sys_store.set('lan', lan)
--    audit_safe('lan_pairing_verified', {'ttl_s': _LAN_TOKEN_TTL_S})
--    return {'ok': True, 'paired': True, 'note': '配对成功；配对 token 为一次性凭证，已即时作废'}
+-    def consume(data: dict) -> dict:
+-        lan = data.get('lan')
+-        if not isinstance(lan, dict) or not lan.get('enabled'):
+-            return {'ok': False, 'reason': '未启用'}
+-        stored = lan.get('token') or ''
+-        if not stored or not secrets.compare_digest(stored, req.token):
+-            return {'ok': False, 'reason': 'token 不匹配'}
+-        state = _lan_token_state(lan)
+-        if state == 'consumed':
+-            return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
+-        if state == 'expired':
+-            return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
 -
+-        # JsonStore.mutate serializes validation and consumption in one process,
+-        # so two concurrent requests cannot redeem the same pairing token.
+-        lan['token_consumed'] = True
+-        data['lan'] = lan
+-        return {'ok': True}
 -
- # ---------------------------------------------------------------------------
- # 沙盒执行（白名单 + cwd 监禁 data/platform/sandbox/ + 5s 超时 + 4KB 截断）
- # ---------------------------------------------------------------------------
+-    with _sys_store._lock:
+-        result = _sys_store.mutate(consume)
+-        if not result.get('ok'):
+-            return result
+-
+-        # Burn the one-time token before creating a credential. If session
+-        # issuance fails, the token stays consumed instead of leaving an
+-        # untracked credential. The lock also serializes disable/re-enable.
+-        session_credential, expires_at = issue_lan_session(
+-            configured_actor_id(), ttl_seconds=_LAN_SESSION_TTL_S,
+-        )
+-        audit_safe('lan_pairing_verified', {
+-            'token_ttl_s': _LAN_TOKEN_TTL_S,
+-            'session_ttl_s': _LAN_SESSION_TTL_S,
+-        })
+         return {
+-            'ok': True,
+-            'paired': True,
+-            'session_credential': session_credential,
+-            'expires_at': expires_at,
+-            'expires_in': _LAN_SESSION_TTL_S,
+-            'note': '配对成功；配对 token 已即时作废，会话凭证将在短期内失效',
++            'enabled': False,
++            'bind': '127.0.0.1',
++            'lan_url': None,
++            'token_set': False,
++            'revoked_sessions': revoked_sessions,
+         }
+ 
+ 
 diff --git a/backend/app/platform_api/mobile_remote.py b/backend/app/platform_api/mobile_remote.py
 deleted file mode 100644
-index 31258e4..0000000
+index 006afb5..0000000
 --- a/backend/app/platform_api/mobile_remote.py
 +++ /dev/null
-@@ -1,340 +0,0 @@
+@@ -1,487 +0,0 @@
 -"""手机端远程控制补充 API：实时事件流 / 工具调用实时查询 / 文件上传。
 -
 -为宛委枢忆手机端 APP（meoo-app）提供 orca/mobile 风格的远程控制能力：
@@ -226,18 +291,20 @@ index 31258e4..0000000
 -import logging
 -import re
 -import sqlite3
--import threading
 -import time
 -import uuid
+-from itertools import count
 -from pathlib import Path
--from typing import Optional
 -
 -import asyncio
--from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 -from fastapi.responses import StreamingResponse
 -
 -from ..audit.service import list_logs, record
 -from ..db import get_conn
+-from ..security.auth import _lan_session_identity
+-from ..security.input_limits import MOBILE_UPLOAD_MAX_FILE_BYTES
+-from ..soul.ownership import actor_id_for_request, configured_actor_id
 -
 -router = APIRouter(prefix='/mobile', tags=['mobile-remote'])
 -
@@ -251,23 +318,55 @@ index 31258e4..0000000
 -_EVENT_BUFFER: list[dict] = []
 -_EVENT_BUFFER_MAX = 200
 -_SUBSCRIBERS: set[asyncio.Event] = set()
+-_SUBSCRIBER_OWNERS: dict[asyncio.Event, str] = {}
 -_SUBSCRIBERS_MAX = 100
 -_BUS_LOCK = asyncio.Lock()
+-_EVENT_SEQUENCE = count(1)
+-_SESSION_CHECK_INTERVAL = 1.0
 -
 -
 -async def _append_event(event: dict) -> None:
 -    """把事件写进环形缓冲并唤醒所有 SSE 订阅者。"""
+-    event = dict(event)
 -    event.setdefault('ts', time.time())
 -    async with _BUS_LOCK:
+-        event['_sequence'] = next(_EVENT_SEQUENCE)
 -        _EVENT_BUFFER.append(event)
 -        if len(_EVENT_BUFFER) > _EVENT_BUFFER_MAX:
 -            _EVENT_BUFFER[:] = _EVENT_BUFFER[-_EVENT_BUFFER_MAX:]
+-        event_owner = event.get('owner_id')
 -        for ev in list(_SUBSCRIBERS):
--            ev.set()
+-            subscriber_owner = _SUBSCRIBER_OWNERS.get(ev)
+-            if (
+-                (event_owner is None and subscriber_owner == configured_actor_id())
+-                or (event_owner is not None and str(event_owner) == subscriber_owner)
+-            ):
+-                ev.set()
+-
+-
+-def _event_visible(event: dict, owner_id: str) -> bool:
+-    event_owner = event.get('owner_id')
+-    if event_owner is None:
+-        return owner_id == configured_actor_id()
+-    return str(event_owner) == owner_id
+-
+-
+-def _public_event(event: dict) -> dict:
+-    public = dict(event)
+-    public.pop('owner_id', None)
+-    public.pop('_sequence', None)
+-    return public
+-
+-
+-def _public_audit_row(row: dict) -> dict:
+-    public = dict(row)
+-    public.pop('owner_id', None)
+-    return public
 -
 -
 -@router.get('/events')
 -async def realtime_events(
+-    request: Request = None,
 -    since: float = Query(0, description='只推送 ts > since 的事件（秒时间戳）'),
 -    max_idle: float = Query(
 -        300,
@@ -285,40 +384,90 @@ index 31258e4..0000000
 -        event: <type>
 -        data: {"ts": ..., "event_type": "workflow_run", "payload": {...}}
 -    """
+-    owner_id = actor_id_for_request(request)
+-    state = getattr(request, 'state', None)
+-    credential = (
+-        request.headers.get('x-api-key', '')
+-        if getattr(state, 'is_lan_session', False) else None
+-    )
 -    sub = asyncio.Event()
 -    async with _BUS_LOCK:
 -        if len(_SUBSCRIBERS) >= _SUBSCRIBERS_MAX:
 -            raise HTTPException(429, 'SSE subscriber limit reached')
--        _SUBSCRIBERS.add(sub)
+-
+-    async def session_valid() -> bool:
+-        if credential is None:
+-            return True
+-        try:
+-            return await asyncio.to_thread(_lan_session_identity, credential) == owner_id
+-        except sqlite3.Error:
+-            # A failed registry lookup must not leave a privileged stream open.
+-            return False
 -
 -    async def gen():
--        # 先补发 since 之后的缓冲事件（断线重连不丢）
--        async with _BUS_LOCK:
--            backlog = [e for e in _EVENT_BUFFER if e['ts'] > since]
--        for e in backlog:
--            yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
--        # 长连接等待新事件
+-        cursor = 0
 -        idle = 0.0
+-        heartbeat = 0.0
+-        registered = False
 -        try:
--            while True:
--                sub.clear()
--                try:
--                    await asyncio.wait_for(sub.wait(), timeout=25)
--                    async with _BUS_LOCK:
--                        latest = list(_EVENT_BUFFER)
--                    for e in latest[-5:]:
--                        yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
--                except asyncio.TimeoutError:
--                    idle += 25
--                    # max_idle > 0 时（测试/短轮询客户端）空闲到点就正常收流，
--                    # 避免调用方阻塞在永不结束的长连接上；默认 300 秒。
--                    if max_idle and idle >= max_idle:
--                        yield "event: stream_end\ndata: {\"reason\": \"idle_timeout\"}\n\n"
--                        return
--                    yield ": keepalive\n\n"  # 心跳，防代理断连
--        finally:
+-            # Registration belongs to the generator so an unstarted response
+-            # cannot reserve a subscriber slot indefinitely.
 -            async with _BUS_LOCK:
--                _SUBSCRIBERS.discard(sub)
+-                if len(_SUBSCRIBERS) >= _SUBSCRIBERS_MAX:
+-                    yield_limit = True
+-                else:
+-                    yield_limit = False
+-                    _SUBSCRIBERS.add(sub)
+-                    _SUBSCRIBER_OWNERS[sub] = owner_id
+-                    registered = True
+-            if yield_limit:
+-                yield 'event: stream_end\ndata: {"reason": "subscriber_limit"}\n\n'
+-                return
+-            while True:
+-                if not await session_valid():
+-                    yield 'event: stream_end\ndata: {"reason": "session_expired_or_revoked"}\n\n'
+-                    return
+-                # Snapshot and reset the wake-up under the producer's lock.
+-                # Events arriving while frames are yielded remain in the next snapshot.
+-                async with _BUS_LOCK:
+-                    sub.clear()
+-                    latest = [e for e in _EVENT_BUFFER if e['_sequence'] > cursor]
+-                    if latest:
+-                        cursor = latest[-1]['_sequence']
+-                    pending = [
+-                        e for e in latest
+-                        if e['ts'] > since and _event_visible(e, owner_id)
+-                    ]
+-                for e in pending:
+-                    if not await session_valid():
+-                        yield 'event: stream_end\ndata: {"reason": "session_expired_or_revoked"}\n\n'
+-                        return
+-                    yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(_public_event(e), ensure_ascii=False)}\n\n"
+-                if pending:
+-                    idle = heartbeat = 0.0
+-                    continue
+-                timeout = min(25.0, _SESSION_CHECK_INTERVAL) if credential is not None else 25.0
+-                if max_idle:
+-                    timeout = min(timeout, max_idle - idle)
+-                try:
+-                    await asyncio.wait_for(sub.wait(), timeout=timeout)
+-                except asyncio.TimeoutError:
+-                    idle += timeout
+-                    heartbeat += timeout
+-                    if not await session_valid():
+-                        yield 'event: stream_end\ndata: {"reason": "session_expired_or_revoked"}\n\n'
+-                        return
+-                    if max_idle and idle >= max_idle:
+-                        yield 'event: stream_end\ndata: {"reason": "idle_timeout"}\n\n'
+-                        return
+-                    if heartbeat >= 25:
+-                        heartbeat = 0.0
+-                        yield ': keepalive\n\n'
+-        finally:
+-            if registered:
+-                async with _BUS_LOCK:
+-                    _SUBSCRIBERS.discard(sub)
+-                    _SUBSCRIBER_OWNERS.pop(sub, None)
 -
 -    return StreamingResponse(
 -        gen(),
@@ -329,18 +478,19 @@ index 31258e4..0000000
 -
 -@router.get('/tool-calls')
 -def recent_tool_calls(
+-    request: Request,
 -    limit: int = Query(20, ge=1, le=100),
--    since: Optional[float] = Query(None, description='只返回 ts > since 的记录'),
+-    since: float | None = Query(None, description='只返回 ts > since 的记录'),
 -):
 -    """最近工具调用记录（轮询用，手机端可每 5s 拉一次）。"""
 -    # 从审计日志里筛 mcp_tool_call / tool_call 事件
 -    items = []
--    for row in list_logs(limit=200):
+-    for row in list_logs(limit=200, owner_id=actor_id_for_request(request)):
 -        if row.get('event_type') in ('mcp_tool_call', 'tool_call'):
 -            ts = _ts_of(row)
 -            if since is not None and ts <= since:
 -                continue
--            items.append(row)
+-            items.append(_public_audit_row(row))
 -    return {'items': items[:limit]}
 -
 -
@@ -387,19 +537,51 @@ index 31258e4..0000000
 -        ' filename TEXT,'
 -        ' size_bytes INTEGER,'
 -        ' content_type TEXT,'
--        ' created_at TEXT)'
+-        ' created_at TEXT,'
+-        ' owner_id TEXT)'
+-    )
+-    columns = {row[1] for row in conn.execute('PRAGMA table_info(mobile_files)')}
+-    if 'owner_id' not in columns:
+-        # Legacy rows remain ownerless until the configured actor accesses them.
+-        conn.execute('ALTER TABLE mobile_files ADD COLUMN owner_id TEXT')
+-    conn.execute(
+-        'CREATE INDEX IF NOT EXISTS idx_mobile_files_owner_created '
+-        'ON mobile_files(owner_id, created_at)'
+-    )
+-    conn.commit()
+-
+-
+-def _legacy_owner_allowed(owner_id: str) -> bool:
+-    return owner_id == configured_actor_id()
+-
+-
+-def _file_visible(row, owner_id: str) -> bool:
+-    owner = row['owner_id']
+-    if owner:
+-        return str(owner) == owner_id
+-    return _legacy_owner_allowed(owner_id)
+-
+-
+-def _claim_legacy_file(conn, row, owner_id: str) -> None:
+-    if row['owner_id'] or not _legacy_owner_allowed(owner_id):
+-        return
+-    conn.execute(
+-        "UPDATE mobile_files SET owner_id=? WHERE file_id=? AND (owner_id IS NULL OR owner_id='')",
+-        (owner_id, row['file_id']),
 -    )
 -    conn.commit()
 -
 -
 -@router.post('/upload')
 -async def upload_file(
+-    request: Request,
 -    file: UploadFile = File(...),
 -    note: str = Query('', description='备注（可选）'),
 -):
--    """上传文件到后端存储，AI 可通过 /files/{file_id}/content 读取。"""
+-    """上传文件到后端存储，AI 可通过 canonical content URL 读取。"""
+-    owner_id = actor_id_for_request(request)
 -    file_id = 'file_' + uuid.uuid4().hex[:12]
--    MAX_BYTES = 50 * 1024 * 1024
+-    MAX_BYTES = MOBILE_UPLOAD_MAX_FILE_BYTES
 -
 -    # 预检：优先用 file.size，回退 Content-Length 头；超限直接 413 不落盘
 -    declared = getattr(file, 'size', None) or 0
@@ -428,36 +610,62 @@ index 31258e4..0000000
 -
 -    conn = get_conn()
 -    _file_meta_table(conn)
--    quota = conn.execute('SELECT COUNT(*), COALESCE(SUM(size_bytes),0) FROM mobile_files').fetchone()
+-    quota_clause = "owner_id=?"
+-    quota_params = [owner_id]
+-    if _legacy_owner_allowed(owner_id):
+-        quota_clause += " OR owner_id IS NULL OR owner_id=''"
+-    quota = conn.execute(
+-        f'SELECT COUNT(*), COALESCE(SUM(size_bytes),0) FROM mobile_files WHERE {quota_clause}',
+-        quota_params,
+-    ).fetchone()
 -    if quota[0] >= MAX_FILES or quota[1] + total > MAX_TOTAL_BYTES:
 -        dest.unlink(missing_ok=True)
 -        raise HTTPException(413, 'upload quota exceeded')
 -    from ..utils.datetime_utils import utc_now_iso
 -    conn.execute(
--        'INSERT INTO mobile_files VALUES (?,?,?,?,?)',
--        (file_id, file.filename or 'unnamed', total, file.content_type or '', utc_now_iso()),
+-        'INSERT INTO mobile_files(file_id,filename,size_bytes,content_type,created_at,owner_id) '
+-        'VALUES (?,?,?,?,?,?)',
+-        (file_id, file.filename or 'unnamed', total, file.content_type or '', utc_now_iso(), owner_id),
 -    )
 -    conn.commit()
 -
--    record('file_upload', {'file_id': file_id, 'filename': file.filename, 'size': total, 'note': note})
--    await _append_event({'event_type': 'file_upload', 'file_id': file_id, 'filename': file.filename})
+-    record(
+-        'file_upload',
+-        {'file_id': file_id, 'filename': file.filename, 'size': total, 'note': note},
+-        owner_id=owner_id,
+-    )
+-    await _append_event({
+-        'event_type': 'file_upload',
+-        'file_id': file_id,
+-        'filename': file.filename,
+-        'owner_id': owner_id,
+-    })
 -
 -    return {
 -        'file_id': file_id,
 -        'filename': file.filename,
 -        'size_bytes': total,
 -        'content_type': file.content_type,
--        'url': f'/files/{file_id}/content',
+-        'url': f'/platform/mobile/{file_id}/content',
 -        'note': note,
 -    }
 -
 -
 -@router.get('/list')
--def list_files(limit: int = Query(50, ge=1, le=200)):
+-def list_files(request: Request, limit: int = Query(50, ge=1, le=200)):
 -    """已上传文件列表（元数据，不含内容）。"""
+-    owner_id = actor_id_for_request(request)
 -    conn = get_conn()
 -    _file_meta_table(conn)
--    rows = conn.execute('SELECT * FROM mobile_files ORDER BY created_at DESC LIMIT ?', (limit,)).fetchall()
+-    legacy_clause = " OR owner_id IS NULL OR owner_id=''" if _legacy_owner_allowed(owner_id) else ''
+-    rows = conn.execute(
+-        'SELECT file_id,filename,size_bytes,content_type,created_at,owner_id '
+-        f'FROM mobile_files WHERE owner_id=?{legacy_clause} '
+-        'ORDER BY created_at DESC LIMIT ?',
+-        (owner_id, limit),
+-    ).fetchall()
+-    for row in rows:
+-        _claim_legacy_file(conn, row, owner_id)
 -    return {
 -        'items': [
 -            {
@@ -472,11 +680,11 @@ index 31258e4..0000000
 -    }
 -
 -
--def _file_path_from_db(file_id: str) -> Path:
--    """从 DB 元数据取文件路径（白名单模式）：file_id 必须在 mobile_files 表里存在。
+-def _file_path_from_db(file_id: str, owner_id: str) -> Path:
+-    """从 DB 元数据取当前 actor 可见的文件路径（白名单模式）。
 -
 -    路径完全由服务端生成（_UPLOAD_DIR / file_id），file_id 是上传时生成的
--    file_<hex> 格式——不存在的 ID 直接 404，从根上杜绝路径穿越。
+-    file_<hex> 格式——不存在或不属于当前 actor 的 ID 直接 404。
 -    """
 -    # 第一道：格式白名单——只接受上传时生成的 file_<12位小写hex>
 -    if not file_id or not _FILE_ID_RE.fullmatch(file_id):
@@ -486,10 +694,13 @@ index 31258e4..0000000
 -    # 请求里的字符串只作为查询参数，绝不参与路径构造（taint 在此断链）。
 -    conn = get_conn()
 -    _file_meta_table(conn)
--    row = conn.execute('SELECT file_id FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
--    if row is None:
+-    row = conn.execute(
+-        'SELECT file_id, owner_id FROM mobile_files WHERE file_id=?', (file_id,)
+-    ).fetchone()
+-    if row is None or not _file_visible(row, owner_id):
 -        raise HTTPException(404, '文件不存在')
--    stored_id = str(row[0])
+-    _claim_legacy_file(conn, row, owner_id)
+-    stored_id = str(row['file_id'])
 -
 -    # 第三道：对服务端取回的值再确认形态，并做前缀归属校验
 -    if not _FILE_ID_RE.fullmatch(stored_id):
@@ -502,9 +713,9 @@ index 31258e4..0000000
 -
 -
 -@router.get('/{file_id}/content')
--def read_file_content(file_id: str):
+-def read_file_content(file_id: str, request: Request):
 -    """读取文件内容（AI 读取入口；文本直接返回，二进制返回 base64）。"""
--    dest = _file_path_from_db(file_id)
+-    dest = _file_path_from_db(file_id, actor_id_for_request(request))
 -    if not dest.exists():
 -        raise HTTPException(404, '文件不存在')
 -    data = dest.read_bytes()
@@ -522,7 +733,7 @@ index 31258e4..0000000
 -
 -
 -@router.delete('/{file_id}')
--async def delete_file(file_id: str):
+-async def delete_file(file_id: str, request: Request):
 -    """删除文件。
 -
 -    删除语义是"逻辑删除"：无论物理文件是否删除成功，元数据记录都会移除，
@@ -530,11 +741,10 @@ index 31258e4..0000000
 -    通道）只记录警告，不再让整个接口退化为 500 —— 否则客户端会误以为删除
 -    从未发生，元数据与磁盘事实将更难收敛。
 -    """
--    dest = _file_path_from_db(file_id)
--    if not dest.exists():
--        raise HTTPException(404, '文件不存在')
+-    owner_id = actor_id_for_request(request)
+-    dest = _file_path_from_db(file_id, owner_id)
 -    try:
--        dest.unlink()
+-        dest.unlink(missing_ok=True)
 -    except OSError as exc:
 -        # 仓库既有模式（如 memory_runtime/capsule_store.py）：物理清理失败
 -        # 不可让成功的业务操作失败 —— 记录并继续，由运维据此补清理。
@@ -545,39 +755,36 @@ index 31258e4..0000000
 -        )
 -    conn = get_conn()
 -    _file_meta_table(conn)
--    conn.execute('DELETE FROM mobile_files WHERE file_id=?', (file_id,))
+-    conn.execute(
+-        'DELETE FROM mobile_files WHERE file_id=? AND owner_id=?', (file_id, owner_id)
+-    )
 -    conn.commit()
--    record('file_delete', {'file_id': file_id})
--    await _append_event({'event_type': 'file_delete', 'file_id': file_id})
+-    record('file_delete', {'file_id': file_id}, owner_id=owner_id)
+-    await _append_event({'event_type': 'file_delete', 'file_id': file_id, 'owner_id': owner_id})
 -    return {'deleted': file_id}
 diff --git a/desktop/src/main.js b/desktop/src/main.js
-index d084bca..3946276 100644
+index c1c61d5..4c97a6f 100644
 --- a/desktop/src/main.js
 +++ b/desktop/src/main.js
-@@ -60,11 +60,7 @@ let quitting = false;
+@@ -60,11 +60,7 @@
  let powerSaveBlockerId = null;       // 当前 blocker id，null 表示未启用
  let preventSleepMode = 'app';        // 'app' 阻止系统挂起 | 'display' 连同屏幕常亮
  
 -// 局域网手机控制状态
 -let lanState = { enabled: false, url: '' };
- 
+-
 -// 浮动工作区小窗
 -let floatingWin = null;
++
  
  // ------------------------------------------------------------- small helpers
  
-@@ -365,24 +361,6 @@ async function restartBackend(host) {
-   }
+@@ -453,18 +449,6 @@
+   return candidates;
  }
  
--/** 取本机局域网 IPv4（优先私有网段 10./192.168./172.16-31.） */
 -function firstLanIPv4() {
--  const candidates = [];
--  for (const list of Object.values(os.networkInterfaces())) {
--    for (const it of list || []) {
--      if (it && it.family === 'IPv4' && !it.internal) candidates.push(it.address);
--    }
--  }
+-  const candidates = lanIPv4s();
 -  const priv = candidates.find((a) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a));
 -  return priv || candidates[0] || '';
 -}
@@ -591,7 +798,7 @@ index d084bca..3946276 100644
  /** 导航白名单：仅允许控制台自身（http://127.0.0.1:<port>/），其余一律视为外站 */
  function isConsoleUrl(url, port = backendPort) {
    return typeof url === 'string' && url.startsWith(`http://127.0.0.1:${port}/`);
-@@ -403,7 +381,7 @@ function isTrustedFrame(frame) {
+@@ -485,7 +469,7 @@
    try { return isConsoleUrl(frame && frame.url); } catch { return false; }
  }
  
@@ -600,7 +807,7 @@ index d084bca..3946276 100644
  function injectApiKeyForSession(sess) {
    sess.webRequest.onBeforeSendHeaders(
      { urls: [`http://127.0.0.1:${backendPort}/*`] },
-@@ -480,70 +458,6 @@ function setPreventSleep(enable, mode) {
+@@ -562,70 +546,6 @@
    return getPreventSleep();
  }
  
@@ -671,7 +878,7 @@ index d084bca..3946276 100644
  
  // --------------------------------------------------------- window state
  function loadWindowState() {
-@@ -628,7 +542,7 @@ function createTray() {
+@@ -710,7 +630,7 @@
    });
  }
  
@@ -680,7 +887,7 @@ index d084bca..3946276 100644
  function refreshTray() {
    if (!tray || tray.isDestroyed()) return;
    const openInBrowser = `http://127.0.0.1:${backendPort}/console/`;
-@@ -639,14 +553,7 @@ function refreshTray() {
+@@ -721,14 +641,7 @@
      { label: '任务期间阻止睡眠', type: 'checkbox', checked: getPreventSleep().enabled,
        sublabel: preventSleepMode === 'display' ? '含屏幕常亮' : '仅阻止系统挂起',
        click: (item) => setPreventSleep(item.checked, preventSleepMode) },
@@ -695,7 +902,7 @@ index d084bca..3946276 100644
    items.push(
      { type: 'separator' },
      { label: '开机自启动', type: 'checkbox', checked: getAutostart(),
-@@ -786,31 +693,6 @@ function registerIpc() {
+@@ -868,31 +781,6 @@
      setPreventSleep(!!enable, mode));
    handle('desktop:get-prevent-sleep', () => getPreventSleep());
  
@@ -727,7 +934,7 @@ index d084bca..3946276 100644
  }
  
  // ------------------------------------------------------------------- boot
-@@ -831,7 +713,7 @@ if (!gotLock) {
+@@ -913,7 +801,7 @@
      }
      // 真实异步探测空闲端口（原 findFreePortSync 恒回退 8010，已删除，见上方说明）
      backendPort = await findFreePort();
@@ -736,7 +943,7 @@ index d084bca..3946276 100644
      injectApiKeyForSession(session.defaultSession);
      registerIpc();
  
-@@ -871,7 +753,6 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+@@ -955,7 +843,6 @@
    module.exports = {
      findFreePort,
      truncateLogIfNeeded,
@@ -744,7 +951,7 @@ index d084bca..3946276 100644
      isConsoleUrl,
      isTrustedFrame,
      isVisibleOnSomeDisplay,
-@@ -879,7 +760,5 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+@@ -963,7 +850,5 @@
      decodeFileBuffer,
      depsMarkerMatches,
      isBackendEnvHealthy,
@@ -756,7 +963,7 @@ diff --git a/desktop/src/preload.js b/desktop/src/preload.js
 index b4430b6..a2dd5df 100644
 --- a/desktop/src/preload.js
 +++ b/desktop/src/preload.js
-@@ -42,12 +42,8 @@ contextBridge.exposeInMainWorld('wanweiDesktop', {
+@@ -42,12 +42,8 @@
    setPreventSleep: (enable, mode) => ipcRenderer.invoke('desktop:set-prevent-sleep', { enable, mode }),
    getPreventSleep: () => ipcRenderer.invoke('desktop:get-prevent-sleep'),
  
@@ -773,7 +980,7 @@ diff --git a/frontend/console-vue/src/App.vue b/frontend/console-vue/src/App.vue
 index cd26dd2..71982c0 100644
 --- a/frontend/console-vue/src/App.vue
 +++ b/frontend/console-vue/src/App.vue
-@@ -80,7 +80,6 @@ const navGroups = [
+@@ -80,7 +80,6 @@
        { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
        { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
        { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
@@ -794,7 +1001,7 @@ index c2bc3fe..2da79d3 100644
  // 各视图均已实现，懒加载仅在实际访问时解析。
  export const platformRoutes: RouteRecordRaw[] = [
    { path: '/platform/workbench', name: 'platformWorkbench', component: () => import('@/views/platform/WorkbenchView.vue'), meta: { title: '万枢工作台', seal: '枢' } },
-@@ -14,5 +14,4 @@ export const platformRoutes: RouteRecordRaw[] = [
+@@ -14,5 +14,4 @@
    { path: '/platform/sessions', name: 'platformSessions', component: () => import('@/views/platform/SessionsView.vue'), meta: { title: '会话管理', seal: '笺' } },
    { path: '/platform/settings', name: 'platformSettings', component: () => import('@/views/platform/SettingsView.vue'), meta: { title: '通用设置', seal: '设' } },
    { path: '/platform/help', name: 'platformHelp', component: () => import('@/views/platform/HelpView.vue'), meta: { title: '帮助', seal: '助' } },
@@ -804,18 +1011,18 @@ diff --git a/frontend/console-vue/src/views/platform/HelpView.vue b/frontend/con
 index 071d55c..34b8d16 100644
 --- a/frontend/console-vue/src/views/platform/HelpView.vue
 +++ b/frontend/console-vue/src/views/platform/HelpView.vue
-@@ -23,10 +23,6 @@ const faqs: Faq[] = [
+@@ -22,10 +22,6 @@
+   {
      q: '记忆指令怎么用？',
      a: '「记忆中枢」保存着你的偏好、项目背景与长期指令。在对话中说「记住：……」即可写入；也可在记忆中枢页面直接增删。记忆仅存放在本机数据中，不会上传到任何服务器。',
-   },
+-  },
 -  {
 -    q: '如何用手机控制？',
 -    a: '在本应用「通用设置 → 局域网手机控制」中点击开启，页面会显示一个局域网地址。手机与电脑连入同一网络后，用手机浏览器打开该地址即可访问控制台。关闭后地址立即失效。',
--  },
+   },
    {
      q: 'git 空间是做什么的？',
-     a: '「空间」舱室用于管理工作区：每个空间对应一个本地目录，可绑定 git 仓库，查看分支与变更状态，让智能体在指定空间内读写代码。真实推送（push）等外部动作只有在配置就绪后才会启用，未就绪时会明确标注为模拟。',
-@@ -296,7 +292,7 @@ const techStack = ['FastAPI 后端', 'Vue 3 + TypeScript + Vite', 'Electron 桌
+@@ -296,7 +292,7 @@
            <div class="faq-a long">
              <p>一、本地数据不出机。对话记录、记忆内容、工作区文件、设置偏好与反馈表单，全部保存在本机数据目录或浏览器本机存储中，本软件不设有任何默认的数据回传通道。</p>
              <p>二、密钥加密存储。模型服务商密钥仅在你主动填写后保存，落盘前经加密处理，界面展示一律为掩码；真实密钥仅在发起对应模型调用时短暂使用，不写入日志。</p>
@@ -826,10 +1033,10 @@ index 071d55c..34b8d16 100644
            </div>
 diff --git a/frontend/console-vue/src/views/platform/MobileView.vue b/frontend/console-vue/src/views/platform/MobileView.vue
 deleted file mode 100644
-index e3dbb13..0000000
+index b04f06a..0000000
 --- a/frontend/console-vue/src/views/platform/MobileView.vue
 +++ /dev/null
-@@ -1,1120 +0,0 @@
+@@ -1,1189 +0,0 @@
 -<script setup lang="ts">
 -/**
 - * 手机伴侣 — 局域网手机控制页（路由 /mobile）。
@@ -846,7 +1053,7 @@ index e3dbb13..0000000
 - */
 -import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 -import { useRoute, useRouter } from 'vue-router'
--import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
+-import { apiGet, apiPost, apiPut, isAuthError, isNetworkError, type ReqOptions } from '@/api/platform'
 -import { runStatusGroup, runStatusLabel } from '@/utils/platformEnums'
 -import GfCard from '@/components/gf/GfCard.vue'
 -import GfTag from '@/components/gf/GfTag.vue'
@@ -888,8 +1095,8 @@ index e3dbb13..0000000
 -}
 -
 -/* ── 配对态 ── */
--const TOKEN_KEY = 'wanwei-mobile-token'
--const PAIRED_KEY = 'wanwei-mobile-paired'
+-const SESSION_KEY = 'wanwei-mobile-session'
+-const SESSION_EXPIRY_KEY = 'wanwei-mobile-session-expiry'
 -const route = useRoute()
 -const router = useRouter()
 -const phase = ref<Phase>('verifying')
@@ -897,6 +1104,21 @@ index e3dbb13..0000000
 -const deviceName = ref('')
 -const verifying = ref(false)
 -const manualToken = ref('')
+-let mounted = false
+-const requestController = new AbortController()
+-let localCredential = ''
+-const requestOptions = (): ReqOptions => ({ signal: requestController.signal, credential: localCredential })
+-const pairingRequestOptions = (): ReqOptions => ({ signal: requestController.signal, credential: '' })
+-// A response may settle after abort (for example while parsing its body).
+-async function mobileRequest<T>(send: (options: ReqOptions) => Promise<T>): Promise<T> {
+-  if (!mounted) throw new DOMException('Mobile view unmounted', 'AbortError')
+-  const result = await send(requestOptions())
+-  if (!mounted) throw new DOMException('Mobile view unmounted', 'AbortError')
+-  return result
+-}
+-function mobileGet<T>(path: string): Promise<T> { return mobileRequest(options => apiGet<T>(path, options)) }
+-function mobilePost<T>(path: string, body?: unknown): Promise<T> { return mobileRequest(options => apiPost<T>(path, body, options)) }
+-function mobilePut<T>(path: string, body?: unknown): Promise<T> { return mobileRequest(options => apiPut<T>(path, body, options)) }
 -
 -/** 浮动小窗模式：桌面端浮动工作区以 /console/#/mobile?floating=1 加载（08-#37）。
 - *  现状：桌面 main.js 加载该 URL 时未附带 token，小窗首启必落在配对门禁；
@@ -934,6 +1156,7 @@ index e3dbb13..0000000
 -const toast = ref('')
 -let toastTimer: ReturnType<typeof setTimeout> | undefined
 -function showToast(text: string) {
+-  if (!mounted) return
 -  toast.value = text
 -  if (toastTimer) clearTimeout(toastTimer)
 -  toastTimer = setTimeout(() => { toast.value = '' }, 3200)
@@ -973,28 +1196,71 @@ index e3dbb13..0000000
 -  void router.replace({ query: rest })
 -}
 -
--async function verify(candidate: string, fromCache: boolean) {
+-let sessionExpiryTimer: ReturnType<typeof setTimeout> | undefined
+-function clearLanSession(reason = ''): void {
+-  localCredential = ''
+-  sessionStorage.removeItem(SESSION_KEY)
+-  sessionStorage.removeItem(SESSION_EXPIRY_KEY)
+-  if (sessionExpiryTimer) {
+-    clearTimeout(sessionExpiryTimer)
+-    sessionExpiryTimer = undefined
+-  }
+-  stopPolling()
+-  phase.value = 'failed'
+-  if (reason) failReason.value = reason
+-}
+-
+-function armSessionExpiry(expiresAt: string): boolean {
+-  if (!mounted) return false
+-  const expiresMs = Date.parse(expiresAt)
+-  if (!Number.isFinite(expiresMs) || expiresMs <= Date.now()) {
+-    clearLanSession('会话凭证已过期，请从桌面端重新获取配对链接。')
+-    return false
+-  }
+-  if (sessionExpiryTimer) clearTimeout(sessionExpiryTimer)
+-  sessionExpiryTimer = setTimeout(() => {
+-    if (mounted) clearLanSession('会话凭证已过期，请从桌面端重新获取配对链接。')
+-  }, Math.min(expiresMs - Date.now(), 2_147_483_647))
+-  return true
+-}
+-
+-function handleSessionAuthError(e: unknown): boolean {
+-  if (!mounted) return true
+-  if (!isAuthError(e)) return false
+-  clearLanSession('局域网会话已失效或被关闭，请从桌面端重新配对。')
+-  return true
+-}
+-
+-async function verify(candidate: string) {
 -  if (verifying.value || phase.value === 'paired') return
 -  verifying.value = true
 -  phase.value = 'verifying'
 -  failReason.value = ''
 -  try {
--    const res = await apiPost<unknown>('/system/lan/verify', { token: candidate })
+-    const res = await apiPost<unknown>('/system/lan/verify', { token: candidate }, pairingRequestOptions())
+-    if (!mounted) return
 -    const r = asRecord(res)
 -    const rejected = r !== null && (r.ok === false || r.paired === false || r.verified === false || r.success === false)
 -    if (rejected) throw new Error(pickStr(r, ['message', 'detail', 'error']) || '令牌未通过校验')
 -    deviceName.value = r ? pickStr(r, ['device_name', 'device', 'name']) : ''
--    localStorage.setItem(TOKEN_KEY, candidate)
--    localStorage.setItem(PAIRED_KEY, '1')
+-    const sessionCredential = r ? pickStr(r, ['session_credential']) : ''
+-    const expiresAt = r ? pickStr(r, ['expires_at']) : ''
+-    if (!sessionCredential || !expiresAt) throw new Error('后端未返回有效的局域网会话凭证')
+-    if (!mounted) return
+-    localCredential = sessionCredential
+-    sessionStorage.setItem(SESSION_KEY, sessionCredential)
+-    sessionStorage.setItem(SESSION_EXPIRY_KEY, expiresAt)
+-    if (!armSessionExpiry(expiresAt)) return
 -    phase.value = 'paired'
--    if (!fromCache) stripTokenFromUrl()
+-    stripTokenFromUrl()
 -    startMain()
 -  } catch (e) {
--    if (fromCache) localStorage.removeItem(TOKEN_KEY)
+-    if (!mounted) return
+-    localCredential = ''
 -    phase.value = 'failed'
 -    failReason.value = maskToken(platformErrText(e), candidate)
 -  } finally {
--    verifying.value = false
+-    if (mounted) verifying.value = false
 -  }
 -}
 -
@@ -1002,28 +1268,22 @@ index e3dbb13..0000000
 -  const candidate = manualToken.value.trim()
 -  if (!candidate || verifying.value) return
 -  manualToken.value = ''
--  void verify(candidate, false)
+-  void verify(candidate)
 -}
 -
 -function retryPair() {
 -  const raw = route.query.token
 -  const fromQuery = Array.isArray(raw) ? raw[0] : raw
--  const queryToken = typeof fromQuery === 'string' ? fromQuery.trim() : ''
--  const cached = localStorage.getItem(TOKEN_KEY) ?? ''
--  const candidate = queryToken || cached
+-  const candidate = typeof fromQuery === 'string' ? fromQuery.trim() : ''
 -  if (!candidate) {
 -    failReason.value = '链接中未携带配对令牌（token），请从桌面端重新获取配对链接或二维码。'
 -    return
 -  }
--  void verify(candidate, !queryToken)
+-  void verify(candidate)
 -}
 -
 -function unpair() {
--  localStorage.removeItem(TOKEN_KEY)
--  localStorage.removeItem(PAIRED_KEY)
--  stopPolling()
--  phase.value = 'failed'
--  failReason.value = '已解除本机配对。请从桌面端重新获取配对链接。'
+-  clearLanSession('已解除本机配对。请从桌面端重新获取配对链接。')
 -}
 -
 -/* ── 任务监视 ── */
@@ -1063,10 +1323,11 @@ index e3dbb13..0000000
 -
 -async function loadRuns() {
 -  try {
--    const res = await apiGet<unknown>('/agents/runs')
+-    const res = await mobileGet<unknown>('/agents/runs')
 -    runs.value = normalizeRuns(res)
 -    runsOffline.value = false
 -  } catch (e) {
+-    if (handleSessionAuthError(e)) return
 -    const network = isNetworkError(e)
 -    runs.value = network ? SAMPLE_RUNS : []
 -    runsOffline.value = network
@@ -1083,7 +1344,7 @@ index e3dbb13..0000000
 -  }
 -  deciding.value = run.id
 -  try {
--    const result = await apiPost<{ status?: string }>(`/agents/runs/${run.id}/approve`, { approved })
+-    const result = await mobilePost<{ status?: string }>(`/agents/runs/${run.id}/approve`, { approved })
 -    const actual = result.status
 -    if (actual === 'rejected') {
 -      showToast(`已拒绝「${run.title}」`)
@@ -1094,7 +1355,7 @@ index e3dbb13..0000000
 -    }
 -    await loadRuns()
 -  } catch (e) {
--    showToast(`操作失败：${platformErrText(e)}`)
+-    if (!handleSessionAuthError(e)) showToast(`操作失败：${platformErrText(e)}`)
 -  } finally {
 -    deciding.value = ''
 -  }
@@ -1129,11 +1390,11 @@ index e3dbb13..0000000
 -  draft.value = ''
 -  pushMsg('me', text)
 -  try {
--    const res = await apiPost<unknown>('/agents/chat', { message: text })
+-    const res = await mobilePost<unknown>('/agents/chat', { message: text })
 -    const reply = extractReply(res)
 -    pushMsg('agent', reply || '口信已送达，智能体思索中，进展见上方任务列表。')
 -  } catch (e) {
--    pushMsg('sys', `发送失败：${platformErrText(e)}`)
+-    if (!handleSessionAuthError(e)) pushMsg('sys', `发送失败：${platformErrText(e)}`)
 -  } finally {
 -    sending.value = false
 -  }
@@ -1144,14 +1405,14 @@ index e3dbb13..0000000
 -  if (archiving.value) return
 -  archiving.value = true
 -  try {
--    const res = await apiPost<unknown>('/memory/dreams/archive-now')
+-    const res = await mobilePost<unknown>('/memory/dreams/archive-now')
 -    const r = asRecord(res)
 -    const n = r ? pickNum(r, ['archived', 'archived_count', 'count', 'total']) : NaN
 -    const simulated = r !== null && (r.simulated === true || r.stub === true)
 -    const base = Number.isFinite(n) ? `已归档 ${n} 段梦境` : '梦境整理请求已送达'
 -    showToast(simulated ? `${base}（模拟）` : base)
 -  } catch (e) {
--    showToast(`整理失败：${platformErrText(e)}`)
+-    if (!handleSessionAuthError(e)) showToast(`整理失败：${platformErrText(e)}`)
 -  } finally {
 -    archiving.value = false
 -  }
@@ -1168,7 +1429,7 @@ index e3dbb13..0000000
 -}
 -async function loadPower() {
 -  try {
--    const res = await apiGet<unknown>('/system/power')
+-    const res = await mobileGet<unknown>('/system/power')
 -    const v = normalizePower(res)
 -    if (v === null) {
 -      powerKnown.value = false
@@ -1176,7 +1437,8 @@ index e3dbb13..0000000
 -      preventSleep.value = v
 -      powerKnown.value = true
 -    }
--  } catch {
+-  } catch (e) {
+-    if (handleSessionAuthError(e)) return
 -    powerKnown.value = false
 -  }
 -}
@@ -1185,14 +1447,16 @@ index e3dbb13..0000000
 -  powerBusy.value = true
 -  const next = powerKnown.value ? !preventSleep.value : true
 -  try {
--    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next, gear: 'device' })
+-    const res = await mobilePut<unknown>('/system/power', { prevent_sleep: next, gear: 'device' })
 -    const v = normalizePower(res)
 -    preventSleep.value = v ?? next
 -    powerKnown.value = true
 -    showToast(preventSleep.value ? '防睡眠已开启，设备将保持清醒' : '防睡眠已关闭')
 -  } catch (e) {
--    showToast(`切换失败：${platformErrText(e)}`)
--    await loadPower()
+-    if (!handleSessionAuthError(e)) {
+-      showToast(`切换失败：${platformErrText(e)}`)
+-      await loadPower()
+-    }
 -  } finally {
 -    powerBusy.value = false
 -  }
@@ -1224,11 +1488,11 @@ index e3dbb13..0000000
 -  ctxInfo.value = null
 -  ctxError.value = ''
 -  try {
--    const res = await apiGet<unknown>('/agents/context-size')
+-    const res = await mobileGet<unknown>('/agents/context-size')
 -    ctxInfo.value = normalizeCtx(res)
 -    if (!ctxInfo.value) ctxError.value = '后端已响应，但未返回可识别的上下文体量字段。'
 -  } catch (e) {
--    ctxError.value = platformErrText(e)
+-    if (!handleSessionAuthError(e)) ctxError.value = platformErrText(e)
 -  } finally {
 -    ctxLoading.value = false
 -  }
@@ -1256,28 +1520,40 @@ index e3dbb13..0000000
 -}
 -
 -onMounted(() => {
--  // 已配对状态作为终态：避免一次性 token 被重复 verify 触发「已使用」
--  if (localStorage.getItem(PAIRED_KEY) === '1') {
+-  mounted = true
+-  const sessionCredential = sessionStorage.getItem(SESSION_KEY)?.trim() ?? ''
+-  const expiresAt = sessionStorage.getItem(SESSION_EXPIRY_KEY)?.trim() ?? ''
+-  if (sessionCredential && armSessionExpiry(expiresAt)) {
+-    localCredential = sessionCredential
 -    phase.value = 'paired'
 -    startMain()
 -    return
 -  }
+-  clearLanSession()
 -  const raw = route.query.token
 -  const fromQuery = Array.isArray(raw) ? raw[0] : raw
--  const queryToken = typeof fromQuery === 'string' ? fromQuery.trim() : ''
--  const cached = (localStorage.getItem(TOKEN_KEY) ?? '').trim()
--  const candidate = queryToken || cached
+-  const candidate = typeof fromQuery === 'string' ? fromQuery.trim() : ''
 -  if (!candidate) {
 -    phase.value = 'failed'
 -    failReason.value = '链接中未携带配对令牌（token），请从桌面端重新获取配对链接或二维码。'
 -    return
 -  }
--  void verify(candidate, !queryToken)
+-  void verify(candidate)
 -})
 -
 -onBeforeUnmount(() => {
+-  mounted = false
+-  requestController.abort()
+-  localCredential = ''
 -  stopPolling()
--  if (toastTimer) clearTimeout(toastTimer)
+-  if (sessionExpiryTimer !== undefined) {
+-    clearTimeout(sessionExpiryTimer)
+-    sessionExpiryTimer = undefined
+-  }
+-  if (toastTimer !== undefined) {
+-    clearTimeout(toastTimer)
+-    toastTimer = undefined
+-  }
 -})
 -</script>
 -
@@ -1954,7 +2230,7 @@ diff --git a/frontend/console-vue/src/views/platform/SettingsView.vue b/frontend
 index 60dfa71..1c2f987 100644
 --- a/frontend/console-vue/src/views/platform/SettingsView.vue
 +++ b/frontend/console-vue/src/views/platform/SettingsView.vue
-@@ -15,8 +15,6 @@ declare global {
+@@ -15,8 +15,6 @@
        setAutostart?: (enable: boolean) => unknown
        setPreventSleep?: (enable: boolean) => unknown
        getPreventSleep?: () => Promise<{ enabled?: boolean; mode?: string }>
@@ -1963,10 +2239,12 @@ index 60dfa71..1c2f987 100644
      }
    }
  }
-@@ -37,15 +35,6 @@ interface PowerState {
+@@ -35,15 +33,6 @@
+ interface PowerState {
+   prevent_sleep?: boolean
    mode?: string
- }
- 
+-}
+-
 -interface LanStatus {
 -  enabled?: boolean
 -  lan_url?: string
@@ -1974,12 +2252,10 @@ index 60dfa71..1c2f987 100644
 -  token?: string
 -  message?: string
 -  simulated?: boolean
--}
--
+ }
+ 
  interface EmulatorDownload {
-   id: string
-   name?: string
-@@ -78,8 +67,6 @@ const langOptions: { value: LangChoice; label: string }[] = [
+@@ -78,8 +67,6 @@
  
  /* ── 桌面桥（preload 暴露的 window.wanweiDesktop；浏览器环境为 undefined） ── */
  const desktop = window.wanweiDesktop
@@ -1988,7 +2264,7 @@ index 60dfa71..1c2f987 100644
  
  /* ── 基础状态 ── */
  const theme = ref<ThemeChoice>(readTheme())
-@@ -95,9 +82,6 @@ const savingKey = shallowRef('')
+@@ -95,9 +82,6 @@
  const notice = shallowRef('')
  const error = shallowRef('')
  
@@ -1998,7 +2274,7 @@ index 60dfa71..1c2f987 100644
  
  const downloads = shallowRef<EmulatorDownload[]>([])
  const emuLoading = ref(true)
-@@ -291,63 +275,6 @@ async function togglePreventSleep() {
+@@ -291,63 +275,6 @@
    }
  }
  
@@ -2062,7 +2338,7 @@ index 60dfa71..1c2f987 100644
  
  /* ── 开发模拟器下载 ── */
  function normalizeDownload(raw: EmulatorDownload, index: number): EmulatorDownload {
-@@ -468,7 +395,6 @@ onMounted(() => {
+@@ -468,7 +395,6 @@
      if (bgDataUrl.value) applyBodyBackground(bgDataUrl.value)
    })
    syncPreventSleep()
@@ -2070,7 +2346,7 @@ index 60dfa71..1c2f987 100644
    loadDownloads()
    if (desktop?.getAutostart) {
      desktop.getAutostart()
-@@ -489,7 +415,7 @@ onUnmounted(() => {
+@@ -489,7 +415,7 @@
        seal="设"
        title="通用设置"
        en="SETTINGS"
@@ -2079,7 +2355,7 @@ index 60dfa71..1c2f987 100644
      />
  
      <div v-if="error" class="notice error" role="alert" aria-live="polite">
-@@ -591,59 +517,6 @@ onUnmounted(() => {
+@@ -591,59 +517,6 @@
          <p v-if="settingsOffline" class="hint">当前后端离线：以上选择暂存于本机浏览器，联机后将以此为准重新写入。</p>
        </GfCard>
  
@@ -2139,7 +2415,7 @@ index 60dfa71..1c2f987 100644
  
        <!-- ══ 开发模拟器 ══ -->
        <GfCard title="开发模拟器" seal="拟" class="span-2">
-@@ -806,45 +679,6 @@ onUnmounted(() => {
+@@ -806,45 +679,6 @@
  }
  .bg-caption { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--ink-muted); flex-wrap: wrap; }
  
@@ -2189,7 +2465,7 @@ diff --git a/frontend/console-vue/src/views/platform/WorkbenchView.vue b/fronten
 index 8d9d1ff..0d2edfd 100644
 --- a/frontend/console-vue/src/views/platform/WorkbenchView.vue
 +++ b/frontend/console-vue/src/views/platform/WorkbenchView.vue
-@@ -709,7 +709,7 @@ async function approveRun(run: RunRecord): Promise<void> {
+@@ -709,7 +709,7 @@
    try {
      const res = await apiPost<Record<string, any>>(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
      // 以后端返回的真实 status 为准（批准后通常回到 running 继续推进），不再本地假置 approved；

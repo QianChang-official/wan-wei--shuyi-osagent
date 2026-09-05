@@ -88,6 +88,26 @@ def test_anthropic_binding_routes_through_native_dispatch(monkeypatch):
     assert seen["provider"] == "anthropic"  # 原生协议分发，不再硬走 openai_compatible
 
 
+def test_real_gateway_selection_uses_run_owner(monkeypatch):
+    calls: list[str | None] = []
+
+    def fake_active_provider(owner_id=None):
+        calls.append(owner_id)
+        if owner_id == "owner-a":
+            return {
+                "pid": "deepseek", "base_url": "https://a.example/v1",
+                "api_key": "a-key", "model": "a-model",
+            }
+        return None
+
+    monkeypatch.setattr(providers_mod, "get_active_provider", fake_active_provider)
+    target = agents_mod._resolve_gateway_target(
+        {"provider_pid": "", "owner_id": "owner-a"},
+    )
+    assert target == ("https://a.example/v1", "a-key", "a-model", "deepseek")
+    assert calls == ["owner-a"]
+
+
 def test_nothing_configured_returns_none_for_mock_fallback():
     assert agents_mod._resolve_gateway_target(run={"provider_pid": ""}) is None
 

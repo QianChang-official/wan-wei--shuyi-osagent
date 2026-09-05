@@ -1,7 +1,7 @@
 """Cross-principal isolation tests for Spaces projects and integrations.
 
-从 upstream-jianghe 移植，适配 main 约定：双 key 鉴权经
-``backend.app.security.auth._verify_api_key`` monkeypatch 实现。
+The second key is explicitly provisioned in the test identity registry;
+requests exercise the production authentication middleware.
 """
 from __future__ import annotations
 
@@ -20,24 +20,21 @@ HEADERS_B = {"x-api-key": KEY_B}
 
 
 @pytest.fixture()
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, seed_identity):
     monkeypatch.setenv("WANWEI_API_KEY", KEY_A)
     monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "memory.db"))
     monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
     monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-    import backend.app.security.auth as auth
     import backend.app.init_db
     import backend.app.app_runtime as runtime_mod
     import backend.app.main as main_mod
 
-    verify = lambda provided: provided in {KEY_A, KEY_B}  # noqa: E731
-    monkeypatch.setattr(auth, "_verify_api_key", verify)
-
     importlib.reload(runtime_mod)
     importlib.reload(main_mod)
     backend.app.init_db.main()
+    seed_identity(KEY_B)
     with TestClient(main_mod.app, raise_server_exceptions=False) as test_client:
         yield test_client
 

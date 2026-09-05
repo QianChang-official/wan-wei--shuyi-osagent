@@ -49,6 +49,7 @@ _store = JsonStore('providers')
 
 # 辅助模型在 JsonStore('providers') 中的保留 key（不会与 provider id 冲突）
 _AUX_KEY = '_aux'
+_OWNER_KEY_PREFIX = '_owner:'
 
 # 本地类 provider：test 时真实探测 base_url（3 秒超时）
 _LOCAL_KINDS = {'local'}
@@ -566,68 +567,137 @@ def _materialize_record_owner(record: dict[str, Any], owner_id: str) -> str | No
     return owner_id
 
 
+def _owner_key(owner_id: str) -> str:
+    return f'{_OWNER_KEY_PREFIX}{owner_id}'
+
+
+def _owner_records(data: dict, owner_id: str, *, create: bool = False) -> dict[str, Any] | None:
+    key = _owner_key(owner_id)
+    records = data.get(key)
+    if isinstance(records, dict):
+        return records
+    if create:
+        records = {}
+        data[key] = records
+        return records
+    return None
+
+
+def _foreign_owner_has_provider(data: dict, pid: str, owner_id: str) -> bool:
+    for key, records in data.items():
+        if not key.startswith(_OWNER_KEY_PREFIX) or key == _owner_key(owner_id):
+            continue
+        if isinstance(records, dict) and isinstance(records.get(pid), dict):
+            return True
+    return False
+
+
 def _provider_record_for_owner(
     pid: str,
     owner_id: str | None = None,
     *,
     materialize: bool = False,
 ) -> dict[str, Any] | None:
-    """仅当记录属于该 actor 时返回；可顺手迁移无主旧记录。"""
+    """Return only this actor's record, preserving legacy top-level records."""
     actor = owner_id or configured_actor_id()
-    record = _store.get(pid)
-    if not isinstance(record, dict) or not _record_visible(record, actor):
-        return None
-    if materialize and not record.get('owner_id'):
-        if _materialize_record_owner(record, actor):
-            _store.set(pid, record)
-    return record
+
+    def _read(data: dict) -> dict[str, Any] | None:
+        records = _owner_records(data, actor)
+        record = records.get(pid) if records else None
+        if isinstance(record, dict):
+            return dict(record)
+        legacy = data.get(pid)
+        if not isinstance(legacy, dict):
+            return None
+        if not _record_visible(legacy, actor):
+            return None
+        if materialize and not legacy.get('owner_id') and _legacy_owner_allowed(actor):
+            # Keep the ownerless legacy record intact so another actor can
+            # create a scoped record for the same provider.  The configured
+            # actor gets an isolated materialized copy for subsequent writes.
+            records = _owner_records(data, actor, create=True)
+            records.setdefault(pid, {**legacy, 'owner_id': actor, '_legacy_compat': True})
+            return dict(records[pid])
+        return dict(legacy)
+
+    return _store.mutate(_read) if materialize else _read(_store.all())
 
 
 def _assert_provider_access(pid: str, owner_id: str) -> dict[str, Any] | None:
-    """跨属主记录统一 404（不泄漏存在性），保留「无记录即放行」的旧契约。"""
-    record = _store.get(pid)
-    if isinstance(record, dict) and not _record_visible(record, owner_id):
-        raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
-    if isinstance(record, dict) and not record.get('owner_id'):
-        if _materialize_record_owner(record, owner_id):
-            _store.set(pid, record)
-    return record if isinstance(record, dict) else None
+    """Cross-owner records return 404; absent records remain creatable."""
+    def _check(data: dict) -> dict[str, Any] | None:
+        records = _owner_records(data, owner_id)
+        scoped = records.get(pid) if records else None
+        if isinstance(scoped, dict):
+            return dict(scoped)
+        legacy = data.get(pid)
+        # An ownerless legacy row is available only to the configured
+        # migration actor.  It must remain creatable beside a scoped row for a
+        # different actor, so check this fallback before foreign buckets.
+        if isinstance(legacy, dict) and not legacy.get('owner_id'):
+            if _legacy_owner_allowed(owner_id):
+                return dict(legacy)
+            if _foreign_owner_has_provider(data, pid, owner_id):
+                raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
+            return None
+        if _foreign_owner_has_provider(data, pid, owner_id):
+            raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
+        if isinstance(legacy, dict):
+            if not _record_visible(legacy, owner_id):
+                raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
+            return dict(legacy)
+        return None
+
+    return _store.mutate(_check)
 
 
 def _owned_provider_snapshot(owner_id: str) -> dict[str, Any]:
-    """快照当前属主可见的 provider 行，顺带迁移无主旧记录（锁内原子）。"""
+    """Snapshot scoped records and lazily copy compatible legacy records."""
     def _apply(data: dict) -> dict[str, Any]:
+        records = _owner_records(data, owner_id, create=True)
         visible: dict[str, Any] = {}
-        for pid, value in data.items():
-            if pid in (_AUX_KEY, _OAUTH_PENDING_KEY):
+        for pid, value in list(records.items()):
+            if isinstance(value, dict) and not value.get('_legacy_compat'):
+                visible[pid] = dict(value)
+        for pid, value in list(data.items()):
+            if (
+                pid.startswith(_OWNER_KEY_PREFIX)
+                or pid == _OAUTH_PENDING_KEY
+                or pid.startswith(_OAUTH_PENDING_KEY + ':')
+                or pid == _AUX_KEY
+            ):
                 continue
-            if not isinstance(value, dict):
+            if not isinstance(value, dict) or not _record_visible(value, owner_id):
                 continue
-            if not _record_visible(value, owner_id):
-                continue
-            if not value.get('owner_id'):
-                if not _materialize_record_owner(value, owner_id):
-                    continue
-                data[pid] = value
-            visible[pid] = dict(value)
+            if pid not in records or (
+                isinstance(records.get(pid), dict)
+                and records[pid].get('_legacy_compat')
+            ):
+                visible[pid] = dict(value)
         return visible
 
     return _store.mutate(_apply)
 
 
 def _remove_config(pid: str, owner_id: str | None = None) -> bool:
-    """JsonStore 锁内删除配置，返回删除前是否存在；跨属主返回 False。"""
+    """Delete only this actor's scoped record or its compatible legacy row."""
     def _remove(data: dict) -> bool:
-        if pid not in data:
-            return False
         if owner_id is not None:
-            stored = data.get(pid)
-            if not isinstance(stored, dict) or not _record_visible(stored, owner_id):
-                return False
-        data.pop(pid, None)
-        return True
+            records = _owner_records(data, owner_id)
+            if records and pid in records:
+                removed = records.pop(pid)
+                if isinstance(removed, dict) and removed.get('_legacy_compat'):
+                    data.pop(pid, None)
+                return True
+            legacy = data.get(pid)
+            if isinstance(legacy, dict) and _record_visible(legacy, owner_id):
+                data.pop(pid, None)
+                return True
+            return False
+        return data.pop(pid, None) is not None
 
     return _store.mutate(_remove)
+
 
 
 # ---------------------------------------------------------------------------
@@ -648,8 +718,8 @@ _CHAT_UNSUPPORTED_PIDS = frozenset({
 })
 
 
-def get_active_provider() -> Optional[dict[str, str]]:
-    """按目录顺序返回第一个「已启用且可真实调用」的云端 provider 配置。
+def get_active_provider(owner_id: str | None = None) -> Optional[dict[str, str]]:
+    """按指定 actor 返回第一个「已启用且可真实调用」的云端 provider 配置。
 
     「可用」的完整条件：enabled=True + 密钥已存且可解密 + base_url/model 齐备；
     azure_foundry 等占位端点在用户改写 base_url 前视为不可用。OAuth-only 与
@@ -658,7 +728,8 @@ def get_active_provider() -> Optional[dict[str, str]]:
 
     返回 {pid, kind, base_url, model, api_key}；没有可用配置时返回 None。
     """
-    stored = _store.all()
+    actor = owner_id or configured_actor_id()
+    stored = _owned_provider_snapshot(actor)
     for meta in CATALOG:
         pid = meta['id']
         if pid in _CHAT_UNSUPPORTED_PIDS or meta['kind'] in _LOCAL_KINDS:
@@ -786,19 +857,25 @@ def put_config(pid: str, body: ConfigIn, request: Request = None) -> dict[str, A
         patch['extra'] = body.extra
 
     def _apply(data: dict) -> dict[str, Any]:
-        stored = data.get(pid)
+        records = _owner_records(data, owner_id, create=True)
+        stored = records.get(pid)
+        if not isinstance(stored, dict):
+            legacy = data.get(pid)
+            if isinstance(legacy, dict) and _record_visible(legacy, owner_id):
+                stored = legacy
         record = dict(stored) if isinstance(stored, dict) else {}
-        if stored and not _record_visible(record, owner_id):
+        if isinstance(stored, dict) and not _record_visible(record, owner_id):
             raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
         if clear_api_key:
             record.pop('api_key_encrypted', None)
         record.update(patch)
-        record.setdefault('owner_id', owner_id)
+        record.pop('_legacy_compat', None)
+        record['owner_id'] = owner_id
         record.setdefault('base_url', meta['base_url'])
         record.setdefault('model', meta['models'][0] if meta['models'] else '')
         record.setdefault('enabled', False)
         record['updated_at'] = utc_now_iso()
-        data[pid] = record
+        records[pid] = record
         return record
 
     record = _store.mutate(_apply)
@@ -964,13 +1041,18 @@ def put_aux(body: AuxIn, request: Request = None) -> dict[str, Any]:
         patch['purpose'] = body.purpose.strip() or _AUX_DEFAULT['purpose']
 
     def _apply(data: dict) -> dict[str, Any]:
-        stored = data.get(_AUX_KEY)
+        records = _owner_records(data, owner_id, create=True)
+        stored = records.get(_AUX_KEY)
+        if not isinstance(stored, dict):
+            legacy = data.get(_AUX_KEY)
+            if isinstance(legacy, dict) and _record_visible(legacy, owner_id):
+                stored = legacy
         current = {**_AUX_DEFAULT, **(stored if isinstance(stored, dict) else {})}
         if isinstance(stored, dict) and not _record_visible(stored, owner_id):
             raise HTTPException(status_code=404, detail='provider 配置 _aux 不存在')
         current.update(patch)
-        current['owner_id'] = current.get('owner_id') or owner_id
-        data[_AUX_KEY] = current
+        current['owner_id'] = owner_id
+        records[_AUX_KEY] = current
         return current
 
     current = _store.mutate(_apply)
@@ -1039,9 +1121,20 @@ def _oauth_client_secret(pid: str, record: dict[str, Any]) -> str:
     return os.environ.get(f'WANWEI_OAUTH_CLIENT_SECRET_{pid.upper()}', '').strip()
 
 
-def _load_pending_map() -> dict[str, Any]:
-    stored = _store.get(_OAUTH_PENDING_KEY)
-    return dict(stored) if isinstance(stored, dict) else {}
+def _pending_key(owner_id: str | None = None) -> str:
+    return f'{_OAUTH_PENDING_KEY}:{owner_id or configured_actor_id()}'
+
+
+def _load_pending_map(owner_id: str | None = None) -> dict[str, Any]:
+    actor = owner_id or configured_actor_id()
+    stored = _store.get(_pending_key(actor))
+    if isinstance(stored, dict):
+        return dict(stored)
+    # Read the pre-ownership map only for the configured migration actor.
+    if _legacy_owner_allowed(actor):
+        stored = _store.get(_OAUTH_PENDING_KEY)
+        return dict(stored) if isinstance(stored, dict) else {}
+    return {}
 
 
 def _purge_expired_pending(pending: dict[str, Any]) -> None:
@@ -1060,21 +1153,38 @@ def _purge_expired_pending(pending: dict[str, Any]) -> None:
             pending.pop(key, None)
 
 
-def _save_pending_state(pid: str, state: Optional[dict[str, Any]]) -> None:
+def _save_pending_state(
+    pid: str, state: Optional[dict[str, Any]], owner_id: str | None = None,
+) -> None:
+    actor = owner_id or configured_actor_id()
+    key = _pending_key(actor)
     def _apply(data: dict) -> None:
-        pending = data.get(_OAUTH_PENDING_KEY)
+        pending = data.get(key)
         pending = dict(pending) if isinstance(pending, dict) else {}
         _purge_expired_pending(pending)
         if state is None:
             pending.pop(pid, None)
         else:
             pending[pid] = state
-        data[_OAUTH_PENDING_KEY] = pending
+        data[key] = pending
+        # Preserve the old key only for the configured migration actor.  Reads
+        # for other actors never consult it, so it cannot cross owner scopes.
+        if _legacy_owner_allowed(actor):
+            legacy = data.get(_OAUTH_PENDING_KEY)
+            legacy = dict(legacy) if isinstance(legacy, dict) else {}
+            _purge_expired_pending(legacy)
+            if state is None:
+                legacy.pop(pid, None)
+            else:
+                legacy[pid] = state
+            data[_OAUTH_PENDING_KEY] = legacy
 
     _store.mutate(_apply)
 
 
-def _bump_slow_down(pid: str, state: dict[str, Any]) -> int:
+def _bump_slow_down(
+    pid: str, state: dict[str, Any], owner_id: str | None = None,
+) -> int:
     """slow_down 后把额外等待秒数累加进存储态，返回新的有效间隔。"""
     try:
         base_interval = max(1, min(int(state.get('interval') or _OAUTH_DEFAULT_INTERVAL_S), _OAUTH_MAX_INTERVAL_S))
@@ -1086,15 +1196,22 @@ def _bump_slow_down(pid: str, state: dict[str, Any]) -> int:
         extra = 0
     new_extra = extra + _OAUTH_SLOW_DOWN_EXTRA_S
 
+    actor = owner_id or configured_actor_id()
+    key = _pending_key(actor)
     def _apply(data: dict) -> int:
-        pending = data.get(_OAUTH_PENDING_KEY)
+        pending = data.get(key)
         pending = dict(pending) if isinstance(pending, dict) else {}
         current = pending.get(pid)
         if isinstance(current, dict):
             current = dict(current)
             current['slow_down_extra'] = new_extra
             pending[pid] = current
-            data[_OAUTH_PENDING_KEY] = pending
+            data[key] = pending
+            if _legacy_owner_allowed(actor):
+                legacy = data.get(_OAUTH_PENDING_KEY)
+                legacy = dict(legacy) if isinstance(legacy, dict) else {}
+                legacy[pid] = current
+                data[_OAUTH_PENDING_KEY] = legacy
         return base_interval + new_extra
 
     return _store.mutate(_apply)
@@ -1240,7 +1357,7 @@ def auth_begin(pid: str, request: Request = None) -> dict[str, Any]:
         'slow_down_extra': 0,
         'expires_at': now + expires_in,
         'client_id': client_id,
-    })
+    }, owner_id=owner_id)
     audit_safe('provider_oauth_device_begin', {
         'pid': pid,
         'verification_uri': verification_uri,
@@ -1278,7 +1395,7 @@ def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
     if not client_id:
         raise HTTPException(status_code=501, detail=_oauth_missing_client_detail(meta))
 
-    pending = _load_pending_map()
+    pending = _load_pending_map(owner_id)
     state = pending.get(pid)
     if not isinstance(state, dict):
         # P0-2 延续：status 只能来自真实设备码轮询结果；没有进行中的 begin
@@ -1292,13 +1409,13 @@ def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
     except (TypeError, ValueError):
         expires_at = 0.0
     if time.time() >= expires_at:
-        _save_pending_state(pid, None)
+        _save_pending_state(pid, None, owner_id=owner_id)
         audit_safe('provider_oauth_device_expired', {'pid': pid})
         return {'pid': pid, 'status': 'expired'}
 
     device_code = str(state.get('device_code') or '')
     if not device_code:
-        _save_pending_state(pid, None)
+        _save_pending_state(pid, None, owner_id=owner_id)
         raise HTTPException(status_code=409, detail='设备授权状态损坏，请重新发起 begin')
     form = {
         'client_id': client_id,
@@ -1318,14 +1435,14 @@ def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
             'interval': _effective_interval(state),
         }
     if error == 'slow_down':
-        new_interval = _bump_slow_down(pid, state)
+        new_interval = _bump_slow_down(pid, state, owner_id=owner_id)
         return {'pid': pid, 'status': 'slow_down', 'interval': new_interval}
     if error == 'expired_token':
-        _save_pending_state(pid, None)
+        _save_pending_state(pid, None, owner_id=owner_id)
         audit_safe('provider_oauth_device_expired', {'pid': pid})
         return {'pid': pid, 'status': 'expired'}
     if error == 'access_denied':
-        _save_pending_state(pid, None)
+        _save_pending_state(pid, None, owner_id=owner_id)
         audit_safe('provider_oauth_device_denied', {'pid': pid})
         return {'pid': pid, 'status': 'denied'}
     if error:
@@ -1355,11 +1472,16 @@ def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
         ) from None
 
     def _apply(data: dict) -> None:
-        stored = data.get(pid)
+        records = _owner_records(data, owner_id, create=True)
+        stored = records.get(pid)
+        if not isinstance(stored, dict):
+            legacy = data.get(pid)
+            if isinstance(legacy, dict) and _record_visible(legacy, owner_id):
+                stored = legacy
         new_record = dict(stored) if isinstance(stored, dict) else {}
-        if stored and not _record_visible(stored, owner_id):
+        if isinstance(stored, dict) and not _record_visible(stored, owner_id):
             raise HTTPException(status_code=404, detail=f'provider 配置 {pid} 不存在')
-        new_record.setdefault('owner_id', owner_id)
+        new_record['owner_id'] = owner_id
         new_record['api_key_encrypted'] = encrypted_token
         extra = dict(new_record.get('extra') or {})
         extra['authorized_via'] = 'oauth_device'
@@ -1369,12 +1491,23 @@ def auth_poll(pid: str, request: Request = None) -> dict[str, Any]:
         new_record.setdefault('model', meta['models'][0] if meta['models'] else '')
         new_record.setdefault('enabled', False)
         new_record['updated_at'] = utc_now_iso()
-        data[pid] = new_record
-        pending_data = data.get(_OAUTH_PENDING_KEY)
+        records[pid] = new_record
+        legacy = data.get(pid)
+        if (
+            _legacy_owner_allowed(owner_id)
+            and isinstance(legacy, dict)
+            and not legacy.get('owner_id')
+        ):
+            # OAuth completion for a pre-ownership row claims that legacy row
+            # for the configured actor, preserving the old storage contract.
+            data[pid] = new_record
+        pending_data = data.get(_pending_key(owner_id))
         pending_data = dict(pending_data) if isinstance(pending_data, dict) else {}
         _purge_expired_pending(pending_data)
         pending_data.pop(pid, None)
-        data[_OAUTH_PENDING_KEY] = pending_data
+        data[_pending_key(owner_id)] = pending_data
+        if _legacy_owner_allowed(owner_id):
+            data[_OAUTH_PENDING_KEY] = pending_data
 
     _store.mutate(_apply)
     # 审计只记事件与 pid，绝不记录令牌或其片段。

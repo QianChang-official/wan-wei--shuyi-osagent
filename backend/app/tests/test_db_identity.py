@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -174,11 +175,93 @@ def test_stranger_key_not_registered(isolated_db, monkeypatch):
     monkeypatch.setenv("WANWEI_API_KEY", "owner-key-abcdef1234567890abcdef1234567890")
     before = dbmod.get_conn().execute("SELECT COUNT(*) FROM identity").fetchone()[0]
     stranger = "stranger-key-000000000000000000000000000000"
-    auth.actor_id_from_api_key(stranger)
+    for _ in range(2):
+        assert auth.actor_id_from_api_key(stranger) == auth._derive_legacy_owner_id(stranger)
+        assert auth._verify_api_key(stranger) is False
     after = dbmod.get_conn().execute("SELECT COUNT(*) FROM identity").fetchone()[0]
     assert before == after  # 陌生 key 不落库
     # 鉴权同样被拒
     assert auth._verify_api_key(stranger) is False
+
+
+@pytest.mark.parametrize("key_state", ["active", "inactive", "stranger"])
+def test_identity_read_fastpath_preserves_caller_transaction(
+    isolated_db, monkeypatch, seed_identity, key_state
+):
+    from backend.app.security import auth
+
+    monkeypatch.setenv("WANWEI_API_KEY", "configured-fastpath-owner")
+    key = "fastpath-test-key"
+    expected = (
+        auth._derive_legacy_owner_id(key)
+        if key_state == "stranger"
+        else seed_identity(key, is_active=key_state == "active")
+    )
+    marker = seed_identity("pending-marker-key")
+    conn = dbmod.get_conn()
+    conn.execute("UPDATE identity SET display_name='pending' WHERE identity_id=?", (marker,))
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    def unexpected_connect(*args, **kwargs):
+        pytest.fail("identity read fastpath opened a new SQLite connection")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite3, "connect", unexpected_connect)
+            for _ in range(3):
+                assert auth._identity_table_ready()
+                assert auth.actor_id_from_api_key(key) == expected
+            assert conn.in_transaction
+            assert all(sql.lstrip().upper().startswith("SELECT ") for sql in statements)
+            assert conn.execute(
+                "SELECT display_name FROM identity WHERE identity_id=?", (marker,)
+            ).fetchone()[0] == "pending"
+    finally:
+        conn.set_trace_callback(None)
+        conn.rollback()
+    assert conn.execute(
+        "SELECT display_name FROM identity WHERE identity_id=?", (marker,)
+    ).fetchone()[0] is None
+
+
+@pytest.mark.parametrize("fail_insert", [False, True])
+def test_owner_bootstrap_uses_independent_transaction(isolated_db, monkeypatch, fail_insert):
+    from backend.app.security import auth
+
+    owner = "independent-bootstrap-owner"
+    monkeypatch.setenv("WANWEI_API_KEY", owner)
+    conn = dbmod.get_conn()
+    if fail_insert:
+        conn.execute(
+            "CREATE TRIGGER fail_bootstrap AFTER INSERT ON identity "
+            "BEGIN SELECT RAISE(FAIL, 'injected bootstrap failure'); END"
+        )
+        conn.commit()
+    # Preserve the caller's read snapshot across an independent commit or rollback.
+    conn.execute("BEGIN")
+    before = conn.execute("SELECT COUNT(*) FROM identity").fetchone()[0]
+    try:
+        if fail_insert:
+            with pytest.raises(sqlite3.IntegrityError, match="injected bootstrap failure"):
+                auth.actor_id_from_api_key(owner)
+        else:
+            identity = auth.actor_id_from_api_key(owner)
+            assert identity.startswith("id_")
+        assert conn.in_transaction
+        assert conn.execute("SELECT COUNT(*) FROM identity").fetchone()[0] == before
+    finally:
+        conn.rollback()
+    row = conn.execute(
+        "SELECT identity_id FROM identity WHERE api_key_hash=?", (auth._api_key_hash(owner),)
+    ).fetchone()
+    if fail_insert:
+        assert row is None
+        conn.execute("DROP TRIGGER fail_bootstrap")
+        conn.commit()
+        assert auth.actor_id_from_api_key(owner).startswith("id_")
+    else:
+        assert row["identity_id"] == identity
 
 
 def test_owner_key_bootstraps_identity(isolated_db, monkeypatch):

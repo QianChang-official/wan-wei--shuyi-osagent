@@ -219,6 +219,20 @@ test('MobileView: token 不滞留地址栏 + 共享状态映射 + 浮动窗补�
   assert.match(code, /-webkit-app-region:\s*no-drag/, '浮动窗交互控件未排除拖动捕获')
 })
 
+test('platform.ts/MobileView: LAN credential is request-local and unmount aborts all work', async () => {
+  const platform = await readFile(path.join(root, 'src/api/platform.ts'), 'utf8')
+  const mobile = await readSrc('views/platform/MobileView.vue')
+  assert.ok(platform.includes('credential?: string'), 'ReqOptions 缺少单次请求凭证')
+  assert.match(platform, /const credential = options\?\.credential \?\? apiKey/)
+  assert.ok(mobile.includes('credential: localCredential'), 'MobileView 未使用本地凭证')
+  assert.ok(mobile.includes("credential: ''"), '配对请求未显式使用空凭证')
+  assert.equal(mobile.includes('setPlatformApiKey'), false, 'MobileView 不得污染全局 API key')
+  assert.equal(mobile.includes('clearPlatformApiKey'), false, 'MobileView 不得清理全局 API key')
+  assert.ok(mobile.includes('requestController.abort()'), '卸载未中止请求')
+  assert.ok(mobile.includes('if (!mounted) return'), '缺少卸载后的异步守卫')
+  assert.ok(mobile.includes('clearTimeout(sessionExpiryTimer)'), '卸载未清理会话过期定时器')
+})
+
 test('HelpView: 本机反馈可查看/导出/复制（08-#38）', async () => {
   const code = await readSrc('views/platform/HelpView.vue')
   for (const fn of ['exportFeedback', 'copyFeedback', 'clearFeedback', 'fbList']) {

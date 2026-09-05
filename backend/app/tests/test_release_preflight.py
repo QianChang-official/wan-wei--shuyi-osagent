@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,13 @@ def _write_release_project(
         f'VERSION = "v1.0.0"\nVERSION_HISTORY = [{{"status": "{release_status}"}}]\n',
         encoding="utf-8",
     )
+    for project in (root / "desktop", root / "frontend" / "console-vue"):
+        project.mkdir(parents=True)
+        (project / "package.json").write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+        (project / "package-lock.json").write_text(
+            json.dumps({"version": "1.0.0", "packages": {"": {"version": "1.0.0"}}}),
+            encoding="utf-8",
+        )
     (root / "文档中心_DOCUMENTATION_HUB.md").write_text(
         "\n".join(f'<a id="{anchor}"></a>' for anchor in anchors),
         encoding="utf-8",
@@ -75,6 +83,23 @@ def test_validate_retains_released_status_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(release_preflight, "ROOT", tmp_path)
 
     with pytest.raises(RuntimeError, match="VERSION_HISTORY\\[0\\]\\.status"):
+        release_preflight.validate("v1.0.0")
+
+
+@pytest.mark.parametrize("project", ["desktop", "frontend/console-vue"])
+@pytest.mark.parametrize("target", ["package", "lock", "lock_root"])
+def test_validate_rejects_npm_version_drift(tmp_path, monkeypatch, project, target):
+    _write_release_project(tmp_path, REQUIRED_ANCHORS)
+    monkeypatch.setattr(release_preflight, "ROOT", tmp_path)
+    filename = "package.json" if target == "package" else "package-lock.json"
+    path = tmp_path / project / filename
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    if target == "lock_root":
+        metadata["packages"][""]["version"] = "0.11.0-wanshu"
+    else:
+        metadata["version"] = "0.11.0-wanshu"
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(RuntimeError):
         release_preflight.validate("v1.0.0")
 
 

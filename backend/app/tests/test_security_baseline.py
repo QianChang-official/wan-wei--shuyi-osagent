@@ -25,13 +25,13 @@ def _client(tmp_path: Path, *, api_key: str = "test-key", production: bool = Fal
     import backend.app.app_runtime as runtime_mod
     import backend.app.main as main_mod
     importlib.reload(runtime_mod)
-    importlib.reload(runtime_mod)
     importlib.reload(main_mod)
-    return TestClient(main_mod.app, raise_server_exceptions=False)
-    import backend.app.app_runtime as runtime_mod
-    import backend.app.main as main_mod
-    importlib.reload(runtime_mod)
-    importlib.reload(main_mod)
+    # Bare TestClient does not run lifespan; initialize before auth opens the DB.
+    from backend.app.db import close_all
+    from backend.app.init_db import main as init_db
+
+    close_all()
+    init_db()
     return TestClient(main_mod.app, raise_server_exceptions=False)
 
 

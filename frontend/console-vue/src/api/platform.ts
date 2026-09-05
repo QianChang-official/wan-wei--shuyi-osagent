@@ -29,6 +29,10 @@ export function setPlatformApiKey(value: string): void {
   apiKey = value.trim()
 }
 
+export function clearPlatformApiKey(): void {
+  apiKey = ''
+}
+
 export class PlatformApiError extends Error {
   status: number
   detail?: string
@@ -60,6 +64,8 @@ export interface ReqOptions {
   timeoutMs?: number
   /** 调用方自带的中止信号，与超时并存，先触发者生效 */
   signal?: AbortSignal
+  /** 单次请求凭证；传空字符串表示明确不发送 X-API-Key */
+  credential?: string
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000
@@ -67,7 +73,9 @@ export const DEFAULT_TIMEOUT_MS = 30_000
 async function req<T>(path: string, init?: RequestInit, options?: ReqOptions): Promise<T> {
   const headers = new Headers(init?.headers)
   headers.set('Content-Type', 'application/json')
-  if (apiKey) headers.set('X-API-Key', apiKey)
+  const credential = options?.credential ?? apiKey
+  if (credential) headers.set('X-API-Key', credential)
+  else headers.delete('X-API-Key')
 
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const controller = new AbortController()
@@ -80,13 +88,25 @@ async function req<T>(path: string, init?: RequestInit, options?: ReqOptions): P
   const timer: ReturnType<typeof setTimeout> | undefined =
     timeoutMs > 0 ? setTimeout(() => controller.abort('timeout'), timeoutMs) : undefined
 
-  let res: Response
   try {
-    res = await fetch(`/platform${path}`, {
+    const res = await fetch(`/platform${path}`, {
       ...init,
       headers,
       signal: controller.signal,
     })
+    if (!res.ok) {
+      let detail: string | undefined
+      try {
+        const body = await res.json()
+        detail = parseApiErrorDetail(body)
+      } catch (err) {
+        if (controller.signal.aborted) throw err
+        // ignore parse failure
+      }
+      const message = detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status} on /platform${path}`
+      throw new PlatformApiError(res.status, message, detail)
+    }
+    return await res.json() as T
   } catch (err) {
     if (controller.signal.aborted && controller.signal.reason === 'timeout') {
       throw new PlatformApiError(
@@ -101,19 +121,6 @@ async function req<T>(path: string, init?: RequestInit, options?: ReqOptions): P
     if (timer !== undefined) clearTimeout(timer)
     if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort)
   }
-
-  if (!res.ok) {
-    let detail: string | undefined
-    try {
-      const body = await res.json()
-      detail = parseApiErrorDetail(body)
-    } catch {
-      // ignore parse failure
-    }
-    const message = detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status} on /platform${path}`
-    throw new PlatformApiError(res.status, message, detail)
-  }
-  return res.json() as Promise<T>
 }
 
 export function apiGet<T>(path: string, options?: ReqOptions): Promise<T> {

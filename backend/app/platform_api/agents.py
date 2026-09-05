@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .deps import THINK_DEPTHS, THINK_DEPTH_LABELS, WORK_GEARS
 from .guards import audit_safe, require_gear
 from .store import JsonStore
-from ..security.auth import actor_id_from_api_key
+from ..soul.ownership import actor_id_for_request, configured_actor_id
 
 logger = logging.getLogger(__name__)
 
@@ -69,26 +69,22 @@ def _new_id(prefix: str) -> str:
 
 
 def _actor_id(request: Request) -> str:
-    api_key = (request.headers.get('x-api-key') or '').strip()
-    if not api_key:
-        return 'anonymous'
-    return actor_id_from_api_key(api_key)
+    return actor_id_for_request(request)
 
 
 def _agent_visible(agent: dict, owner_id: str) -> bool:
     owner = agent.get('owner_id')
     if not owner:
-        # owner 隔离引入前的存量记录：对任何已通过 API Key 鉴权的调用方可见，
-        # 避免升级后既有智能体集体 404（agents 路由均在鉴权中间件之后）。
-        return True
+        # Legacy records belong only to the configured actor.
+        return bool(owner_id) and owner_id == configured_actor_id()
     return bool(owner_id) and owner == owner_id
 
 
 def _run_visible(run: dict, owner_id: str) -> bool:
     owner = run.get('owner_id')
     if not owner:
-        # 存量 run 记录：对任何已鉴权调用方可见
-        return True
+        # Legacy records belong only to the configured actor.
+        return bool(owner_id) and owner_id == configured_actor_id()
     return bool(owner_id) and owner == owner_id
 
 
@@ -101,8 +97,8 @@ def _public_agent(agent: dict) -> dict:
 def _team_visible(team: dict, owner_id: str) -> bool:
     owner = team.get('owner_id')
     if not owner:
-        # 存量团队记录同理：对任何已鉴权调用方可见，避免升级后集体 404。
-        return True
+        # Legacy records belong only to the configured actor.
+        return bool(owner_id) and owner_id == configured_actor_id()
     return bool(owner_id) and owner == owner_id
 
 
@@ -404,6 +400,7 @@ def _register_floating(run: dict) -> dict:
         'run_id': run['id'],
         'task': run['task'],
         'parent_run_id': run.get('parent_run_id'),
+        'owner_id': run.get('owner_id'),
         'status': run['status'],
         'created_at': run['created_at'],
         'last_active_at': _now(),
@@ -461,7 +458,9 @@ def _mock_step_detail(run: dict, step: dict) -> str:
 
 # ---------------------------------------------------------------- 网关尝试（配置就绪才真实调用）
 
-def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | None:
+def _resolve_gateway_target(
+    run: dict | None, owner_id: str | None = None,
+) -> tuple[str, str, str, str] | None:
     """按回退链解析本次真实调用应使用的 provider 配置。
 
     回退链（先到先得）：
@@ -477,6 +476,9 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
     enabled/api_base/model 即继续向下回退，全部不可用返回 None。
     """
     from ..model_gateway import service as mgw  # 延迟导入，故障隔离
+    # Direct callers often pass a persisted run without a separate owner
+    # argument.  Keep gateway selection bound to that run's owner.
+    owner_scope = owner_id or (run or {}).get('owner_id')
 
     def _from_platform_providers(pid: str) -> tuple[str, str, str, str] | None:
         try:
@@ -484,7 +486,9 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
             meta = providers_mod._CATALOG_BY_ID.get(pid)  # noqa: SLF001
             if meta is None:
                 return None
-            record = providers_mod._store.get(pid) or {}  # noqa: SLF001
+            record = providers_mod._provider_record_for_owner(  # noqa: SLF001
+                pid, owner_scope, materialize=True,
+            ) or {}
             if not record.get('enabled'):
                 return None
             api_base = (record.get('base_url') or meta.get('base_url') or '').strip()
@@ -498,7 +502,11 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
 
     def _from_model_gateway(pid: str) -> tuple[str, str, str, str] | None:
         try:
-            cfg = mgw._provider_config(pid)  # noqa: SLF001
+            cfg = (
+                mgw._provider_config(pid, owner_scope)
+                if owner_scope is not None
+                else mgw._provider_config(pid)
+            )  # noqa: SLF001
             if not cfg or not cfg.get('enabled'):
                 return None
             api_base = (cfg.get('api_base') or '').strip()
@@ -523,7 +531,7 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
         # （按目录顺序第一个可用者）作为智能体未绑定 provider 时的默认引擎。
         try:
             from . import providers as providers_mod
-            active = providers_mod.get_active_provider()
+            active = providers_mod.get_active_provider(owner_id=owner_scope)
             if active is None:
                 return None
             return (
@@ -539,7 +547,9 @@ def _resolve_gateway_target(run: dict | None) -> tuple[str, str, str, str] | Non
     return _from_model_gateway('openai_compatible')
 
 
-async def _try_gateway(prompt: str, run: dict | None = None) -> tuple[str | None, str | None]:
+async def _try_gateway(
+    prompt: str, run: dict | None = None, owner_id: str | None = None,
+) -> tuple[str | None, str | None]:
     """尝试经 model_gateway 真实补全。
 
     返回 (text, provider_used)：text 为 None 表示回退模拟；
@@ -548,7 +558,7 @@ async def _try_gateway(prompt: str, run: dict | None = None) -> tuple[str | None
     def _call() -> tuple[str | None, str | None]:
         try:
             from ..model_gateway import service as mgw  # 延迟导入，故障隔离
-            target = _resolve_gateway_target(run)
+            target = _resolve_gateway_target(run, owner_id=owner_id)
             if target is None:
                 return None, None
             api_base, api_key, model, provider_label = target
@@ -689,7 +699,7 @@ def _index_insert_run(run: dict) -> None:
         return
     lst = _runs_agent_index.setdefault(key, [])
     # 若同一 run 已存在则先移除，再按 created_at 插入正确位置（升序）
-    for i, (c, existing_rid) in enumerate(lst):
+    for i, (_c, existing_rid) in enumerate(lst):
         if existing_rid == rid:
             lst.pop(i)
             break
@@ -730,7 +740,7 @@ def _enforce_runs_retention() -> None:
             _runs_agent_index = _build_runs_agent_index_from(all_runs)
 
     excess: list[str] = []
-    for key, lst in _runs_agent_index.items():
+    for _key, lst in _runs_agent_index.items():
         if len(lst) <= RUNS_RETENTION_PER_AGENT:
             continue
         # 升序列表：前端为 oldest，弹出直到保留最近 RUNS_RETENTION_PER_AGENT 条
@@ -762,7 +772,9 @@ async def _finalize_run(rid: str) -> None:
         f'任务：{run.get("task", "")}\n目标：{run.get("goal", "")}\n'
         f'请给出简洁的中文执行结论。'
     )
-    gateway_text, provider_used = await _try_gateway(prompt, run)
+    gateway_text, provider_used = await _try_gateway(
+        prompt, run, owner_id=run.get('owner_id'),
+    )
     run = _runs.get(rid)  # 重新读取，避免覆盖并发改动
     if not run or run.get('status') in ('done', 'failed', 'cancelled'):
         return
@@ -1063,7 +1075,8 @@ def cancel_run(rid: str, request: Request):
 @router.post('/chat')
 async def chat(body: ChatIn, request: Request):
     # `_` 前缀为保留命名空间（_teams/_floating 等），一律按不存在处理（404）
-    agent = _get_agent_or_404(body.agent_id, _actor_id(request)) if body.agent_id else None
+    owner_id = _actor_id(request)
+    agent = _get_agent_or_404(body.agent_id, owner_id) if body.agent_id else None
     depth = _valid_depth(body.depth or (agent or {}).get('depth'), 'medium')
     gear = _valid_gear(body.gear or (agent or {}).get('gear'), 'sandbox')
     goal = body.goal if body.goal is not None else (agent or {}).get('goal', '')
@@ -1075,7 +1088,7 @@ async def chat(body: ChatIn, request: Request):
         f'用户：{body.message}\n'
         f'请给出简洁的中文回复。'
     )
-    gateway_text, provider_used = await _try_gateway(prompt)
+    gateway_text, provider_used = await _try_gateway(prompt, owner_id=owner_id)
     if not gateway_text:
         # Issue #45 P0-3 / DoD-2：机器可读 error 枚举，不产出模型口吻文本。
         raise HTTPException(
@@ -1094,6 +1107,7 @@ async def chat(body: ChatIn, request: Request):
         kind='chat', task=body.message[:120], agent=agent,
         goal=goal, depth=depth, gear=gear,
         context={'attachments': [a.model_dump() for a in body.attachments]},
+        owner_id=owner_id,
     )
     # 对话即问即答：步骤同步完成，不走后台推进
     now = _now()
@@ -1145,13 +1159,14 @@ def _subagent_depth_of(run: dict) -> int:
 
 @router.post('/subagent', status_code=201)
 async def spawn_subagent(body: SubagentIn, request: Request):
+    owner_id = _actor_id(request)
     parent = None
     parent_ref = (body.parent_run_id or body.parent_id or '').strip() or None
     if body.parent_run_id and body.parent_id and body.parent_run_id != body.parent_id:
         raise HTTPException(status_code=422, detail='parent_run_id 与 parent_id 不一致')
     if parent_ref:
         parent = _runs.get(parent_ref)
-        if not parent:
+        if not parent or not _run_visible(parent, owner_id):
             raise HTTPException(status_code=404, detail=f'父运行 {parent_ref} 不存在')
     if parent is not None:
         # 嵌套上限：新 run 深度 = 父链深度 + 1，不得超过 SUBAGENT_MAX_DEPTH
@@ -1163,13 +1178,14 @@ async def spawn_subagent(body: SubagentIn, request: Request):
             )
     else:
         new_depth = 0
-    agent = _get_agent_or_404(body.agent_id, _actor_id(request)) if body.agent_id else None
+    agent = _get_agent_or_404(body.agent_id, owner_id) if body.agent_id else None
     run = _new_run(
         kind='subagent', task=body.task, agent=agent,
         parent_run_id=parent_ref,
         depth=body.depth or (parent or {}).get('depth'),
         gear=body.gear or (parent or {}).get('gear'),
         context={'spawned_by': parent_ref or 'manual'},
+        owner_id=owner_id,
     )
     run['subagent_depth'] = new_depth
     _runs.set(run['id'], run)
@@ -1179,13 +1195,16 @@ async def spawn_subagent(body: SubagentIn, request: Request):
 
 
 @router.get('/workspace/floating')
-def floating_workspace():
+def floating_workspace(request: Request):
+    owner_id = _actor_id(request)
     sessions = _floating_map()
     cutoff = datetime.now().astimezone() - timedelta(minutes=30)
     items = []
     changed = False
     for sid, sess in list(sessions.items()):
         run = _runs.get(sess.get('run_id', ''))
+        if run and not _run_visible(run, owner_id):
+            continue
         if run and run.get('status') != sess.get('status'):
             sess['status'] = run['status']
             sess['last_active_at'] = _now()
@@ -1200,7 +1219,9 @@ def floating_workspace():
             sessions.pop(sid)
             changed = True
             continue
-        items.append(sess)
+        public_session = dict(sess)
+        public_session.pop('owner_id', None)
+        items.append(public_session)
     if changed:
         _agents.set(_FLOATING_KEY, sessions)
     items.sort(key=lambda s: s.get('last_active_at', ''), reverse=True)
@@ -1211,9 +1232,10 @@ def floating_workspace():
 
 @router.get('/context-size')
 def context_size(request: Request, agent_id: str | None = Query(default=None)):
+    owner_id = _actor_id(request)
     agent: dict = {}
     if agent_id:
-        agent = _get_agent_or_404(agent_id, _actor_id(request))
+        agent = _get_agent_or_404(agent_id, owner_id)
     # 系统提示基底与记忆指令：和 chat/run 注入链路同源（_base_system_text /
     # _memory_instructions_block）。C1 已保证指令写入前过 Policy Gate；
     # 此处做长度截断，失败时如实标注。两段分开统计，不重复计数。
@@ -1230,7 +1252,7 @@ def context_size(request: Request, agent_id: str | None = Query(default=None)):
         memory_text += '记忆指令：（拉取失败，本次未注入）'
     history_runs = [
         r for r in _runs.all().values()
-        if agent_id and r.get('agent_id') == agent_id
+        if agent_id and r.get('agent_id') == agent_id and _run_visible(r, owner_id)
     ]
     history_runs.sort(key=lambda r: r.get('created_at', ''), reverse=True)
     history_text = ''.join(

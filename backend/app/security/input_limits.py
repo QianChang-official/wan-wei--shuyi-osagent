@@ -1,7 +1,6 @@
 """Input validation and size limits to prevent DoS attacks."""
 from __future__ import annotations
 
-import json
 from fastapi import HTTPException, status
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -12,11 +11,17 @@ MAX_BODY_BYTES = 5 * 1024 * 1024
 
 # 语音上传专用正文上限：POST /platform/system/voice 的 audio_b64 解码后上限
 # 为 12MB（见 platform_api/system_svc.py 的 _VOICE_MAX_BYTES），base64 编码
-# 膨胀 4/3 → 正文约 16MB，再加 JSON 包装开销放宽到 20MB。全局其余路由仍
-# 受 5MB 限制——12MB 与 5MB 的口径在此统一为「语音专用 12MB，全局 5MB」。
+# 膨胀 4/3 → 正文约 16MB，再加 JSON 包装开销放宽到 20MB。
 VOICE_UPLOAD_PATH = "/platform/system/voice"
 VOICE_UPLOAD_MAX_BODY_BYTES = 20 * 1024 * 1024
-DEFAULT_PATH_BODY_LIMITS = {VOICE_UPLOAD_PATH: VOICE_UPLOAD_MAX_BODY_BYTES}
+MOBILE_UPLOAD_PATH = "/platform/mobile/upload"
+MOBILE_UPLOAD_MAX_FILE_BYTES = 50 * 1024 * 1024
+# Multipart boundaries, headers and form fields also count toward the body limit.
+MOBILE_UPLOAD_MAX_BODY_BYTES = MOBILE_UPLOAD_MAX_FILE_BYTES + 1024 * 1024
+DEFAULT_PATH_BODY_LIMITS = {
+    VOICE_UPLOAD_PATH: VOICE_UPLOAD_MAX_BODY_BYTES,
+    MOBILE_UPLOAD_PATH: MOBILE_UPLOAD_MAX_BODY_BYTES,
+}
 
 # Query parameter limits
 MAX_QUERY_LENGTH = 512
@@ -38,7 +43,7 @@ class _BodyTooLarge(HTTPException):
 class BodySizeLimitMiddleware:
     """Middleware to enforce maximum request body size.
 
-    支持按路径放宽上限（``path_body_limits``）：默认仅放行语音上传路由
+    支持按路径放宽上限（``path_body_limits``）：语音和移动文件上传使用专用上限
     （见 DEFAULT_PATH_BODY_LIMITS），其余路径一律沿用全局 5MB。
     """
 

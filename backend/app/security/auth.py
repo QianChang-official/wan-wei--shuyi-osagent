@@ -26,10 +26,12 @@ import ipaddress
 import logging
 import os
 import secrets
+import sqlite3
 import sys
-from functools import lru_cache
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
+from urllib.parse import urlsplit
 
 from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -39,6 +41,19 @@ from starlette.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 MIN_PRODUCTION_API_KEY_LENGTH = 32
+LAN_VERIFY_PATH = "/platform/system/lan/verify"
+_LAN_SESSION_EXACT_PATHS = {
+    ("GET", "/platform/agents/runs"),
+    ("GET", "/platform/agents/context-size"),
+    ("POST", "/platform/agents/chat"),
+    ("POST", "/platform/memory/dreams/archive-now"),
+    ("GET", "/platform/system/power"),
+    ("PUT", "/platform/system/power"),
+    ("GET", "/platform/mobile/events"),
+    ("GET", "/platform/mobile/tool-calls"),
+    ("GET", "/platform/mobile/list"),
+    ("POST", "/platform/mobile/upload"),
+}
 # blake2b 要求 salt 恰为 16 字节；"wanwei-owner-v1!" 恰好 16 字节。
 _ACTOR_ID_SALT = b"wanwei-owner-v1!"
 
@@ -75,23 +90,14 @@ def _derive_legacy_owner_id(api_key: str) -> str:
 def _identity_table_ready() -> bool:
     """检查 identity 表是否已建（init_db 可能尚未运行）。
 
-    用独立连接查询 sqlite_master，避免在 init_db 的迁移事务里
-    因线程本地连接嵌套而失败。
+    只读查询复用线程本地连接，不创建或提交调用方事务。
     """
-    from ..db import _db_path
+    from ..db import get_conn
 
-    try:
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(str(_db_path()))
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity'"
-            ).fetchone()
-            return row is not None
-        finally:
-            conn.close()
-    except Exception:
-        return False
+    row = get_conn().execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity'"
+    ).fetchone()
+    return row is not None
 
 
 def actor_id_from_api_key(api_key: str) -> str:
@@ -119,44 +125,49 @@ def actor_id_from_api_key(api_key: str) -> str:
     if not _identity_table_ready():
         return _derive_legacy_owner_id(normalized)
 
-    # 用线程本地连接（与业务逻辑共享），但注册操作用独立事务避免嵌套。
-    from ..db import get_conn
+    from ..db import _db_path, get_conn
     from ..utils.datetime_utils import utc_now_iso_compact
+    import sqlite3
     import uuid
 
     key_hash = _api_key_hash(normalized)
-    conn = get_conn()
-    # 先查活跃记录
-    row = conn.execute(
-        "SELECT identity_id FROM identity WHERE api_key_hash=? AND is_active=1",
+    row = get_conn().execute(
+        "SELECT identity_id FROM identity WHERE api_key_hash=?",
         (key_hash,),
     ).fetchone()
-    if row:
-        return str(row["identity_id"])
-    # 再查已轮换记录：返回同一 identity_id（不注册新身份），
-    # 让 _verify_api_key 的 is_active=0 检查来拒绝该 key。
-    row = conn.execute(
-        "SELECT identity_id FROM identity WHERE api_key_hash=? AND is_active=0",
-        (key_hash,),
-    ).fetchone()
-    if row:
+    if row is not None:
         return str(row["identity_id"])
 
-    # 陌生 key：不注册（issue #211——此前任何首次见到的 key 都会静默落库
-    # 成永久凭据，绕过 rotate/revoke）。派生一个稳定 ID 保证作用域隔离
-    # （陌生 key 看到的是自己的空作用域，不是 owner 的数据）。
-    if not secrets.compare_digest(normalized, get_api_key()):
+    if not secrets.compare_digest(normalized.encode('utf-8'), get_api_key().encode('utf-8')):
         return _derive_legacy_owner_id(normalized)
 
-    # owner key 首次使用：注册新身份（一次性引导，留审计痕迹）。
-    identity_id = "id_" + uuid.uuid4().hex[:16]
-    conn.execute(
-        "INSERT INTO identity(identity_id, api_key_hash, created_at) VALUES (?,?,?)",
-        (identity_id, key_hash, utc_now_iso_compact()),
-    )
-    conn.commit()
-    logger.info("identity bootstrap: owner key registered as %s", identity_id)
-    return identity_id
+    # Only owner bootstrap acquires a write lock; the caller's transaction is
+    # never committed or rolled back by identity resolution.
+    conn = sqlite3.connect(str(_db_path()), timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT identity_id FROM identity WHERE api_key_hash=?",
+            (key_hash,),
+        ).fetchone()
+        if row is not None:
+            conn.commit()
+            return str(row["identity_id"])
+        identity_id = "id_" + uuid.uuid4().hex[:16]
+        conn.execute(
+            "INSERT INTO identity(identity_id, api_key_hash, created_at) VALUES (?,?,?)",
+            (identity_id, key_hash, utc_now_iso_compact()),
+        )
+        conn.commit()
+        logger.info("identity bootstrap: owner key registered as %s", identity_id)
+        return identity_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def rotate_api_key(old_key: str, new_key: str) -> str:
@@ -165,67 +176,88 @@ def rotate_api_key(old_key: str, new_key: str) -> str:
     返回 identity_id。旧 key 的 ``is_active`` 置 0，新 key 继承同一身份，
     历史记忆、Soul、账本数据全部保留。
 
-    回滚到曾用过的 key 时，先删除同身份下的 inactive 历史行，避免联合主键
-    冲突；相比 ``INSERT OR REPLACE``，该做法不影响其它列或未来约束语义。
+    回滚到曾用过的 key 时，先删除同身份下的 inactive 历史行，释放全局唯一
+    key hash；相比 ``INSERT OR REPLACE``，该做法不影响其它列或未来约束语义。
     删除、失效和插入在同一事务中执行，失败时显式回滚，避免留下半完成轮换。
     """
     if not _identity_table_ready():
         raise RuntimeError("identity table not initialized; run init_db first")
 
-    from ..db import get_conn
+    from ..db import _db_path
     from ..utils.datetime_utils import utc_now_iso_compact
+    import sqlite3
 
     old_hash = _api_key_hash(old_key)
     new_hash = _api_key_hash(new_key)
 
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT identity_id FROM identity WHERE api_key_hash=? AND is_active=1",
-        (old_hash,),
-    ).fetchone()
-    if not row:
-        raise KeyError("old key not registered")
-
-    identity_id = str(row["identity_id"])
-    now = utc_now_iso_compact()
-
+    conn = sqlite3.connect(str(_db_path()), timeout=5)
+    conn.row_factory = sqlite3.Row
     try:
-        # 回滚到历史 key 时释放联合主键；仅删除当前身份的 inactive 行。
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT identity_id FROM identity "
+            "WHERE api_key_hash=? AND is_active=1",
+            (old_hash,),
+        ).fetchone()
+        if row is None:
+            raise KeyError("old key not registered")
+
+        identity_id = str(row["identity_id"])
+        owned_by_other = conn.execute(
+            "SELECT 1 FROM identity "
+            "WHERE api_key_hash=? AND identity_id<>? LIMIT 1",
+            (new_hash, identity_id),
+        ).fetchone()
+        if owned_by_other is not None:
+            # Deliberately generic: callers learn neither the other identity nor
+            # whether that identity's key is active. Keep the existing database
+            # collision exception type for direct callers.
+            raise sqlite3.IntegrityError("new key is unavailable")
+        if old_hash == new_hash:
+            raise sqlite3.IntegrityError("new key is unavailable")
+
+        existing = conn.execute(
+            "SELECT is_active FROM identity "
+            "WHERE api_key_hash=? AND identity_id=?",
+            (new_hash, identity_id),
+        ).fetchone()
+        # Reusing this identity's own inactive historical key is supported.
+        if existing is not None:
+            conn.execute(
+                "DELETE FROM identity WHERE identity_id=? AND api_key_hash=? "
+                "AND is_active=0",
+                (identity_id, new_hash),
+            )
         conn.execute(
-            "DELETE FROM identity WHERE identity_id=? AND api_key_hash=? AND is_active=0",
-            (identity_id, new_hash),
+            "UPDATE identity SET is_active=0, rotated_from=? "
+            "WHERE api_key_hash=? AND identity_id=?",
+            (identity_id, old_hash, identity_id),
         )
-        # 旧 key 标记轮换
-        conn.execute(
-            "UPDATE identity SET is_active=0, rotated_from=? WHERE api_key_hash=?",
-            (identity_id, old_hash),
-        )
-        # 新 key 注册到同一身份
         conn.execute(
             "INSERT INTO identity(identity_id, api_key_hash, created_at, rotated_from) "
             "VALUES (?,?,?,?)",
-            (identity_id, new_hash, now, identity_id),
+            (identity_id, new_hash, utc_now_iso_compact(), identity_id),
         )
         conn.commit()
+        return identity_id
     except Exception:
         conn.rollback()
         raise
-    return identity_id
+    finally:
+        conn.close()
 
 
-def revoke_api_key(api_key: str, *, current_key: str | None = None) -> dict:
-    """独立撤销一个 API key（不依赖轮换）。
+def revoke_api_key(
+    api_key: str,
+    *,
+    current_key: str | None = None,
+    current_identity_id: str | None = None,
+) -> dict:
+    """撤销当前 identity 所属的 API key。
 
-    与 ``rotate_api_key`` 的区别：轮换是「旧 key 失效 + 新 key 继承身份」，
-    撤销是「仅将指定 key 标记为失效」，不注册新 key。适用于：
-    - 怀疑某个 key 已泄漏，需要紧急吊销；
-    - 多 key 场景下清理不再使用的旧 key；
-    - 管理员收回某个分发的 key。
-
-    防护：不允许撤销当前请求正在使用的 key（防自杀），避免调用方把自己锁在门外。
-
-    返回 ``{"revoked": True, "identity_id": ..., "api_key_prefix": ...}``。
-    若 key 未注册或已失效，返回 ``{"revoked": False, "reason": ...}``。
+    撤销不是管理员接口；在现有身份模型中，只有当前请求主体自己的 key
+    可以被吊销。跨 identity 的目标统一按不可用处理，避免泄露 key 注册状态。
     """
     if not _identity_table_ready():
         raise RuntimeError("identity table not initialized; run init_db first")
@@ -250,6 +282,8 @@ def revoke_api_key(api_key: str, *, current_key: str | None = None) -> dict:
         return {"revoked": False, "reason": "key_not_registered"}
     if not row["is_active"]:
         return {"revoked": False, "reason": "key_already_inactive"}
+    if current_identity_id is not None and str(row["identity_id"]) != current_identity_id:
+        return {"revoked": False, "reason": "key_not_owned"}
 
     conn.execute(
         "UPDATE identity SET is_active=0 WHERE api_key_hash=?",
@@ -261,6 +295,132 @@ def revoke_api_key(api_key: str, *, current_key: str | None = None) -> dict:
         "identity_id": str(row["identity_id"]),
         "api_key_prefix": normalized[:8] + "…" if len(normalized) > 8 else "***",
     }
+
+
+def _lan_session_table_ready() -> bool:
+    if not _identity_table_ready():
+        return False
+    from ..db import _db_path
+
+    try:
+        conn = sqlite3.connect(str(_db_path()))
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lan_sessions'"
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def issue_lan_session(identity_id: str, *, ttl_seconds: int) -> tuple[str, str]:
+    """Issue a random LAN credential mapped to an existing identity."""
+    if not _lan_session_table_ready():
+        raise RuntimeError("LAN session table not initialized")
+    if ttl_seconds <= 0:
+        raise ValueError("ttl_seconds must be positive")
+
+    from ..db import _db_path
+    from ..utils.datetime_utils import utc_now_iso_compact
+
+    credential = "lan_" + secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    conn = sqlite3.connect(str(_db_path()), timeout=5)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(
+            "INSERT INTO lan_sessions(credential_hash, identity_id, created_at, expires_at) "
+            "VALUES (?,?,?,?)",
+            (
+                _api_key_hash(credential),
+                identity_id,
+                utc_now_iso_compact(),
+                expires_at.isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return credential, expires_at.isoformat()
+
+
+def revoke_lan_sessions() -> int:
+    """Revoke every currently active LAN session credential."""
+    if not _lan_session_table_ready():
+        return 0
+    from ..db import _db_path
+    from ..utils.datetime_utils import utc_now_iso_compact
+
+    conn = sqlite3.connect(str(_db_path()), timeout=5)
+    try:
+        cursor = conn.execute(
+            "UPDATE lan_sessions SET revoked_at=? WHERE revoked_at IS NULL",
+            (utc_now_iso_compact(),),
+        )
+        conn.commit()
+        return max(cursor.rowcount, 0)
+    finally:
+        conn.close()
+
+
+def _lan_session_identity(credential: str) -> str | None:
+    """Return the mapped identity only for an active, unexpired LAN session."""
+    if not credential.startswith("lan_") or not _lan_session_table_ready():
+        return None
+    from ..db import _db_path
+
+    conn = sqlite3.connect(str(_db_path()), timeout=5)
+    try:
+        row = conn.execute(
+            "SELECT identity_id, expires_at, revoked_at FROM lan_sessions "
+            "WHERE credential_hash=?",
+            (_api_key_hash(credential),),
+        ).fetchone()
+        if row is None or row[2] is not None:
+            return None
+        try:
+            expires_at = datetime.fromisoformat(str(row[1]))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        if datetime.now(timezone.utc) >= expires_at:
+            return None
+        return str(row[0])
+    finally:
+        conn.close()
+
+
+def authenticated_identity(api_key: str | None) -> tuple[str | None, bool]:
+    """Validate a credential and return ``(identity_id, is_lan_session)``."""
+    if not api_key:
+        return None, False
+    lan_identity = _lan_session_identity(api_key)
+    if lan_identity is not None:
+        return lan_identity, True
+    if _verify_api_key(api_key):
+        try:
+            return actor_id_from_api_key(api_key), False
+        except (TypeError, ValueError):
+            return None, False
+    return None, False
+
+
+def _lan_session_path_allowed(method: str, path: str) -> bool:
+    if (method, path) in _LAN_SESSION_EXACT_PATHS:
+        return True
+    if method == "POST" and path.startswith("/platform/agents/runs/"):
+        suffix = path.removeprefix("/platform/agents/runs/")
+        return suffix.endswith("/approve") and suffix.count("/") == 1
+    if path.startswith("/platform/mobile/"):
+        suffix = path.removeprefix("/platform/mobile/")
+        if method == "GET" and suffix.endswith("/content"):
+            return suffix.count("/") == 1
+        if method == "DELETE" and suffix:
+            return suffix.count("/") == 0
+    return False
 
 
 def is_production_mode() -> bool:
@@ -636,24 +796,48 @@ def _request_is_loopback_exempt(request: Request) -> bool:
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
-        if _is_public_path(request.url.path):
+        path = request.url.path
+        if _is_public_path(path):
             return await call_next(request)
+
+        # The one-time pairing token is the sole credential accepted here. Keep
+        # this exception exact so no sibling LAN route becomes unauthenticated.
+        token_only_verify = request.method == "POST" and path == LAN_VERIFY_PATH
 
         # Check if auth required: 写方法 或 任何非公开 GET/HEAD
         needs_auth = (
             request.method in _WRITE_METHODS or
-            _is_protected_get(request.method, request.url.path)
+            _is_protected_get(request.method, path)
         )
+        header_key = request.headers.get("x-api-key")
+        owner_id, is_lan_session = authenticated_identity(header_key)
 
-        if needs_auth and not _request_is_loopback_exempt(request):
-            header_key = request.headers.get("x-api-key")
-            if not _verify_api_key(header_key):
-                return JSONResponse(
-                    {"detail": "Missing or invalid X-API-Key"},
-                    status_code=status.HTTP_401_UNAUTHORIZED
-                )
+        if (
+            needs_auth
+            and not token_only_verify
+            and owner_id is None
+            and (header_key is not None or not _request_is_loopback_exempt(request))
+        ):
+            return JSONResponse(
+                {"detail": "Missing or invalid X-API-Key"},
+                status_code=status.HTTP_401_UNAUTHORIZED
+            )
+        if is_lan_session and not _lan_session_path_allowed(request.method, path):
+            return JSONResponse(
+                {"detail": "LAN session is not authorized for this endpoint"},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
 
-        return await call_next(request)
+        # Route ownership helpers consume this principal instead of deriving a
+        # fresh identity from a short-lived LAN credential.
+        request.state.authenticated_identity = owner_id
+        request.state.is_lan_session = is_lan_session
+
+        # Bind the authenticated principal for deep audit writes. Public and
+        # token-only pairing requests intentionally have no attributed context.
+        from ..audit.service import audit_owner_context
+        with audit_owner_context(owner_id):
+            return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +885,15 @@ def _loopback_origin_allowlist() -> frozenset[str]:
     })
 
 
+def _allowed_hostnames() -> frozenset[str]:
+    configured = {
+        h.strip().lower()
+        for h in os.getenv("WANWEI_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    }
+    return frozenset({"127.0.0.1", "localhost", "::1", *configured})
+
+
 def _origin_is_allowed(origin: str | None) -> bool:
     """判断浏览器 ``Origin`` 是否可信。
 
@@ -709,7 +902,8 @@ def _origin_is_allowed(origin: str | None) -> bool:
     - ``"null"``：sandboxed iframe / file:// 页面 / 重定向链脱敏后的占位。
       在回环免密部署下，``null`` origin 无法与「本地受信前端」区分，
       一律拒绝（fail-closed）；生产模式本就要求显式 key，不受影响。
-    - 其他：必须命中回环白名单，或命中 ``WANWEI_CORS_ORIGINS`` 显式配置。
+    - 其他：必须命中回环白名单、显式 CORS 来源，或是当前端口上由
+      ``WANWEI_ALLOWED_HOSTS`` 明确列出的本机 LAN 地址。
     """
     if origin is None:
         return True
@@ -723,7 +917,25 @@ def _origin_is_allowed(origin: str | None) -> bool:
         for o in os.getenv("WANWEI_CORS_ORIGINS", "").split(",")
         if o.strip()
     }
-    return normalized in extra
+    if normalized in extra:
+        return True
+    try:
+        parsed = urlsplit(normalized)
+        parsed_port = parsed.port
+        expected_port = int(os.getenv("WANWEI_PORT", "8010").strip() or "8010")
+    except (ValueError, TypeError):
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.hostname.lower() in _allowed_hostnames()
+        and parsed_port == expected_port
+        and not parsed.username
+        and not parsed.password
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _host_is_allowed(host_header: str | None) -> bool:

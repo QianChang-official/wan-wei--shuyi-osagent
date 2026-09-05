@@ -351,6 +351,32 @@ def test_memory_write_then_read_roundtrip(store_dir, client, mem_db):
     assert plain_text in read_st['output']
 
 
+def test_memory_steps_are_scoped_to_run_owner(store_dir, client, mem_db, monkeypatch):
+    from backend.app.memory_runtime import capsule_store
+
+    owner_a = 'api_owner_a'
+    owner_b = 'api_owner_b'
+    monkeypatch.setattr(automation, '_actor_id', lambda request=None: owner_a)
+    write_flow = _create_flow(client, gear='sandbox', steps=[{
+        'id': 'st1', 'type': 'memory', 'name': 'A 写入记忆',
+        'config': {'op': 'write', 'key': 'owner-a', 'desc': 'only owner A can read this'},
+        'on_error': 'stop',
+    }])
+    _run, written = _run_and_wait(client, write_flow)
+    capsule_id = written['step_results'][0]['capsule_id']
+    assert capsule_store.get_capsule(capsule_id, owner_id=owner_a) is not None
+    assert capsule_store.get_capsule(capsule_id, owner_id=owner_b) is None
+
+    monkeypatch.setattr(automation, '_actor_id', lambda request=None: owner_b)
+    read_flow = _create_flow(client, gear='sandbox', steps=[{
+        'id': 'st1', 'type': 'memory', 'name': 'B 读取 A 的记忆',
+        'config': {'op': 'read', 'key': capsule_id}, 'on_error': 'stop',
+    }])
+    _run, read = _run_and_wait(client, read_flow)
+    assert read['step_results'][0]['status'] == 'failed'
+    assert '不存在或当前作用域不可读' in read['step_results'][0]['detail']
+
+
 def test_memory_read_missing_capsule_fails_honestly(store_dir, client, mem_db):
     flow = _create_flow(client, gear='sandbox', steps=[
         {'id': 'st1', 'type': 'memory', 'name': '读不存在',
@@ -408,7 +434,11 @@ def test_condition_invalid_or_unsupported_fails_honestly(store_dir, client):
 
 def test_agent_step_fails_honest_when_gateway_unavailable(store_dir, client, monkeypatch):
     # 无可用 provider（回退链解析为 None）→ 必须如实 failed，不得回退模拟文本
-    monkeypatch.setattr(agents_mod, '_resolve_gateway_target', lambda run=None: None)
+    monkeypatch.setattr(
+        agents_mod,
+        '_resolve_gateway_target',
+        lambda run=None, owner_id=None: None,
+    )
     flow = _create_flow(client, gear='sandbox', steps=[
         {'id': 'st1', 'type': 'agent', 'name': '总结任务',
          'config': {'task': '总结一下今天的工作'}, 'on_error': 'stop'},
@@ -420,7 +450,7 @@ def test_agent_step_fails_honest_when_gateway_unavailable(store_dir, client, mon
 
 
 def test_agent_step_uses_gateway_text_when_available(store_dir, client, monkeypatch):
-    async def _fake_gateway(prompt, run=None):
+    async def _fake_gateway(prompt, run=None, owner_id=None):
         return '网关返回的真实补全文本', 'fake-provider'
 
     monkeypatch.setattr(agents_mod, '_try_gateway', _fake_gateway)
@@ -434,6 +464,25 @@ def test_agent_step_uses_gateway_text_when_available(store_dir, client, monkeypa
     assert st['output'] == '网关返回的真实补全文本'
     assert st['provider'] == 'fake-provider'
     assert 'provider=fake-provider' in st['detail']
+
+
+def test_agent_step_passes_run_owner_to_gateway(store_dir, client, monkeypatch):
+    expected_owner = 'api_flow_owner'
+    seen: list[str | None] = []
+
+    async def _fake_gateway(prompt, run=None, owner_id=None):
+        seen.append(owner_id)
+        return 'owner scoped gateway reply', 'fake-provider'
+
+    monkeypatch.setattr(automation, '_actor_id', lambda request=None: expected_owner)
+    monkeypatch.setattr(agents_mod, '_try_gateway', _fake_gateway)
+    flow = _create_flow(client, gear='sandbox', steps=[{
+        'id': 'st1', 'type': 'agent', 'name': 'owner gateway',
+        'config': {'task': 'use the request owner'}, 'on_error': 'stop',
+    }])
+    _run, final = _run_and_wait(client, flow)
+    assert final['step_results'][0]['status'] == 'done'
+    assert seen == [expected_owner]
 
 
 # ---------------------------------------------------------------------------

@@ -5,10 +5,19 @@ from __future__ import annotations
 import json
 
 import anyio
+import pytest
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
-from backend.app.security.input_limits import BodySizeLimitMiddleware
+from backend.app.security.input_limits import (
+    BodySizeLimitMiddleware,
+    MAX_BODY_BYTES,
+    MOBILE_UPLOAD_MAX_BODY_BYTES,
+    MOBILE_UPLOAD_MAX_FILE_BYTES,
+    MOBILE_UPLOAD_PATH,
+    VOICE_UPLOAD_MAX_BODY_BYTES,
+    VOICE_UPLOAD_PATH,
+)
 
 
 async def _body_reader_app(scope, receive, send):
@@ -25,7 +34,7 @@ async def _body_reader_app(scope, receive, send):
     await response(scope, receive, send)
 
 
-async def _call_asgi_app(app, headers, chunks):
+async def _call_asgi_app(app, headers, chunks, path='/'):
     messages = [
         {
             "type": "http.request",
@@ -52,8 +61,8 @@ async def _call_asgi_app(app, headers, chunks):
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/",
-        "raw_path": b"/",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "headers": headers,
         "client": ("testclient", 50000),
@@ -164,3 +173,52 @@ def test_small_streaming_body_without_content_length_is_allowed():
 
     assert status == 200
     assert json.loads(body) == {"size": 6}
+
+
+@pytest.mark.parametrize('headers', [[], [(b'content-length', b'1')]])
+def test_mobile_upload_body_limit_counts_streamed_bytes(headers):
+    async def drain(scope, receive, send):
+        size = 0
+        while True:
+            message = await receive()
+            size += len(message.get('body', b''))
+            if not message.get('more_body'):
+                break
+        await JSONResponse({'size': size})(scope, receive, send)
+
+    async def exercise():
+        app = BodySizeLimitMiddleware(drain)
+        chunks = [b'x' * (1024 * 1024)] * 51
+        status, body = await _call_asgi_app(app, headers, chunks, MOBILE_UPLOAD_PATH)
+        assert status == 200
+        assert json.loads(body)['size'] == MOBILE_UPLOAD_MAX_BODY_BYTES
+        status, _ = await _call_asgi_app(app, headers, chunks + [b'x'], MOBILE_UPLOAD_PATH)
+        assert status == 413
+
+    anyio.run(exercise)
+
+
+def test_mobile_upload_limit_is_path_scoped():
+    app = BodySizeLimitMiddleware(_body_reader_app)
+    assert MOBILE_UPLOAD_MAX_FILE_BYTES == 50 * 1024 * 1024
+    assert MOBILE_UPLOAD_MAX_BODY_BYTES > MOBILE_UPLOAD_MAX_FILE_BYTES
+    assert app._limit_for({'path': MOBILE_UPLOAD_PATH}) == MOBILE_UPLOAD_MAX_BODY_BYTES
+    assert app._limit_for({'path': VOICE_UPLOAD_PATH}) == VOICE_UPLOAD_MAX_BODY_BYTES
+    for path in ('/platform/system/settings', '/platform/mobile/list', MOBILE_UPLOAD_PATH + '/extra'):
+        assert app._limit_for({'path': path}) == MAX_BODY_BYTES
+
+
+def test_mobile_upload_declared_oversize_is_rejected_before_handler():
+    async def blocked(scope, receive, send):
+        raise AssertionError('Oversize request reached handler')
+
+    async def exercise():
+        app = BodySizeLimitMiddleware(blocked)
+        status, _ = await _call_asgi_app(
+            app,
+            [(b'content-length', str(MOBILE_UPLOAD_MAX_BODY_BYTES + 1).encode())],
+            [], MOBILE_UPLOAD_PATH,
+        )
+        assert status == 413
+
+    anyio.run(exercise)

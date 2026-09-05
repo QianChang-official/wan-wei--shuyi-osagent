@@ -477,6 +477,148 @@ def test_sse_roundtrip_discover_and_call(tmp_path, mcp_store, loopback_allowlist
         assert recent and recent[0]['mode'] == 'live'
 
 
+@pytest.mark.parametrize(
+    ('endpoint_data', 'expected_origin'),
+    [
+        ('messages', 'https://sse.example.test/base/messages'),
+        ('https://messages.example.test/rpc', 'https://messages.example.test/rpc'),
+    ],
+)
+def test_sse_endpoint_is_resolved_and_pinned_separately(
+    monkeypatch, endpoint_data, expected_origin,
+):
+    """endpoint 事件无论相对/绝对地址，都必须独立 SSRF resolve 并携带 Host/SNI。"""
+    from backend.app.platform_api import mcp_hub
+
+    resolved = []
+
+    def fake_resolve(url, *, allowlist):
+        resolved.append((url, allowlist))
+        if url == 'https://sse.example.test/base/sse':
+            return url, '203.0.113.10'
+        assert url == expected_origin
+        return url, '198.51.100.7'
+
+    monkeypatch.setattr(mcp_hub, 'resolve_external_url', fake_resolve)
+
+    class FakeResponse:
+        status_code = 200
+        headers = {'content-type': 'text/event-stream'}
+        content = b''
+
+        async def aiter_lines(self):
+            yield 'event: endpoint'
+            yield f'data: {endpoint_data}'
+            yield ''
+            yield 'event: message'
+            yield 'data: {"jsonrpc":"2.0","id":1,"result":{}}'
+            yield ''
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+    class FakeClient:
+        def __init__(self):
+            self.posts = []
+
+        def stream(self, method, url, *, headers, extensions):
+            assert method == 'GET'
+            assert url == 'https://203.0.113.10/base/sse'
+            assert headers == {
+                'Host': 'sse.example.test', 'Accept': 'text/event-stream',
+            }
+            assert extensions == {'sni_hostname': 'sse.example.test'}
+            return FakeStream()
+
+        async def post(self, url, *, json, headers, extensions):
+            self.posts.append((url, json, headers, extensions))
+            return type('PostResponse', (), {'status_code': 202, 'content': b''})()
+
+    async def exercise():
+        client = FakeClient()
+        rpc = mcp_hub._SseRpc(
+            client,
+            'https://sse.example.test/base/sse',
+            'https://203.0.113.10/base/sse',
+            {'Host': 'sse.example.test'},
+            {'sni_hostname': 'sse.example.test'},
+            5,
+        )
+        await rpc.connect()
+        await rpc.request('tools/list')
+        await rpc.notify('notifications/initialized')
+        return client
+
+    client = asyncio.run(exercise())
+    assert [item[0] for item in resolved] == [
+        'https://sse.example.test/base/sse', expected_origin,
+    ]
+    assert client.posts[0][0] == 'https://198.51.100.7' + (
+        '/base/messages' if endpoint_data == 'messages' else '/rpc'
+    )
+    assert client.posts[0][2]['Host'] == (
+        'sse.example.test' if endpoint_data == 'messages' else 'messages.example.test'
+    )
+    assert client.posts[0][3] == {
+        'sni_hostname': client.posts[0][2]['Host'],
+    }
+    assert client.posts[1][0] == client.posts[0][0]
+    assert client.posts[1][2] == client.posts[0][2]
+    assert client.posts[1][3] == client.posts[0][3]
+
+
+def test_sse_endpoint_ssrf_rejection_uses_public_error(monkeypatch):
+    """endpoint 二次 SSRF 失败时不发 POST，且错误不泄露事件地址。"""
+    from backend.app.platform_api import mcp_hub
+
+    def reject(url, *, allowlist):
+        if url == 'https://sse.example.test/base/sse':
+            return url, '203.0.113.10'
+        raise ValueError('internal endpoint: http://169.254.169.254/')
+
+    monkeypatch.setattr(mcp_hub, 'resolve_external_url', reject)
+
+    class FakeResponse:
+        status_code = 200
+        headers = {'content-type': 'text/event-stream'}
+
+        async def aiter_lines(self):
+            yield 'event: endpoint'
+            yield 'data: http://169.254.169.254/latest/meta-data'
+            yield ''
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+    class FakeClient:
+        def stream(self, *args, **kwargs):
+            return FakeStream()
+
+    async def exercise():
+        rpc = mcp_hub._SseRpc(
+            FakeClient(),
+            'https://sse.example.test/base/sse',
+            'https://203.0.113.10/base/sse',
+            {'Host': 'sse.example.test'},
+            {'sni_hostname': 'sse.example.test'},
+            5,
+        )
+        await rpc.connect()
+
+    with pytest.raises(mcp_hub._McpSsrfBlocked) as blocked:
+        asyncio.run(exercise())
+    assert str(blocked.value) == mcp_hub._SSRF_BLOCKED_NOTE
+    assert '169.254.169.254' not in str(blocked.value)
+
+
 def test_sse_disconnect_before_response_is_error(tmp_path, mcp_store, loopback_allowlist):
     """endpoint 事件之后流被断开 → 如实 error，不伪装成功也不悬挂。"""
     client = _client(tmp_path)

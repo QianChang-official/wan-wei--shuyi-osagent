@@ -56,6 +56,32 @@ def test_loopback_peer_with_loopback_bind_is_exempt(tmp_path, monkeypatch):
     assert client.get("/model-gateway/configs").status_code == 200
 
 
+def test_loopback_identity_does_not_register_unvalidated_header(tmp_path, monkeypatch):
+    monkeypatch.setenv('WANWEI_HOST', '127.0.0.1')
+    monkeypatch.setenv('WANWEI_ALLOWED_HOSTS', 'testserver')
+    monkeypatch.setenv('WANWEI_PLATFORM_DIR', str(tmp_path / 'platform'))
+    monkeypatch.delenv('WANWEI_REQUIRE_KEY_ON_LOOPBACK', raising=False)
+    monkeypatch.delenv('WANWEI_LOOPBACK_EXEMPT_WRITE', raising=False)
+    client = _client(tmp_path, peer='127.0.0.1', explicit_key=False)
+    from backend.app import init_db
+    from backend.app.db import get_conn
+    from backend.app.security.auth import _api_key_hash, _verify_api_key
+    from backend.app.soul.ownership import configured_actor_id
+
+    init_db.main()
+    key = 'unregistered-loopback-key'
+    rejected = client.get('/memory/identity', headers={'X-API-Key': key})
+    assert rejected.status_code == 401, rejected.text
+    assert get_conn().execute(
+        'SELECT 1 FROM identity WHERE api_key_hash=?', (_api_key_hash(key),)
+    ).fetchone() is None
+    assert not _verify_api_key(key)
+    assert client.post('/memory/identity/rotate', headers={'X-API-Key': key}, json={}).status_code == 401
+    anonymous = client.get('/memory/identity')
+    assert anonymous.status_code == 200, anonymous.text
+    assert anonymous.json()['owner_id'] == configured_actor_id()
+
+
 def test_explicit_api_key_env_disables_exemption(tmp_path, monkeypatch):
     """回归 CI smoke：显式配置 WANWEI_API_KEY 即视为要求鉴权，回环也不免密。
 
