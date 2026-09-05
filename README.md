@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/QianChang-official/wan-wei--shuyi-osagent/actions/workflows/security.yml"><img src="https://github.com/QianChang-official/wan-wei--shuyi-osagent/actions/workflows/security.yml/badge.svg" alt="Security"></a>
-  <img src="https://img.shields.io/badge/version-v0.11.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.0.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-Mulan%20PSL%20v2-green" alt="License">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
   <img src="https://img.shields.io/badge/KylinOS-V11-red" alt="KylinOS">
@@ -139,7 +139,7 @@ bash scripts/run_dev.sh
 <p align="center"><img src="assets/console.png" alt="控制台" width="880"></p>
 -->
 
-**路径 C / D**：麒麟桌面构建与安装见 [desktop/README.md](desktop/README.md)（`deb`/`rpm` 双包，`sudo dpkg -i release/wanwei-shuyi-desktop_0.11.0_amd64.deb` 即装）；嵌入式集成直接走治理端点，鉴权与档位规则见下方深水区。
+**路径 C / D**：麒麟桌面构建与安装见 [desktop/README.md](desktop/README.md)（`deb`/`rpm` 双包，`sudo dpkg -i release/wanwei-shuyi-desktop_1.0.0_amd64.deb` 即装）；嵌入式集成直接走治理端点，鉴权与档位规则见下方深水区。
 
 ---
 
@@ -185,7 +185,7 @@ bash scripts/run_dev.sh
 
 ## 诚实边界
 
-- 系统当前为单节点 alpha 版（v0.11.0），功能以仓库代码与测试为准。
+- 系统为单节点本地部署（v1.0.0），功能以仓库代码与测试为准。
 - MEB 成绩为本仓自建用例集成绩，非公开赛题成绩。
 - 成本金额为估算值（token 数按字符数 × 0.3 粗估），账目自带估算说明。
 

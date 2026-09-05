@@ -4,10 +4,15 @@
 统一版本号，供 /health 端点和其他模块使用。
 """
 
-VERSION = "v0.11.0-wanshu"
+VERSION = "v1.0.0"
 
 # 版本历史
 VERSION_HISTORY = [
+    {
+        "version": "v1.0.0",
+        "date": "2026-09-05",
+        "summary": "首个正式发布:治理层 + EGPM/TKE 双演化体系 + 常驻麒麟 SDK bridge(全链路 p95 83ms)",
+    },
     {
         "version": "v0.11.0-wanshu",
         "date": "2026-07-18",

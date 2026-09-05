@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+## 2026-09-05 - v1.0.0 首个正式发布
+
+- **全链路延迟优化（麒麟 V11 实机实测）**：麒麟 SDK bridge 改常驻进程——embedding 模型只加载一次（此前每次查询 spawn 新进程重载模型占 ~200ms 中的绝大部分）。实测：SDK 单次 15ms（原 ~200ms）；HTTP 全链路 p50 29ms / p95 83ms；1k 条 hot p95 27.9ms、10k 条 97.4ms——赛题 ≤500ms 指标 6 倍余量，自设 ≤200ms 目标达成。`WANWEI_KYLIN_SDK_PERSISTENT=0` 可回退旧行为。
+- **赛题四指标全部达标**：偏好提取 91.7%（≥85%）、知识召回 100%（≥85%）、检索响应 p95 83ms（≤500ms）、冲突处理 100%（≥88%）。
+- **仓库瘦身（v1.0 发布准备）**：移除手机客户端全链路（backend mobile_remote/LAN 配对端点、前端 MobileView/路由/设置卡片、桌面端浮动小窗与 LAN IPC）；移除 Windows 相关（9 个 ps1 脚本、CI windows 矩阵腿、文档 Windows 段）；文档精简为使用说明书（docs/competition/AI优化/文档中心/REVIEW 移除，新增面向最终用户的 `使用说明书.md`，含 KySec 信任标签排障）。
+- **桌面端 KySec 自适应**：venv 预检识别 KySec 拦截特征（failed to map segment），给出 `kyexectl -s -r` 信任标签指引，避免探针失败→重建死循环。
+- 版本定档 v1.0.0（backend VERSION、desktop package.json、README 徽章）。
+
 ### 2026-09-04 - TKE Temporal Knowledge Evolution 知识双时态与演化时间轴（#204）
 - 新增 `backend/app/memory_runtime/temporal_knowledge.py`：TKE 时序核心，扩展 #202 的 knowledge_evolution（不新建平行体系，边词表对齐既有四类）。命名定档 TKE（Temporal Knowledge Evolution），与 EGPM 构成双体系叙事（偏好：情感→偏好→演化 ｜ 知识：时间→真值→演化）。
 - 双时态：`state.valid_from` 补全 valid_time 区间（`valid_until` 已有，scan_stale 消费）；`set_valid_time` 经 update_capsule 写入（账本留痕、区间自洽校验、显式清空语义）。
