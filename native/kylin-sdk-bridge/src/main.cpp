@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -281,12 +282,42 @@ private:
     std::string db_file_;
 };
 
-json handle_upsert(const json& request) {
-    EmbeddingRuntime embedding(request);
+// 请求间复用的运行时缓存:模型加载与向量库连接只在首个请求发生一次,
+// 键含全部会影响运行时构造的配置项——配置变化时自然重建,不跨配置复用。
+class RuntimeCache {
+public:
+    EmbeddingRuntime& embedding(const json& request) {
+        const std::string key = optional_string(request, "embedding_model");
+        const auto it = embeddings_.find(key);
+        if (it != embeddings_.end()) {
+            return *it->second;
+        }
+        return *embeddings_.emplace(key, std::make_unique<EmbeddingRuntime>(request)).first->second;
+    }
+
+    VectorRuntime& vector_db(const json& request) {
+        const std::string key =
+            required_string(request, "app_id") + "\x1f" +
+            required_string(request, "collection") + "\x1f" +
+            required_string(request, "db_file");
+        const auto it = vector_dbs_.find(key);
+        if (it != vector_dbs_.end()) {
+            return *it->second;
+        }
+        return *vector_dbs_.emplace(key, std::make_unique<VectorRuntime>(request)).first->second;
+    }
+
+private:
+    std::map<std::string, std::unique_ptr<EmbeddingRuntime>> embeddings_;
+    std::map<std::string, std::unique_ptr<VectorRuntime>> vector_dbs_;
+};
+
+json handle_upsert(const json& request, RuntimeCache& cache) {
+    EmbeddingRuntime& embedding = cache.embedding(request);
     const int64_t vector_id = required_int64(request, "vector_id");
     const std::string capsule_id = required_string(request, "capsule_id");
     const std::vector<float> vector = embedding.embed(required_string(request, "text"));
-    VectorRuntime vector_db(request);
+    VectorRuntime& vector_db = cache.vector_db(request);
     vector_db.upsert(vector_id, capsule_id, vector);
     return {
         {"ok", true},
@@ -296,11 +327,11 @@ json handle_upsert(const json& request) {
     };
 }
 
-json handle_search(const json& request) {
-    EmbeddingRuntime embedding(request);
+json handle_search(const json& request, RuntimeCache& cache) {
+    EmbeddingRuntime& embedding = cache.embedding(request);
     const std::vector<float> vector = embedding.embed(required_string(request, "text"));
     const int64_t top_k = request.value("top_k", 5);
-    VectorRuntime vector_db(request);
+    VectorRuntime& vector_db = cache.vector_db(request);
     const auto native_hits = vector_db.search(vector, top_k);
 
     json hits = json::array();
@@ -315,18 +346,18 @@ json handle_search(const json& request) {
     };
 }
 
-json handle_delete(const json& request) {
-    VectorRuntime vector_db(request);
+json handle_delete(const json& request, RuntimeCache& cache) {
+    VectorRuntime& vector_db = cache.vector_db(request);
     const int64_t vector_id = required_int64(request, "vector_id");
     return {{"ok", true}, {"vector_id", vector_id}, {"deleted", vector_db.erase(vector_id)}};
 }
 
-json handle_probe(const json& request) {
+json handle_probe(const json& request, RuntimeCache& cache) {
     // A process-level probe is not enough: initialize both official SDKs so
     // Python only advertises native availability after the model and the
     // vector-engine connection have both succeeded.
-    EmbeddingRuntime embedding(request);
-    VectorRuntime vector_db(request);
+    EmbeddingRuntime& embedding = cache.embedding(request);
+    VectorRuntime& vector_db = cache.vector_db(request);
     const std::vector<float> vector = embedding.embed("wanwei native sdk probe");
     return {
         {"ok", true},
@@ -336,35 +367,55 @@ json handle_probe(const json& request) {
     };
 }
 
-json dispatch(const json& request) {
+json dispatch(const json& request, RuntimeCache& cache) {
     const std::string action = required_string(request, "action");
     if (action == "probe") {
-        return handle_probe(request);
+        return handle_probe(request, cache);
     }
     if (action == "upsert") {
-        return handle_upsert(request);
+        return handle_upsert(request, cache);
     }
     if (action == "search") {
-        return handle_search(request);
+        return handle_search(request, cache);
     }
     if (action == "delete") {
-        return handle_delete(request);
+        return handle_delete(request, cache);
     }
     throw NativeError("unknown_action");
 }
 
 }  // namespace
 
+// 进程模型（延迟优化的核心改动）:
+//
+// 旧版:main 读一个请求、处理、退出——每次 search 都要重新加载 embedding
+// 模型并重连向量库,单次查询 ~200ms 里绝大部分是重复的初始化开销。
+// 新版:按行循环处理请求直到 EOF。RuntimeCache 以 (模型, 集合, 库文件,
+// app_id) 为键复用 EmbeddingRuntime / VectorRuntime——模型只在首个请求
+// 加载一次,后续请求只付 embed + search 的真实成本。
+//
+// 向后兼容:旧的一次性调用方(写一个请求后关 stdin)在循环里表现为
+// 处理一行后读到 EOF 退出,行为与旧版逐字节一致。
 int main() {
-    try {
-        json request;
-        std::cin >> request;
-        emit_response(dispatch(request));
-        return 0;
-    } catch (const std::exception&) {
-        // The Python caller records only a generic failure, so bridge errors
-        // cannot accidentally place input text in stdout or audit storage.
-        emit_response(json{{"ok", false}, {"error", "native_operation_failed"}});
-        return 0;
+    std::ios::sync_with_stdio(false);
+    RuntimeCache cache;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
+            continue;  // 忽略空行(对端 flush 语义)
+        }
+        json response;
+        try {
+            const json request = json::parse(line);
+            response = dispatch(request, cache);
+        } catch (const std::exception&) {
+            // The Python caller records only a generic failure, so bridge
+            // errors cannot accidentally place input text in stdout or audit
+            // storage.
+            response = json{{"ok", false}, {"error", "native_operation_failed"}};
+        }
+        emit_response(response);
+        std::cout.flush();
     }
+    return 0;
 }

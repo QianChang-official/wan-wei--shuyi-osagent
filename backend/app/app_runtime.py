@@ -295,6 +295,15 @@ async def lifespan(app: FastAPI):
         dream_scheduler_stop.set()
         dream_scheduler_thread.join(timeout=5)
         shutdown_smoke_executor()
+        # 常驻麒麟 SDK bridge 进程随服务停机关闭(不留孤儿进程)。
+        try:
+            from .kylin_sdk.native import shutdown_persistent_bridges
+
+            shutdown_persistent_bridges()
+        except Exception as exc:  # noqa: BLE001 —— 停机路径尽力而为
+            import logging
+
+            logging.getLogger(__name__).warning("persistent bridge shutdown failed: %s", exc)
         close_all()
 
 # Issue #91: modular routers (grouped in-place to avoid breaking test monkeypatch targets)
