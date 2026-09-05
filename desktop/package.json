@@ -1,7 +1,7 @@
 {
   "name": "wanwei-shuyi-desktop",
   "productName": "wanwei-shuyi-desktop",
-  "version": "0.11.0",
+  "version": "1.0.0",
   "private": true,
   "description": "宛委·枢忆 OSAgent 秘府控制台 — 麒麟 Linux 桌面客户端（Electron 封装，Web 业务代码零改动）",
   "main": "src/main.js",

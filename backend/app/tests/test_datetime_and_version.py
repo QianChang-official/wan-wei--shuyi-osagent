@@ -68,17 +68,17 @@ def test_version_constant():
     """测试版本常量"""
     from backend.app.version import VERSION, VERSION_HISTORY
 
-    # 版本号应该是字符串
+    # 版本号应该是字符串(v1.0.0 起为当前发布版本)
     assert isinstance(VERSION, str)
-    assert VERSION == "v0.11.0-wanshu"
+    assert VERSION == "v1.0.0"
 
     # 版本历史应该是列表
     assert isinstance(VERSION_HISTORY, list)
     assert len(VERSION_HISTORY) >= 3
 
-    # 最新版本应该是当前已发布版本（v0.11.0-wanshu 已 released）
+    # 最新版本应该是当前已发布版本（v1.0.0 已 released）
     latest = VERSION_HISTORY[0]
-    assert latest['version'] == "v0.11.0-wanshu"
+    assert latest['version'] == "v1.0.0"
     assert latest['status'] == "released"
 
 

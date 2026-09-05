@@ -46,7 +46,9 @@ jobs:
         with:
           node-version: "22.23.2"
           cache: npm
-          cache-dependency-path: frontend/console-vue/package-lock.json
+          cache-dependency-path: |+
+            frontend/console-vue/package-lock.json
+            desktop/package-lock.json
       - run: python -m pip install -r backend/requirements-dev.txt
       - run: python -m pytest --basetemp .pytest-release -p no:cacheprovider
       - working-directory: frontend/console-vue
@@ -116,6 +118,22 @@ jobs:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+      - name: Install fpm toolchain for desktop packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cpio desktop-file-utils rpm
+          sudo gem install --no-document fpm -v 1.17.0
+      - name: Build desktop RPM / DEB (online-deps installer)
+        working-directory: desktop
+        run: |
+          npm ci
+          bash scripts/build-linux.sh all
+          ls -la release/
+      - name: Collect desktop package artifacts
+        run: |
+          mkdir -p desktop-artifacts
+          cp desktop/release/*.rpm desktop/release/*.deb desktop-artifacts/ 2>/dev/null || true
+          ls -la desktop-artifacts/
       - name: Build source artifacts
         shell: bash
         run: |
@@ -138,4 +156,6 @@ jobs:
             wanwei-shuyi-${{ env.RELEASE_TAG }}.tar.gz
             wanwei-shuyi-${{ env.RELEASE_TAG }}.zip
             wanwei-shuyi-${{ env.RELEASE_TAG }}.cdx.json
+            desktop-artifacts/*.rpm
+            desktop-artifacts/*.deb
             SHA256SUMS
