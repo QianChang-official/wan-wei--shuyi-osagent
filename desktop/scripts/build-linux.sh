@@ -18,7 +18,7 @@ cd "$ROOT"
 
 # 0. 前置:已跟踪文件不得有未提交改动(staging 从 HEAD 导出,未提交改动
 #    会静默丢失)。未跟踪文件(?? )不进 git archive,不拦截。
-if [ -n "$(git status --porcelain 2>/dev/null | grep -v '^??')" ]; then
+if git status --porcelain 2>/dev/null | grep -qv '^??'; then
   echo "ERROR: 已跟踪文件有未提交改动;staging 从 HEAD 导出,请先提交或暂存。" >&2
   git status --porcelain | grep -v '^??' | head -5 >&2
   exit 1
@@ -64,6 +64,8 @@ esac
 mkdir -p "$ROOT/release"
 cp "$DESK"/release/*.rpm "$DESK"/release/*.deb "$ROOT/release/" 2>/dev/null || true
 echo "Done. Artifacts: $ROOT/release/"
-ls -la "$ROOT/release/" | grep -E 'rpm|deb' || true
+for f in "$ROOT/release/"*.rpm "$ROOT/release/"*.deb; do
+  [ -e "$f" ] && ls -la "$f"
+done
 
 # 5. 保留 staging 供排查;重新打包时步骤 0 会整体重建
