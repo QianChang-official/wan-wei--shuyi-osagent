@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/QianChang-official/wan-wei--shuyi-osagent/actions/workflows/security.yml"><img src="https://github.com/QianChang-official/wan-wei--shuyi-osagent/actions/workflows/security.yml/badge.svg" alt="Security"></a>
-  <img src="https://img.shields.io/badge/version-v0.11.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.0.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-Mulan%20PSL%20v2-green" alt="License">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
   <img src="https://img.shields.io/badge/KylinOS-V11-red" alt="KylinOS">
@@ -143,7 +143,7 @@ bash scripts/run_dev.sh
 <p align="center"><img src="assets/console.png" alt="控制台" width="880"></p>
 -->
 
-**路径 C / D**：麒麟桌面构建与安装见 [desktop/README.md](desktop/README.md)（`deb`/`rpm` 双包，`sudo dpkg -i release/wanwei-shuyi-desktop_0.11.0_amd64.deb` 即装）；嵌入式集成直接走治理端点，鉴权与档位规则见下方深水区。
+**路径 C / D**：麒麟桌面构建与安装见 [desktop/README.md](desktop/README.md)（`deb`/`rpm` 双包，`sudo dpkg -i release/wanwei-shuyi-desktop_1.0.0_amd64.deb` 即装）；嵌入式集成直接走治理端点，鉴权与档位规则见下方深水区。
 
 ---
 
@@ -168,7 +168,7 @@ bash scripts/run_dev.sh
 | 实测项 | 结果 | 测试条件 |
 |---|---|---|
 | 本机 SQLite FTS5 检索 | **p95 = 0.8072 ms** | 100 次检索、50 个种子记忆胶囊、单机单进程 |
-| 银河麒麟 V11 原生 SDK | **p50 = 195.320 ms / p95 = 246.473 ms** | QEMU/WHPX 虚拟机端到端 30 次（预热 1 次剔除），原始样本与快照证据见 [`reports/kylin-native-sdk-evidence/`](reports/kylin-native-sdk-evidence/) |
+| 银河麒麟 V11 原生 SDK 检索（常驻 bridge） | **HTTP 全链路 p50 = 29 ms / p95 = 83 ms**；SDK 单次 15 ms；1k 条 hot p95 27.9 ms、10k 条 97.4 ms | 麒麟 V11 桌面版实机（6.6 内核 + KSAF），原生向量引擎 + 常驻 bridge（模型只加载一次），[`reports/kylin-native-sdk-evidence/`](reports/kylin-native-sdk-evidence/) |
 | MemoryArena-Lite 生产记忆评测 | **5 cases / 16 assertions 全部通过** | `unsafe_autonomy_rate = 0.0`，报告见 [`reports/production_memory_eval_metrics.json`](reports/production_memory_eval_metrics.json) |
 
 治理层（账本、状态机、删除验证）全部是本地 SQLite 操作——性能瓶颈在模型推理，不在治理开销。
@@ -256,6 +256,7 @@ bash scripts/run_dev.sh
 - 评测口径与成绩：[docs/BENCHMARK.md](docs/BENCHMARK.md)
 - 竞赛交付材料：[competition/](competition/)
 - 变更历史与评审记录：[CHANGELOG.md](CHANGELOG.md) · [REVIEW.md](REVIEW.md)
+- 安装与排障手册：[使用说明书](使用说明书.md)
 
 ---
 

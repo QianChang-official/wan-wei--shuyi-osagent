@@ -1,0 +1,2200 @@
+diff --git a/backend/app/platform_api/_system_svc_runtime.py b/backend/app/platform_api/_system_svc_runtime.py
+index db4400c..78dbfa8 100644
+--- a/backend/app/platform_api/_system_svc_runtime.py
++++ b/backend/app/platform_api/_system_svc_runtime.py
+@@ -12,7 +12,6 @@
+ - 模拟器镜像下载（未配置 WANWEI_EMULATOR_IMAGE_URL 时后台线程模拟推进
+   2%/0.5s；配置后 httpx 流式真实下载到 data/platform/downloads/，可选
+   SHA256 校验，.part 临时名完成后原子改名）
+-- 局域网手机控制（token + 局域网 URL，监听切换由桌面端执行）
+ - 沙盒命令执行（白名单 + cwd 监禁 + 5s 超时 + 4KB 截断）
+ - wanwei CLI 使用指南（静态文档）
+ 
+@@ -26,14 +25,11 @@ import logging
+ import math
+ import os
+ import re
+-import secrets
+ import shlex
+-import socket
+ import subprocess
+ import threading
+ import time
+ import uuid
+-from datetime import datetime, timedelta, timezone
+ from pathlib import Path, PureWindowsPath
+ from typing import Any, Literal
+ from urllib.parse import urlparse, urlsplit, urlunsplit
+@@ -97,7 +93,6 @@ _BACKGROUND_DATA_MIMES = frozenset({'image/png', 'image/jpeg', 'image/webp', 'im
+ _BACKGROUND_UNSAFE_CHARS = re.compile(r'["\'()\\<>\r\n]')
+ _SANDBOX_TIMEOUT_S = 5
+ _SANDBOX_TRUNCATE = 4096
+-_LAN_DEFAULT_PORT = int(os.environ.get('WANWEI_PORT') or os.environ.get('PORT') or '8000')
+ 
+ # 沙盒执行环境：仅保留运行白名单内系统命令所必需的最小环境变量，
+ # 绝不继承任何 WANWEI_* 变量，避免通过 `env` 等命令泄露主 API Key。
+@@ -238,16 +233,6 @@ class BrowserLaunchIn(BaseModel):
+         return v.strip()
+ 
+ 
+-class LanEnableIn(BaseModel):
+-    model_config = ConfigDict(extra='forbid')
+-    gear: str = Field(min_length=1, max_length=32)
+-
+-
+-class LanVerifyIn(BaseModel):
+-    model_config = ConfigDict(extra='forbid')
+-    token: str = Field(min_length=1, max_length=128)
+-
+-
+ class SandboxExecIn(BaseModel):
+     model_config = ConfigDict(extra='forbid')
+     command: str = Field(min_length=1, max_length=500)
+@@ -1204,153 +1189,6 @@ def emulator_download_cancel(did: str) -> dict:
+     return {**rec, 'ok': True}
+ 
+ 
+-# ---------------------------------------------------------------------------
+-# 局域网手机控制（token + 局域网 URL；监听 0.0.0.0 切换由桌面端执行）
+-# ---------------------------------------------------------------------------
+-
+-_LAN_NOTE = '需桌面端切换监听 0.0.0.0 后生效'
+-_LAN_TOKEN_TTL_S = 15 * 60  # 配对 token 有效期 15 分钟：短时用途凭证，超时需重新生成
+-
+-
+-def _lan_state() -> dict:
+-    lan = _sys_store.get('lan')
+-    return lan if isinstance(lan, dict) else {}
+-
+-
+-def _lan_token_state(lan: dict) -> str:
+-    """返回配对 token 状态：'ok' | 'expired' | 'consumed' | 'unset'。
+-
+-    TTL 判定基准为 token_created_at（旧数据无该字段时退用 enabled_at，
+-    相当于一次性迁移：旧 token 自启用时刻起同样适用 TTL）；
+-    序列化格式与 datetime_utils 保持一致，fromisoformat 双向兼容。
+-    """
+-    if not (lan.get('token') or ''):
+-        return 'unset'
+-    if lan.get('token_consumed'):
+-        return 'consumed'
+-    created = lan.get('token_created_at') or lan.get('enabled_at') or ''
+-    ttl = int(lan.get('token_ttl_s') or _LAN_TOKEN_TTL_S)
+-    try:
+-        created_dt = datetime.fromisoformat(created)
+-        if created_dt.tzinfo is None:
+-            created_dt = created_dt.replace(tzinfo=timezone.utc)
+-    except ValueError:
+-        return 'expired'  # 无可用时间基准，fail-closed
+-    if datetime.now(timezone.utc) > created_dt + timedelta(seconds=ttl):
+-        return 'expired'
+-    return 'ok'
+-
+-
+-def _detect_lan_ip() -> str | None:
+-    """UDP 伪连接探测本机出口 IP；失败返回 None。"""
+-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+-    try:
+-        sock.connect(('8.8.8.8', 80))
+-        ip = sock.getsockname()[0]
+-    except OSError:
+-        return None
+-    finally:
+-        sock.close()
+-    if not ip or ip.startswith('127.'):
+-        return None
+-    return ip
+-
+-
+-@router.get('/system/lan/status')
+-def lan_status() -> dict:
+-    lan = _lan_state()
+-    enabled = bool(lan.get('enabled'))
+-    token_state = _lan_token_state(lan) if enabled else None
+-    # token 未消费时不出露完整 URL（防配对前泄露）
+-    lan_url = None
+-    if enabled and token_state == 'consumed':
+-        lan_url = lan.get('lan_url')
+-    return {
+-        'enabled': enabled,
+-        'bind': _lan_state().get('bind', '127.0.0.1'),
+-        'lan_url': lan_url,
+-        'token_set': bool(lan.get('token')),
+-        'token_state': token_state,
+-        'token_ttl_s': _LAN_TOKEN_TTL_S if enabled else None,
+-    }
+-
+-
+-@router.post('/system/lan/enable')
+-def lan_enable(req: LanEnableIn) -> dict:
+-    if req.gear != 'device':
+-        audit_safe('gear_denied', {'gear': req.gear, 'action': 'lan_enable', 'reason': 'lan_enable_requires_device_gear'})
+-        raise HTTPException(status_code=403, detail=f'局域网暴露面启用仅允许在「{WORK_GEARS["device"]}」档位下进行，当前档位：{req.gear}')
+-    denied = require_gear(req.gear, action='lan_enable', context={'surface': 'lan'})
+-    if denied:
+-        raise HTTPException(status_code=403, detail='device 档默认禁用，设 WANWEI_DEVICE_GEAR_ENABLED=1 后才允许开启局域网暴露面')
+-    token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
+-    ip = _detect_lan_ip()
+-    ip_placeholder = ip is None
+-    if ip_placeholder:
+-        ip = '192.168.1.100'
+-    # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
+-    base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
+-    _sys_store.set('lan', {
+-        'enabled': True,
+-        'bind': '0.0.0.0',
+-        'token': token,
+-        'lan_url': base_lan_url,
+-        'port': _LAN_DEFAULT_PORT,
+-        'ip': ip,
+-        'ip_placeholder': ip_placeholder,
+-        'enabled_at': utc_now_iso(),
+-        'token_created_at': utc_now_iso(),
+-        'token_ttl_s': _LAN_TOKEN_TTL_S,
+-        'token_consumed': False,
+-    })
+-    audit_safe('lan_enabled', {'ip': ip, 'port': _LAN_DEFAULT_PORT, 'ip_placeholder': ip_placeholder})
+-    result = {
+-        'enabled': True,
+-        'lan_url': base_lan_url,
+-        'qr_payload': base_lan_url,
+-        'token': token,
+-        'token_ttl_s': _LAN_TOKEN_TTL_S,
+-        'note': _LAN_NOTE,
+-    }
+-    if ip_placeholder:
+-        result['ip_placeholder'] = True
+-        result['note'] = _LAN_NOTE + '；本机局域网 IP 探测失败，已使用 192.168.x.x 占位，请以实际网卡地址为准'
+-    return result
+-
+-
+-@router.post('/system/lan/disable')
+-def lan_disable() -> dict:
+-    lan = _lan_state()
+-    lan['enabled'] = False
+-    lan['bind'] = '127.0.0.1'
+-    lan['lan_url'] = None
+-    lan['token'] = None  # 关闭即作废，旧 token 立即失效
+-    lan['token_created_at'] = None
+-    lan['token_consumed'] = False
+-    _sys_store.set('lan', lan)
+-    return lan_status()
+-
+-
+-@router.post('/system/lan/verify')
+-def lan_verify(req: LanVerifyIn) -> dict:
+-    lan = _lan_state()
+-    stored = lan.get('token') or ''
+-    if not lan.get('enabled'):
+-        return {'ok': False, 'reason': '未启用'}
+-    if not stored or not secrets.compare_digest(stored, req.token):
+-        return {'ok': False, 'reason': 'token 不匹配'}
+-    state = _lan_token_state(lan)
+-    if state == 'consumed':
+-        return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
+-    if state == 'expired':
+-        return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
+-    # 一次性使用限制：首次验证通过即作废，配对成功以本次 ok:true 为准
+-    lan['token_consumed'] = True
+-    _sys_store.set('lan', lan)
+-    audit_safe('lan_pairing_verified', {'ttl_s': _LAN_TOKEN_TTL_S})
+-    return {'ok': True, 'paired': True, 'note': '配对成功；配对 token 为一次性凭证，已即时作废'}
+-
+-
+ # ---------------------------------------------------------------------------
+ # 沙盒执行（白名单 + cwd 监禁 data/platform/sandbox/ + 5s 超时 + 4KB 截断）
+ # ---------------------------------------------------------------------------
+diff --git a/backend/app/platform_api/mobile_remote.py b/backend/app/platform_api/mobile_remote.py
+deleted file mode 100644
+index 31258e4..0000000
+--- a/backend/app/platform_api/mobile_remote.py
++++ /dev/null
+@@ -1,340 +0,0 @@
+-"""手机端远程控制补充 API：实时事件流 / 工具调用实时查询 / 文件上传。
+-
+-为宛委枢忆手机端 APP（meoo-app）提供 orca/mobile 风格的远程控制能力：
+-
+-实际挂载前缀：/platform/mobile（platform_api 自动发现，app_runtime 统一 prefix='/platform'）
+-1. GET  /platform/mobile/events              SSE 实时事件流（健康/任务/工具调用/审计）
+-2. GET  /platform/mobile/tool-calls          最近工具调用（轮询，支持 since）
+-3. POST /platform/mobile/upload              上传文件到后端存储（AI 可读取）
+-4. GET  /platform/mobile/list                已上传文件列表
+-5. GET  /platform/mobile/{file_id}/content   读取文件内容（AI 视角）
+-6. DELETE /platform/mobile/{file_id}         删除文件
+-"""
+-import json
+-import logging
+-import re
+-import sqlite3
+-import threading
+-import time
+-import uuid
+-from pathlib import Path
+-from typing import Optional
+-
+-import asyncio
+-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+-from fastapi.responses import StreamingResponse
+-
+-from ..audit.service import list_logs, record
+-from ..db import get_conn
+-
+-router = APIRouter(prefix='/mobile', tags=['mobile-remote'])
+-
+-logger = logging.getLogger(__name__)
+-
+-# ---------------------------------------------------------------------------
+-# 实时事件流（SSE）
+-# ---------------------------------------------------------------------------
+-
+-# 事件总线：最近 N 条事件环形缓冲 + 订阅者集合（asyncio 版本）
+-_EVENT_BUFFER: list[dict] = []
+-_EVENT_BUFFER_MAX = 200
+-_SUBSCRIBERS: set[asyncio.Event] = set()
+-_SUBSCRIBERS_MAX = 100
+-_BUS_LOCK = asyncio.Lock()
+-
+-
+-async def _append_event(event: dict) -> None:
+-    """把事件写进环形缓冲并唤醒所有 SSE 订阅者。"""
+-    event.setdefault('ts', time.time())
+-    async with _BUS_LOCK:
+-        _EVENT_BUFFER.append(event)
+-        if len(_EVENT_BUFFER) > _EVENT_BUFFER_MAX:
+-            _EVENT_BUFFER[:] = _EVENT_BUFFER[-_EVENT_BUFFER_MAX:]
+-        for ev in list(_SUBSCRIBERS):
+-            ev.set()
+-
+-
+-@router.get('/events')
+-async def realtime_events(
+-    since: float = Query(0, description='只推送 ts > since 的事件（秒时间戳）'),
+-    max_idle: float = Query(
+-        300,
+-        ge=0,
+-        le=300,
+-        description='空闲多少秒后主动收流（默认 300 秒）',
+-    ),
+-):
+-    """SSE 实时事件流。
+-
+-    用法（手机端 EventSource / Taro.request enableChunked）：
+-        curl -N -H 'X-API-Key: <key>' http://host:8080/realtime/events
+-
+-    事件格式：
+-        event: <type>
+-        data: {"ts": ..., "event_type": "workflow_run", "payload": {...}}
+-    """
+-    sub = asyncio.Event()
+-    async with _BUS_LOCK:
+-        if len(_SUBSCRIBERS) >= _SUBSCRIBERS_MAX:
+-            raise HTTPException(429, 'SSE subscriber limit reached')
+-        _SUBSCRIBERS.add(sub)
+-
+-    async def gen():
+-        # 先补发 since 之后的缓冲事件（断线重连不丢）
+-        async with _BUS_LOCK:
+-            backlog = [e for e in _EVENT_BUFFER if e['ts'] > since]
+-        for e in backlog:
+-            yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+-        # 长连接等待新事件
+-        idle = 0.0
+-        try:
+-            while True:
+-                sub.clear()
+-                try:
+-                    await asyncio.wait_for(sub.wait(), timeout=25)
+-                    async with _BUS_LOCK:
+-                        latest = list(_EVENT_BUFFER)
+-                    for e in latest[-5:]:
+-                        yield f"event: {e.get('event_type', 'event')}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+-                except asyncio.TimeoutError:
+-                    idle += 25
+-                    # max_idle > 0 时（测试/短轮询客户端）空闲到点就正常收流，
+-                    # 避免调用方阻塞在永不结束的长连接上；默认 300 秒。
+-                    if max_idle and idle >= max_idle:
+-                        yield "event: stream_end\ndata: {\"reason\": \"idle_timeout\"}\n\n"
+-                        return
+-                    yield ": keepalive\n\n"  # 心跳，防代理断连
+-        finally:
+-            async with _BUS_LOCK:
+-                _SUBSCRIBERS.discard(sub)
+-
+-    return StreamingResponse(
+-        gen(),
+-        media_type='text/event-stream',
+-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+-    )
+-
+-
+-@router.get('/tool-calls')
+-def recent_tool_calls(
+-    limit: int = Query(20, ge=1, le=100),
+-    since: Optional[float] = Query(None, description='只返回 ts > since 的记录'),
+-):
+-    """最近工具调用记录（轮询用，手机端可每 5s 拉一次）。"""
+-    # 从审计日志里筛 mcp_tool_call / tool_call 事件
+-    items = []
+-    for row in list_logs(limit=200):
+-        if row.get('event_type') in ('mcp_tool_call', 'tool_call'):
+-            ts = _ts_of(row)
+-            if since is not None and ts <= since:
+-                continue
+-            items.append(row)
+-    return {'items': items[:limit]}
+-
+-
+-def _ts_of(row: dict) -> float:
+-    """从审计行里尽力解析时间戳（created_at 是 ISO 字符串）。"""
+-    created = row.get('created_at', '')
+-    try:
+-        from datetime import datetime
+-        dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+-        return dt.timestamp()
+-    except Exception:
+-        return time.time()
+-
+-
+-# ---------------------------------------------------------------------------
+-# 文件上传 / 列表 / 读取（AI 可读取）
+-# ---------------------------------------------------------------------------
+-
+-_UPLOAD_DIR = Path(__file__).resolve().parent.parent / 'uploads'
+-# 合法 file_id 形态：上传时由服务端生成的 file_<12位小写hex>
+-_FILE_ID_RE = re.compile(r'^file_[0-9a-f]{12}$')
+-MAX_FILES = 1000
+-MAX_TOTAL_BYTES = 1024 * 1024 * 1024
+-
+-
+-def _ensure_upload_dir() -> Path:
+-    """惰性创建上传目录。
+-
+-    导入期不要碰文件系统：只读根文件系统的加固容器里 mkdir 会抛
+-    OSError，导致 platform_api 自动发现把本模块记为失败模块，
+-    /health/ready 直接 not_ready（503）。改为首次真正上传时才建。
+-    """
+-    try:
+-        _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+-    except OSError:
+-        raise HTTPException(503, 'upload directory unavailable') from None
+-    return _UPLOAD_DIR
+-
+-
+-def _file_meta_table(conn):
+-    conn.execute(
+-        'CREATE TABLE IF NOT EXISTS mobile_files('
+-        ' file_id TEXT PRIMARY KEY,'
+-        ' filename TEXT,'
+-        ' size_bytes INTEGER,'
+-        ' content_type TEXT,'
+-        ' created_at TEXT)'
+-    )
+-    conn.commit()
+-
+-
+-@router.post('/upload')
+-async def upload_file(
+-    file: UploadFile = File(...),
+-    note: str = Query('', description='备注（可选）'),
+-):
+-    """上传文件到后端存储，AI 可通过 /files/{file_id}/content 读取。"""
+-    file_id = 'file_' + uuid.uuid4().hex[:12]
+-    MAX_BYTES = 50 * 1024 * 1024
+-
+-    # 预检：优先用 file.size，回退 Content-Length 头；超限直接 413 不落盘
+-    declared = getattr(file, 'size', None) or 0
+-    if declared <= 0:
+-        try:
+-            declared = int(file.headers.get('content-length', 0))
+-        except (ValueError, TypeError):
+-            declared = 0
+-    if declared > MAX_BYTES:
+-        raise HTTPException(413, '文件超过 50MB 限制')
+-
+-    dest = _ensure_upload_dir() / file_id
+-    total = 0
+-    CHUNK = 256 * 1024  # 256KB chunks
+-
+-    with dest.open('wb') as fh:
+-        while True:
+-            chunk = await file.read(CHUNK)
+-            if not chunk:
+-                break
+-            total += len(chunk)
+-            if total > MAX_BYTES:
+-                dest.unlink(missing_ok=True)
+-                raise HTTPException(413, '文件超过 50MB 限制')
+-            fh.write(chunk)
+-
+-    conn = get_conn()
+-    _file_meta_table(conn)
+-    quota = conn.execute('SELECT COUNT(*), COALESCE(SUM(size_bytes),0) FROM mobile_files').fetchone()
+-    if quota[0] >= MAX_FILES or quota[1] + total > MAX_TOTAL_BYTES:
+-        dest.unlink(missing_ok=True)
+-        raise HTTPException(413, 'upload quota exceeded')
+-    from ..utils.datetime_utils import utc_now_iso
+-    conn.execute(
+-        'INSERT INTO mobile_files VALUES (?,?,?,?,?)',
+-        (file_id, file.filename or 'unnamed', total, file.content_type or '', utc_now_iso()),
+-    )
+-    conn.commit()
+-
+-    record('file_upload', {'file_id': file_id, 'filename': file.filename, 'size': total, 'note': note})
+-    await _append_event({'event_type': 'file_upload', 'file_id': file_id, 'filename': file.filename})
+-
+-    return {
+-        'file_id': file_id,
+-        'filename': file.filename,
+-        'size_bytes': total,
+-        'content_type': file.content_type,
+-        'url': f'/files/{file_id}/content',
+-        'note': note,
+-    }
+-
+-
+-@router.get('/list')
+-def list_files(limit: int = Query(50, ge=1, le=200)):
+-    """已上传文件列表（元数据，不含内容）。"""
+-    conn = get_conn()
+-    _file_meta_table(conn)
+-    rows = conn.execute('SELECT * FROM mobile_files ORDER BY created_at DESC LIMIT ?', (limit,)).fetchall()
+-    return {
+-        'items': [
+-            {
+-                'file_id': r[0],
+-                'filename': r[1],
+-                'size_bytes': r[2],
+-                'content_type': r[3],
+-                'created_at': r[4],
+-            }
+-            for r in rows
+-        ]
+-    }
+-
+-
+-def _file_path_from_db(file_id: str) -> Path:
+-    """从 DB 元数据取文件路径（白名单模式）：file_id 必须在 mobile_files 表里存在。
+-
+-    路径完全由服务端生成（_UPLOAD_DIR / file_id），file_id 是上传时生成的
+-    file_<hex> 格式——不存在的 ID 直接 404，从根上杜绝路径穿越。
+-    """
+-    # 第一道：格式白名单——只接受上传时生成的 file_<12位小写hex>
+-    if not file_id or not _FILE_ID_RE.fullmatch(file_id):
+-        raise HTTPException(400, '非法文件 ID')
+-
+-    # 第二道：DB 元数据白名单——把服务端存储的 file_id 取回来用于拼路径，
+-    # 请求里的字符串只作为查询参数，绝不参与路径构造（taint 在此断链）。
+-    conn = get_conn()
+-    _file_meta_table(conn)
+-    row = conn.execute('SELECT file_id FROM mobile_files WHERE file_id=?', (file_id,)).fetchone()
+-    if row is None:
+-        raise HTTPException(404, '文件不存在')
+-    stored_id = str(row[0])
+-
+-    # 第三道：对服务端取回的值再确认形态，并做前缀归属校验
+-    if not _FILE_ID_RE.fullmatch(stored_id):
+-        raise HTTPException(400, '非法文件 ID')
+-    base = _UPLOAD_DIR.resolve()
+-    dest = (base / stored_id).resolve()
+-    if dest.parent != base:
+-        raise HTTPException(400, '非法文件 ID')
+-    return dest
+-
+-
+-@router.get('/{file_id}/content')
+-def read_file_content(file_id: str):
+-    """读取文件内容（AI 读取入口；文本直接返回，二进制返回 base64）。"""
+-    dest = _file_path_from_db(file_id)
+-    if not dest.exists():
+-        raise HTTPException(404, '文件不存在')
+-    data = dest.read_bytes()
+-    try:
+-        text = data.decode('utf-8')
+-        return {'file_id': file_id, 'content': text, 'encoding': 'utf-8'}
+-    except UnicodeDecodeError:
+-        import base64
+-        return {
+-            'file_id': file_id,
+-            'content_b64': base64.b64encode(data).decode(),
+-            'encoding': 'base64',
+-            'size_bytes': len(data),
+-        }
+-
+-
+-@router.delete('/{file_id}')
+-async def delete_file(file_id: str):
+-    """删除文件。
+-
+-    删除语义是"逻辑删除"：无论物理文件是否删除成功，元数据记录都会移除，
+-    审计与 SSE 事件照常写入。物理删除失败（如部分环境禁用了回收站/安全删除
+-    通道）只记录警告，不再让整个接口退化为 500 —— 否则客户端会误以为删除
+-    从未发生，元数据与磁盘事实将更难收敛。
+-    """
+-    dest = _file_path_from_db(file_id)
+-    if not dest.exists():
+-        raise HTTPException(404, '文件不存在')
+-    try:
+-        dest.unlink()
+-    except OSError as exc:
+-        # 仓库既有模式（如 memory_runtime/capsule_store.py）：物理清理失败
+-        # 不可让成功的业务操作失败 —— 记录并继续，由运维据此补清理。
+-        logger.warning(
+-            'mobile file physical delete failed for %s (logical delete proceeds): %s',
+-            dest,
+-            exc,
+-        )
+-    conn = get_conn()
+-    _file_meta_table(conn)
+-    conn.execute('DELETE FROM mobile_files WHERE file_id=?', (file_id,))
+-    conn.commit()
+-    record('file_delete', {'file_id': file_id})
+-    await _append_event({'event_type': 'file_delete', 'file_id': file_id})
+-    return {'deleted': file_id}
+diff --git a/desktop/src/main.js b/desktop/src/main.js
+index d084bca..3946276 100644
+--- a/desktop/src/main.js
++++ b/desktop/src/main.js
+@@ -60,11 +60,7 @@ let quitting = false;
+ let powerSaveBlockerId = null;       // 当前 blocker id，null 表示未启用
+ let preventSleepMode = 'app';        // 'app' 阻止系统挂起 | 'display' 连同屏幕常亮
+ 
+-// 局域网手机控制状态
+-let lanState = { enabled: false, url: '' };
+ 
+-// 浮动工作区小窗
+-let floatingWin = null;
+ 
+ // ------------------------------------------------------------- small helpers
+ 
+@@ -365,24 +361,6 @@ async function restartBackend(host) {
+   }
+ }
+ 
+-/** 取本机局域网 IPv4（优先私有网段 10./192.168./172.16-31.） */
+-function firstLanIPv4() {
+-  const candidates = [];
+-  for (const list of Object.values(os.networkInterfaces())) {
+-    for (const it of list || []) {
+-      if (it && it.family === 'IPv4' && !it.internal) candidates.push(it.address);
+-    }
+-  }
+-  const priv = candidates.find((a) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a));
+-  return priv || candidates[0] || '';
+-}
+-
+-/** LAN token 日志脱敏：只保留前 4 位，其余以省略号代替 */
+-function maskToken(token) {
+-  const t = String(token || '');
+-  return t.length <= 4 ? t : t.slice(0, 4) + '…';
+-}
+-
+ /** 导航白名单：仅允许控制台自身（http://127.0.0.1:<port>/），其余一律视为外站 */
+ function isConsoleUrl(url, port = backendPort) {
+   return typeof url === 'string' && url.startsWith(`http://127.0.0.1:${port}/`);
+@@ -403,7 +381,7 @@ function isTrustedFrame(frame) {
+   try { return isConsoleUrl(frame && frame.url); } catch { return false; }
+ }
+ 
+-/** 为指定 session 的出站请求注入 X-API-Key；默认 session 一次注册即可覆盖主窗体和浮动窗 */
++/** 为指定 session 的出站请求注入 X-API-Key；默认 session 一次注册即可覆盖主窗体 */
+ function injectApiKeyForSession(sess) {
+   sess.webRequest.onBeforeSendHeaders(
+     { urls: [`http://127.0.0.1:${backendPort}/*`] },
+@@ -480,70 +458,6 @@ function setPreventSleep(enable, mode) {
+   return getPreventSleep();
+ }
+ 
+-// ------------------------------------------------------ floating workspace
+-function isFloatingWorkspaceVisible() {
+-  return !!(
+-    floatingWin
+-    && !floatingWin.isDestroyed()
+-    && floatingWin.isVisible()
+-    && !floatingWin.isMinimized()
+-  );
+-}
+-
+-function setFloatingWorkspace(show) {
+-  if (show) {
+-    if (floatingWin && !floatingWin.isDestroyed()) {
+-      if (floatingWin.isMinimized()) floatingWin.restore();
+-      floatingWin.show();
+-      floatingWin.focus();
+-      refreshTray();
+-      return true;
+-    }
+-    floatingWin = new BrowserWindow({
+-      width: 420, height: 640,
+-      alwaysOnTop: true,
+-      frame: false,
+-      skipTaskbar: true,
+-      resizable: true,
+-      title: APP_NAME + ' · 浮动工作区',
+-      icon: path.join(__dirname, '..', 'build', 'icons', '256x256.png'),
+-      backgroundColor: '#F6F1E7',
+-      autoHideMenuBar: true,
+-      webPreferences: {
+-        preload: path.join(__dirname, 'preload.js'),
+-        contextIsolation: true,
+-        nodeIntegration: false,
+-        // preload 仅通过受信 IPC 获取桌面能力与 API Key，sandbox 可保持开启。
+-        sandbox: true,
+-        spellcheck: false,
+-      },
+-    });
+-    floatingWin.setAlwaysOnTop(true, 'floating');
+-    floatingWin.webContents.setWindowOpenHandler(({ url }) => {
+-      if (url.startsWith('http')) shell.openExternal(url);
+-      return { action: 'deny' };
+-    });
+-    guardNavigation(floatingWin.webContents);
+-    const createdWindow = floatingWin;
+-    for (const event of ['show', 'hide', 'minimize', 'restore']) {
+-      createdWindow.on(event, refreshTray);
+-    }
+-    createdWindow.on('closed', () => {
+-      if (floatingWin === createdWindow) floatingWin = null;
+-      refreshTray();
+-    });
+-    floatingWin.loadURL(`http://127.0.0.1:${backendPort}/console/#/mobile?floating=1`);
+-    logLine('floating workspace shown');
+-    refreshTray();
+-    return true;
+-  }
+-  const windowToClose = floatingWin;
+-  floatingWin = null;
+-  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.destroy();
+-  logLine('floating workspace hidden');
+-  refreshTray();
+-  return false;
+-}
+ 
+ // --------------------------------------------------------- window state
+ function loadWindowState() {
+@@ -628,7 +542,7 @@ function createTray() {
+   });
+ }
+ 
+-/** 重建托盘菜单（防睡眠、浮窗可见性与 LAN 状态变化后联动刷新） */
++/** 重建托盘菜单（防睡眠状态变化后联动刷新） */
+ function refreshTray() {
+   if (!tray || tray.isDestroyed()) return;
+   const openInBrowser = `http://127.0.0.1:${backendPort}/console/`;
+@@ -639,14 +553,7 @@ function refreshTray() {
+     { label: '任务期间阻止睡眠', type: 'checkbox', checked: getPreventSleep().enabled,
+       sublabel: preventSleepMode === 'display' ? '含屏幕常亮' : '仅阻止系统挂起',
+       click: (item) => setPreventSleep(item.checked, preventSleepMode) },
+-    { label: '显示浮动工作区', type: 'checkbox',
+-      checked: isFloatingWorkspaceVisible(),
+-      click: (item) => setFloatingWorkspace(item.checked) },
+-    { label: lanState.enabled ? '局域网手机控制：已开启' : '局域网手机控制：已关闭', enabled: false },
+   ];
+-  if (lanState.enabled && lanState.url) {
+-    items.push({ label: '复制手机端地址', click: () => { clipboard.writeText(lanState.url); notify('已复制', '手机端局域网地址已复制到剪贴板。'); } });
+-  }
+   items.push(
+     { type: 'separator' },
+     { label: '开机自启动', type: 'checkbox', checked: getAutostart(),
+@@ -786,31 +693,6 @@ function registerIpc() {
+     setPreventSleep(!!enable, mode));
+   handle('desktop:get-prevent-sleep', () => getPreventSleep());
+ 
+-  // 局域网手机控制：仅由前端配对流程显式触发；
+-  // 开启 = 后端以 0.0.0.0 重启（保持端口），关闭 = 恢复 127.0.0.1 重启
+-  handle('desktop:lan-enable', async (_e, { token } = {}) => {
+-    const ip = firstLanIPv4();
+-    if (!ip) throw new Error('未找到可用的局域网 IPv4 地址');
+-    if (backendHost !== '0.0.0.0' || !backendProc) await restartBackend('0.0.0.0');
+-    const url = `http://${ip}:${backendPort}/console/#/mobile?token=${String(token || '')}`;
+-    lanState = { enabled: true, url };
+-    refreshTray();
+-    // token 脱敏：只打前 4 位，完整配对 URL 不落日志
+-    logLine(`LAN enabled: http://${ip}:${backendPort}/console/#/mobile?token=${maskToken(token)}（已脱敏）`);
+-    return { enabled: true, lan_url: url, host: backendHost, port: backendPort };
+-  });
+-
+-  handle('desktop:lan-disable', async () => {
+-    if (backendHost !== '127.0.0.1' || !backendProc) await restartBackend('127.0.0.1');
+-    lanState = { enabled: false, url: '' };
+-    refreshTray();
+-    logLine('LAN disabled, backend back on 127.0.0.1');
+-    return { enabled: false, lan_url: null, host: backendHost, port: backendPort };
+-  });
+-
+-  // 浮动工作区小窗（420×640 置顶无边框，加载移动端视图）
+-  handle('desktop:floating-workspace', (_e, { show } = {}) =>
+-    setFloatingWorkspace(!!show));
+ }
+ 
+ // ------------------------------------------------------------------- boot
+@@ -831,7 +713,7 @@ if (!gotLock) {
+     }
+     // 真实异步探测空闲端口（原 findFreePortSync 恒回退 8010，已删除，见上方说明）
+     backendPort = await findFreePort();
+-    // 主进程兜底注入：所有窗口（主窗体 / 浮动窗 / LAN 手机视图）共享默认 session
++    // 主进程兜底注入：所有窗口（主窗体）共享默认 session
+     injectApiKeyForSession(session.defaultSession);
+     registerIpc();
+ 
+@@ -871,7 +753,6 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+   module.exports = {
+     findFreePort,
+     truncateLogIfNeeded,
+-    maskToken,
+     isConsoleUrl,
+     isTrustedFrame,
+     isVisibleOnSomeDisplay,
+@@ -879,7 +760,5 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+     decodeFileBuffer,
+     depsMarkerMatches,
+     isBackendEnvHealthy,
+-    isFloatingWorkspaceVisible,
+-    setFloatingWorkspace,
+   };
+ }
+diff --git a/desktop/src/preload.js b/desktop/src/preload.js
+index b4430b6..a2dd5df 100644
+--- a/desktop/src/preload.js
++++ b/desktop/src/preload.js
+@@ -42,12 +42,8 @@ contextBridge.exposeInMainWorld('wanweiDesktop', {
+   setPreventSleep: (enable, mode) => ipcRenderer.invoke('desktop:set-prevent-sleep', { enable, mode }),
+   getPreventSleep: () => ipcRenderer.invoke('desktop:get-prevent-sleep'),
+ 
+-  /** 局域网手机控制（配对流程显式触发；开启/关闭均会重启后端切换监听地址） */
+-  lanEnable: (token) => ipcRenderer.invoke('desktop:lan-enable', { token }),
+-  lanDisable: () => ipcRenderer.invoke('desktop:lan-disable'),
+ 
+   /** 浮动工作区小窗：show=true 创建/聚焦，false 销毁 */
+-  floatingWorkspace: (show) => ipcRenderer.invoke('desktop:floating-workspace', { show }),
+ });
+ 
+ // API Key 注入（键名与 Web 端约定一致：localStorage 'wanwei-desktop-api-key'，
+diff --git a/frontend/console-vue/src/App.vue b/frontend/console-vue/src/App.vue
+index cd26dd2..71982c0 100644
+--- a/frontend/console-vue/src/App.vue
++++ b/frontend/console-vue/src/App.vue
+@@ -80,7 +80,6 @@ const navGroups = [
+       { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
+       { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
+       { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
+-      { to: '/mobile', seal: '伴', name: '手机伴侣', en: 'Mobile' },
+     ],
+   },
+ ]
+diff --git a/frontend/console-vue/src/router/platform.ts b/frontend/console-vue/src/router/platform.ts
+index c2bc3fe..2da79d3 100644
+--- a/frontend/console-vue/src/router/platform.ts
++++ b/frontend/console-vue/src/router/platform.ts
+@@ -1,7 +1,7 @@
+ import type { RouteRecordRaw } from 'vue-router'
+ 
+ // 万枢协作平台路由（v0.12）：工作台 / 模型接入 / 智能体 / 空间 / 自动化 /
+-// 知识库 / 记忆中枢 / 会话管理 / 通用设置 / 帮助，以及手机伴侣（/mobile）。
++// 知识库 / 记忆中枢 / 会话管理 / 通用设置 / 帮助。
+ // 各视图均已实现，懒加载仅在实际访问时解析。
+ export const platformRoutes: RouteRecordRaw[] = [
+   { path: '/platform/workbench', name: 'platformWorkbench', component: () => import('@/views/platform/WorkbenchView.vue'), meta: { title: '万枢工作台', seal: '枢' } },
+@@ -14,5 +14,4 @@ export const platformRoutes: RouteRecordRaw[] = [
+   { path: '/platform/sessions', name: 'platformSessions', component: () => import('@/views/platform/SessionsView.vue'), meta: { title: '会话管理', seal: '笺' } },
+   { path: '/platform/settings', name: 'platformSettings', component: () => import('@/views/platform/SettingsView.vue'), meta: { title: '通用设置', seal: '设' } },
+   { path: '/platform/help', name: 'platformHelp', component: () => import('@/views/platform/HelpView.vue'), meta: { title: '帮助', seal: '助' } },
+-  { path: '/mobile', name: 'mobile', component: () => import('@/views/platform/MobileView.vue'), meta: { title: '手机伴侣', seal: '伴' } },
+ ]
+diff --git a/frontend/console-vue/src/views/platform/HelpView.vue b/frontend/console-vue/src/views/platform/HelpView.vue
+index 071d55c..34b8d16 100644
+--- a/frontend/console-vue/src/views/platform/HelpView.vue
++++ b/frontend/console-vue/src/views/platform/HelpView.vue
+@@ -23,10 +23,6 @@ const faqs: Faq[] = [
+     q: '记忆指令怎么用？',
+     a: '「记忆中枢」保存着你的偏好、项目背景与长期指令。在对话中说「记住：……」即可写入；也可在记忆中枢页面直接增删。记忆仅存放在本机数据中，不会上传到任何服务器。',
+   },
+-  {
+-    q: '如何用手机控制？',
+-    a: '在本应用「通用设置 → 局域网手机控制」中点击开启，页面会显示一个局域网地址。手机与电脑连入同一网络后，用手机浏览器打开该地址即可访问控制台。关闭后地址立即失效。',
+-  },
+   {
+     q: 'git 空间是做什么的？',
+     a: '「空间」舱室用于管理工作区：每个空间对应一个本地目录，可绑定 git 仓库，查看分支与变更状态，让智能体在指定空间内读写代码。真实推送（push）等外部动作只有在配置就绪后才会启用，未就绪时会明确标注为模拟。',
+@@ -296,7 +292,7 @@ const techStack = ['FastAPI 后端', 'Vue 3 + TypeScript + Vite', 'Electron 桌
+           <div class="faq-a long">
+             <p>一、本地数据不出机。对话记录、记忆内容、工作区文件、设置偏好与反馈表单，全部保存在本机数据目录或浏览器本机存储中，本软件不设有任何默认的数据回传通道。</p>
+             <p>二、密钥加密存储。模型服务商密钥仅在你主动填写后保存，落盘前经加密处理，界面展示一律为掩码；真实密钥仅在发起对应模型调用时短暂使用，不写入日志。</p>
+-            <p>三、对外通信最小化。仅当你配置并启用某个外部能力（如模型 API、局域网访问）时，软件才会与对应目标通信；开启局域网手机控制后，访问范围限于同一局域网。</p>
++            <p>三、对外通信最小化。仅当你配置并启用某个外部能力（如模型 API、局域网访问）时，软件才会与对应目标通信。</p>
+             <p>四、你的控制权。你可以在「记忆中枢」随时查看与删除记忆，在「通用设置」中清除自定义背景与偏好；删除数据目录即完成彻底清理。</p>
+             <p>五、反馈数据。本页反馈表单提交的内容仅存于本机浏览器 localStorage，不会发送给任何服务器。</p>
+           </div>
+diff --git a/frontend/console-vue/src/views/platform/MobileView.vue b/frontend/console-vue/src/views/platform/MobileView.vue
+deleted file mode 100644
+index e3dbb13..0000000
+--- a/frontend/console-vue/src/views/platform/MobileView.vue
++++ /dev/null
+@@ -1,1120 +0,0 @@
+-<script setup lang="ts">
+-/**
+- * 手机伴侣 — 局域网手机控制页（路由 /mobile）。
+- * 窄屏优先：max-width 560px 居中、大圆角卡片、底部固定对话操作栏。
+- * 契约（与后端 platform_api 子模块钉死）：
+- *   POST /system/lan/verify        { token }            配对校验
+- *   GET  /agents/runs              运行列表（5s 轮询）
+- *   POST /agents/runs/{id}/approve { approved:boolean } 批准/拒绝
+- *   POST /agents/chat              { message }          快捷对话
+- *   POST /memory/dreams/archive-now                     整理梦境
+- *   GET/PUT /system/power          { prevent_sleep }    防睡眠开关
+- *   GET  /agents/context-size                           上下文体量（弹层）
+- * 所有响应均做可选链容错；接口不可达时运行列表回退为「离线示例数据」。
+- */
+-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+-import { useRoute, useRouter } from 'vue-router'
+-import { apiGet, apiPost, apiPut, isAuthError, isNetworkError } from '@/api/platform'
+-import { runStatusGroup, runStatusLabel } from '@/utils/platformEnums'
+-import GfCard from '@/components/gf/GfCard.vue'
+-import GfTag from '@/components/gf/GfTag.vue'
+-import GfButton from '@/components/gf/GfButton.vue'
+-import GfEmpty from '@/components/gf/GfEmpty.vue'
+-
+-function platformErrText(e: unknown): string {
+-  if (isAuthError(e)) return `鉴权失败：${e.message}（请检查左侧 API 密钥）`
+-  if (isNetworkError(e)) return '网络异常，后端未连通'
+-  return e instanceof Error ? e.message : String(e)
+-}
+-
+-/* ── 类型 ── */
+-type Phase = 'verifying' | 'paired' | 'failed'
+-
+-interface RunItem {
+-  id: string
+-  title: string
+-  agent: string
+-  status: string
+-  updatedAt: string
+-  summary: string
+-  sample?: boolean
+-}
+-
+-interface ChatMsg {
+-  id: number
+-  role: 'me' | 'agent' | 'sys'
+-  text: string
+-  time: string
+-}
+-
+-interface CtxInfo {
+-  used: number
+-  max: number
+-  percent: number
+-  model: string
+-  note: string
+-}
+-
+-/* ── 配对态 ── */
+-const TOKEN_KEY = 'wanwei-mobile-token'
+-const PAIRED_KEY = 'wanwei-mobile-paired'
+-const route = useRoute()
+-const router = useRouter()
+-const phase = ref<Phase>('verifying')
+-const failReason = ref('')
+-const deviceName = ref('')
+-const verifying = ref(false)
+-const manualToken = ref('')
+-
+-/** 浮动小窗模式：桌面端浮动工作区以 /console/#/mobile?floating=1 加载（08-#37）。
+- *  现状：桌面 main.js 加载该 URL 时未附带 token，小窗首启必落在配对门禁；
+- *  前端侧不改后端 URL 契约，提供手动粘贴令牌入口作为诚实补救。 */
+-const isFloating = computed(() => {
+-  const f = route.query.floating
+-  const v = Array.isArray(f) ? f[0] : f
+-  return v === '1' || v === 'true'
+-})
+-
+-/* ── 任务监视 ── */
+-const runs = ref<RunItem[]>([])
+-const runsOffline = ref(false)
+-const runsLoading = ref(true)
+-const deciding = ref('')
+-
+-/* ── 快捷对话 ── */
+-const messages = ref<ChatMsg[]>([])
+-const draft = ref('')
+-const sending = ref(false)
+-const chatEnd = ref<HTMLElement | null>(null)
+-let msgSeq = 0
+-
+-/* ── 快捷操作 ── */
+-const archiving = ref(false)
+-const powerKnown = ref(false)
+-const preventSleep = ref(false)
+-const powerBusy = ref(false)
+-const ctxOpen = ref(false)
+-const ctxLoading = ref(false)
+-const ctxInfo = ref<CtxInfo | null>(null)
+-const ctxError = ref('')
+-
+-/* ── 轻提示 ── */
+-const toast = ref('')
+-let toastTimer: ReturnType<typeof setTimeout> | undefined
+-function showToast(text: string) {
+-  toast.value = text
+-  if (toastTimer) clearTimeout(toastTimer)
+-  toastTimer = setTimeout(() => { toast.value = '' }, 3200)
+-}
+-
+-/* ── 容错解析工具 ── */
+-function asRecord(v: unknown): Record<string, unknown> | null {
+-  return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : null
+-}
+-function pickStr(obj: Record<string, unknown>, keys: string[]): string {
+-  for (const k of keys) {
+-    const v = obj[k]
+-    if (typeof v === 'string' && v.trim()) return v
+-    if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+-  }
+-  return ''
+-}
+-function pickNum(obj: Record<string, unknown>, keys: string[]): number {
+-  for (const k of keys) {
+-    const v = obj[k]
+-    if (typeof v === 'number' && Number.isFinite(v)) return v
+-  }
+-  return NaN
+-}
+-
+-/* ── 配对 ── */
+-/** 令牌脱敏：任何进入页面可见区域的文本都不得携带原始 token（08-#37） */
+-function maskToken(text: string, token: string): string {
+-  return token && text.includes(token) ? text.split(token).join('····') : text
+-}
+-
+-/** 配对成功后抹掉地址栏 hash 中的 token，避免滞留可见 URL 与浏览历史 */
+-function stripTokenFromUrl(): void {
+-  if (route.query.token === undefined) return
+-  const rest = { ...route.query }
+-  delete rest.token
+-  void router.replace({ query: rest })
+-}
+-
+-async function verify(candidate: string, fromCache: boolean) {
+-  if (verifying.value || phase.value === 'paired') return
+-  verifying.value = true
+-  phase.value = 'verifying'
+-  failReason.value = ''
+-  try {
+-    const res = await apiPost<unknown>('/system/lan/verify', { token: candidate })
+-    const r = asRecord(res)
+-    const rejected = r !== null && (r.ok === false || r.paired === false || r.verified === false || r.success === false)
+-    if (rejected) throw new Error(pickStr(r, ['message', 'detail', 'error']) || '令牌未通过校验')
+-    deviceName.value = r ? pickStr(r, ['device_name', 'device', 'name']) : ''
+-    localStorage.setItem(TOKEN_KEY, candidate)
+-    localStorage.setItem(PAIRED_KEY, '1')
+-    phase.value = 'paired'
+-    if (!fromCache) stripTokenFromUrl()
+-    startMain()
+-  } catch (e) {
+-    if (fromCache) localStorage.removeItem(TOKEN_KEY)
+-    phase.value = 'failed'
+-    failReason.value = maskToken(platformErrText(e), candidate)
+-  } finally {
+-    verifying.value = false
+-  }
+-}
+-
+-function submitManualToken() {
+-  const candidate = manualToken.value.trim()
+-  if (!candidate || verifying.value) return
+-  manualToken.value = ''
+-  void verify(candidate, false)
+-}
+-
+-function retryPair() {
+-  const raw = route.query.token
+-  const fromQuery = Array.isArray(raw) ? raw[0] : raw
+-  const queryToken = typeof fromQuery === 'string' ? fromQuery.trim() : ''
+-  const cached = localStorage.getItem(TOKEN_KEY) ?? ''
+-  const candidate = queryToken || cached
+-  if (!candidate) {
+-    failReason.value = '链接中未携带配对令牌（token），请从桌面端重新获取配对链接或二维码。'
+-    return
+-  }
+-  void verify(candidate, !queryToken)
+-}
+-
+-function unpair() {
+-  localStorage.removeItem(TOKEN_KEY)
+-  localStorage.removeItem(PAIRED_KEY)
+-  stopPolling()
+-  phase.value = 'failed'
+-  failReason.value = '已解除本机配对。请从桌面端重新获取配对链接。'
+-}
+-
+-/* ── 任务监视 ── */
+-/* 状态标签/分组统一取自共享枚举模块 @/utils/platformEnums（09-#11/#12），
+-   本地不再维护私有映射，避免跨视图漂移。 */
+-function fmtTime(s: string): string {
+-  if (!s) return ''
+-  const d = new Date(s)
+-  if (Number.isNaN(d.getTime())) return s
+-  const hh = String(d.getHours()).padStart(2, '0')
+-  const mm = String(d.getMinutes()).padStart(2, '0')
+-  return `${hh}:${mm}`
+-}
+-
+-const SAMPLE_RUNS: RunItem[] = [
+-  { id: 'sample-1', title: '整理今日会议纪要', agent: '书僮', status: 'running', updatedAt: '', summary: '正在归纳第 3 节要点', sample: true },
+-  { id: 'sample-2', title: '部署脚本变更', agent: '账房', status: 'awaiting_review', updatedAt: '', summary: '等待人工审查后放行', sample: true },
+-  { id: 'sample-3', title: '夜间梦境归档', agent: '梦吏', status: 'completed', updatedAt: '', summary: '已归档 12 段梦境', sample: true },
+-]
+-
+-function normalizeRuns(payload: unknown): RunItem[] {
+-  const root = asRecord(payload)
+-  const list: unknown = Array.isArray(payload) ? payload : (root?.items ?? root?.runs ?? root?.list ?? [])
+-  if (!Array.isArray(list)) return []
+-  return list.map((entry, i): RunItem => {
+-    const r = asRecord(entry) ?? {}
+-    return {
+-      id: pickStr(r, ['id', 'run_id', 'runId', 'uid']) || `run-${i}`,
+-      title: pickStr(r, ['title', 'name', 'task', 'goal']) || '未命名任务',
+-      agent: pickStr(r, ['agent', 'agent_name', 'agentName', 'owner']),
+-      status: pickStr(r, ['status', 'state']).toLowerCase() || 'unknown',
+-      updatedAt: pickStr(r, ['updated_at', 'updatedAt', 'created_at', 'createdAt', 'time']),
+-      summary: pickStr(r, ['summary', 'last_message', 'message', 'note', 'description']),
+-    }
+-  })
+-}
+-
+-async function loadRuns() {
+-  try {
+-    const res = await apiGet<unknown>('/agents/runs')
+-    runs.value = normalizeRuns(res)
+-    runsOffline.value = false
+-  } catch (e) {
+-    const network = isNetworkError(e)
+-    runs.value = network ? SAMPLE_RUNS : []
+-    runsOffline.value = network
+-  } finally {
+-    runsLoading.value = false
+-  }
+-}
+-
+-async function decide(run: RunItem, approved: boolean) {
+-  if (deciding.value) return
+-  if (run.sample) {
+-    showToast('示例数据不可操作，待后端接入后再试。')
+-    return
+-  }
+-  deciding.value = run.id
+-  try {
+-    const result = await apiPost<{ status?: string }>(`/agents/runs/${run.id}/approve`, { approved })
+-    const actual = result.status
+-    if (actual === 'rejected') {
+-      showToast(`已拒绝「${run.title}」`)
+-    } else if (actual === 'cancelled') {
+-      showToast(`已取消「${run.title}」`)
+-    } else {
+-      showToast(approved ? `已批准「${run.title}」` : `已拒绝「${run.title}」`)
+-    }
+-    await loadRuns()
+-  } catch (e) {
+-    showToast(`操作失败：${platformErrText(e)}`)
+-  } finally {
+-    deciding.value = ''
+-  }
+-}
+-
+-/* ── 快捷对话 ── */
+-function nowTime(): string {
+-  const d = new Date()
+-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+-}
+-function pushMsg(role: ChatMsg['role'], text: string) {
+-  messages.value.push({ id: ++msgSeq, role, text, time: nowTime() })
+-  if (messages.value.length > 60) messages.value.splice(0, messages.value.length - 60)
+-  void nextTick(() => chatEnd.value?.scrollIntoView({ block: 'end', behavior: 'smooth' }))
+-}
+-function extractReply(payload: unknown): string {
+-  const r = asRecord(payload)
+-  if (!r) return ''
+-  const direct = pickStr(r, ['reply', 'message', 'content', 'text', 'answer'])
+-  if (direct) return direct
+-  const data = asRecord(r.data)
+-  if (data) {
+-    const nested = pickStr(data, ['reply', 'message', 'content', 'text'])
+-    if (nested) return nested
+-  }
+-  return ''
+-}
+-async function sendChat() {
+-  const text = draft.value.trim()
+-  if (!text || sending.value) return
+-  sending.value = true
+-  draft.value = ''
+-  pushMsg('me', text)
+-  try {
+-    const res = await apiPost<unknown>('/agents/chat', { message: text })
+-    const reply = extractReply(res)
+-    pushMsg('agent', reply || '口信已送达，智能体思索中，进展见上方任务列表。')
+-  } catch (e) {
+-    pushMsg('sys', `发送失败：${platformErrText(e)}`)
+-  } finally {
+-    sending.value = false
+-  }
+-}
+-
+-/* ── 快捷操作 ── */
+-async function archiveDreams() {
+-  if (archiving.value) return
+-  archiving.value = true
+-  try {
+-    const res = await apiPost<unknown>('/memory/dreams/archive-now')
+-    const r = asRecord(res)
+-    const n = r ? pickNum(r, ['archived', 'archived_count', 'count', 'total']) : NaN
+-    const simulated = r !== null && (r.simulated === true || r.stub === true)
+-    const base = Number.isFinite(n) ? `已归档 ${n} 段梦境` : '梦境整理请求已送达'
+-    showToast(simulated ? `${base}（模拟）` : base)
+-  } catch (e) {
+-    showToast(`整理失败：${platformErrText(e)}`)
+-  } finally {
+-    archiving.value = false
+-  }
+-}
+-
+-function normalizePower(payload: unknown): boolean | null {
+-  const r = asRecord(payload)
+-  if (!r) return null
+-  for (const k of ['prevent_sleep', 'preventSleep', 'keep_awake', 'keepAwake', 'enabled', 'on']) {
+-    const v = r[k]
+-    if (typeof v === 'boolean') return v
+-  }
+-  return null
+-}
+-async function loadPower() {
+-  try {
+-    const res = await apiGet<unknown>('/system/power')
+-    const v = normalizePower(res)
+-    if (v === null) {
+-      powerKnown.value = false
+-    } else {
+-      preventSleep.value = v
+-      powerKnown.value = true
+-    }
+-  } catch {
+-    powerKnown.value = false
+-  }
+-}
+-async function togglePower() {
+-  if (powerBusy.value) return
+-  powerBusy.value = true
+-  const next = powerKnown.value ? !preventSleep.value : true
+-  try {
+-    const res = await apiPut<unknown>('/system/power', { prevent_sleep: next, gear: 'device' })
+-    const v = normalizePower(res)
+-    preventSleep.value = v ?? next
+-    powerKnown.value = true
+-    showToast(preventSleep.value ? '防睡眠已开启，设备将保持清醒' : '防睡眠已关闭')
+-  } catch (e) {
+-    showToast(`切换失败：${platformErrText(e)}`)
+-    await loadPower()
+-  } finally {
+-    powerBusy.value = false
+-  }
+-}
+-
+-function normalizeCtx(payload: unknown): CtxInfo | null {
+-  const r = asRecord(payload)
+-  if (!r) return null
+-  const used = pickNum(r, ['tokens', 'used_tokens', 'used', 'context_tokens', 'current_tokens'])
+-  const max = pickNum(r, ['max_tokens', 'limit', 'max', 'capacity', 'context_window'])
+-  let percent = pickNum(r, ['percent', 'percentage', 'usage'])
+-  const ratio = pickNum(r, ['ratio'])
+-  if (!Number.isFinite(percent) && Number.isFinite(ratio)) percent = ratio <= 1 ? ratio * 100 : ratio
+-  if (!Number.isFinite(percent) && Number.isFinite(used) && Number.isFinite(max) && max > 0) percent = (used / max) * 100
+-  const model = pickStr(r, ['model', 'agent', 'name'])
+-  const note = pickStr(r, ['note', 'message', 'detail'])
+-  if (!Number.isFinite(used) && !Number.isFinite(percent) && !note) return null
+-  return {
+-    used: Number.isFinite(used) ? used : -1,
+-    max: Number.isFinite(max) ? max : -1,
+-    percent: Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : -1,
+-    model,
+-    note,
+-  }
+-}
+-async function openContext() {
+-  ctxOpen.value = true
+-  ctxLoading.value = true
+-  ctxInfo.value = null
+-  ctxError.value = ''
+-  try {
+-    const res = await apiGet<unknown>('/agents/context-size')
+-    ctxInfo.value = normalizeCtx(res)
+-    if (!ctxInfo.value) ctxError.value = '后端已响应，但未返回可识别的上下文体量字段。'
+-  } catch (e) {
+-    ctxError.value = platformErrText(e)
+-  } finally {
+-    ctxLoading.value = false
+-  }
+-}
+-function fmtNum(n: number): string {
+-  return n >= 0 ? n.toLocaleString('zh-CN') : '—'
+-}
+-
+-/* ── 轮询生命周期 ── */
+-let pollTimer: ReturnType<typeof setInterval> | undefined
+-function stopPolling() {
+-  if (pollTimer) {
+-    clearInterval(pollTimer)
+-    pollTimer = undefined
+-  }
+-}
+-function startMain() {
+-  stopPolling()
+-  void loadRuns()
+-  void loadPower()
+-  pollTimer = setInterval(() => { void loadRuns() }, 5000)
+-  if (!messages.value.length) {
+-    pushMsg('agent', '配对成功。我在这儿守着，有要审查的任务会立刻提醒你。')
+-  }
+-}
+-
+-onMounted(() => {
+-  // 已配对状态作为终态：避免一次性 token 被重复 verify 触发「已使用」
+-  if (localStorage.getItem(PAIRED_KEY) === '1') {
+-    phase.value = 'paired'
+-    startMain()
+-    return
+-  }
+-  const raw = route.query.token
+-  const fromQuery = Array.isArray(raw) ? raw[0] : raw
+-  const queryToken = typeof fromQuery === 'string' ? fromQuery.trim() : ''
+-  const cached = (localStorage.getItem(TOKEN_KEY) ?? '').trim()
+-  const candidate = queryToken || cached
+-  if (!candidate) {
+-    phase.value = 'failed'
+-    failReason.value = '链接中未携带配对令牌（token），请从桌面端重新获取配对链接或二维码。'
+-    return
+-  }
+-  void verify(candidate, !queryToken)
+-})
+-
+-onBeforeUnmount(() => {
+-  stopPolling()
+-  if (toastTimer) clearTimeout(toastTimer)
+-})
+-</script>
+-
+-<template>
+-  <div class="mobile-view" :class="{ 'mobile-view--floating': isFloating }">
+-    <div v-if="isFloating" class="floating-titlebar" aria-hidden="true">
+-      <span class="floating-titlebar-handle"></span>
+-      <span>宛委·枢忆</span>
+-    </div>
+-
+-    <!-- ══ 配对门禁：校验中 / 失败整页 ══ -->
+-    <div v-if="phase !== 'paired'" class="gate">
+-      <div class="gate-card">
+-        <span class="gate-seal">伴</span>
+-        <template v-if="phase === 'verifying'">
+-          <h1 class="gate-title">验印中…</h1>
+-          <p class="gate-sub">正在与桌面端核对配对令牌，请稍候。</p>
+-        </template>
+-        <template v-else>
+-          <h1 class="gate-title">配对失败</h1>
+-          <p class="gate-sub">{{ failReason || '令牌校验未通过。' }}</p>
+-          <div class="gate-actions">
+-            <GfButton :disabled="verifying" @click="retryPair">{{ verifying ? '验印中…' : '重新验印' }}</GfButton>
+-          </div>
+-          <form class="gate-manual" @submit.prevent="submitManualToken">
+-            <input
+-              v-model="manualToken"
+-              class="gate-manual-input"
+-              type="password"
+-              autocomplete="off"
+-              placeholder="或手动粘贴配对令牌…"
+-              :disabled="verifying"
+-            />
+-            <GfButton small :disabled="verifying || !manualToken.trim()" @click="submitManualToken">验印</GfButton>
+-          </form>
+-          <p v-if="isFloating" class="gate-hint">
+-            浮动小窗当前不自动携带配对令牌（桌面端注入尚未接入）：请从桌面端「手机伴侣」面板复制令牌后在此粘贴，配对成功后小窗即可使用。
+-          </p>
+-          <p class="gate-hint">配对链接形如 <code>/console/#/mobile?token=····</code>，由桌面端「手机伴侣」面板生成。</p>
+-        </template>
+-      </div>
+-    </div>
+-
+-    <!-- ══ 主界面 ══ -->
+-    <template v-else>
+-      <!-- 顶部小页眉 -->
+-      <header class="m-hero">
+-        <span class="m-seal">伴</span>
+-        <div class="m-hero-main">
+-          <h1 class="m-title">手机伴侣</h1>
+-          <div class="m-en">MOBILE COMPANION</div>
+-        </div>
+-        <div class="m-hero-side">
+-          <GfTag tone="bamboo">已配对</GfTag>
+-          <GfTag v-if="deviceName" tone="dai">{{ deviceName }}</GfTag>
+-          <button class="m-unpair" type="button" @click="unpair">解除</button>
+-        </div>
+-      </header>
+-
+-      <!-- 任务监视 -->
+-      <GfCard title="任务监视" seal="视" class="m-section">
+-        <div v-if="runsOffline" class="m-notice">离线示例数据 · 后端未接入，每 5 秒重试</div>
+-        <div v-if="runsLoading" class="m-muted">研墨中…</div>
+-        <GfEmpty v-else-if="!runs.length" text="暂无运行中的任务" />
+-        <ul v-else class="run-list">
+-          <li v-for="run in runs" :key="run.id" class="run-card" :class="{ 'run-card--review': run.status === 'awaiting_review' || run.status === 'review' }">
+-            <div class="run-row">
+-              <span class="run-status" :data-st="runStatusGroup(run.status)">{{ runStatusLabel(run.status) }}</span>
+-              <div class="run-main">
+-                <div class="run-title">{{ run.title }}</div>
+-                <div class="run-meta">
+-                  <GfTag v-if="run.agent" tone="dai">{{ run.agent }}</GfTag>
+-                  <span v-if="run.updatedAt" class="run-time">{{ fmtTime(run.updatedAt) }}</span>
+-                  <GfTag v-if="run.sample" tone="ink">示例</GfTag>
+-                </div>
+-                <p v-if="run.summary" class="run-summary">{{ run.summary }}</p>
+-              </div>
+-            </div>
+-            <div v-if="run.status === 'awaiting_review' || run.status === 'review'" class="run-decide">
+-              <button class="big-btn big-btn--approve" type="button" :disabled="deciding === run.id" @click="decide(run, true)">
+-                {{ deciding === run.id ? '落印中…' : '批准' }}
+-              </button>
+-              <button class="big-btn big-btn--reject" type="button" :disabled="deciding === run.id" @click="decide(run, false)">拒绝</button>
+-            </div>
+-          </li>
+-        </ul>
+-      </GfCard>
+-
+-      <!-- 快捷操作 -->
+-      <GfCard title="快捷操作" seal="捷" class="m-section">
+-        <div class="action-grid">
+-          <button class="big-btn big-btn--ghost" type="button" :disabled="archiving" @click="archiveDreams">
+-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M17.5 4.5A8.5 8.5 0 1 0 17.5 19.5 7 7 0 1 1 17.5 4.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+-            <span>{{ archiving ? '整理中…' : '整理梦境' }}</span>
+-          </button>
+-          <button class="big-btn big-btn--ghost" :class="{ 'big-btn--on': powerKnown && preventSleep }" type="button" :disabled="powerBusy" @click="togglePower">
+-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 3v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.3 6.5a8 8 0 1 0 11.4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+-            <span>{{ powerBusy ? '切换中…' : powerKnown ? (preventSleep ? '防睡眠 · 开' : '防睡眠 · 关') : '防睡眠' }}</span>
+-          </button>
+-          <button class="big-btn big-btn--ghost" type="button" @click="openContext">
+-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 9.5h8M8 13h8M8 16.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+-            <span>查看上下文</span>
+-          </button>
+-        </div>
+-      </GfCard>
+-
+-      <!-- 快捷对话 -->
+-      <GfCard title="快捷对话" seal="话" class="m-section m-chat">
+-        <div class="msg-flow">
+-          <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role">
+-            <div class="msg-bubble">{{ m.text }}</div>
+-            <div class="msg-time">{{ m.time }}</div>
+-          </div>
+-          <div ref="chatEnd" class="msg-end" aria-hidden="true"></div>
+-        </div>
+-      </GfCard>
+-
+-      <!-- 上下文弹层 -->
+-      <Teleport to="body">
+-        <div v-if="ctxOpen" class="ctx-mask" @click.self="ctxOpen = false">
+-          <div class="ctx-panel" role="dialog" aria-modal="true" aria-label="上下文体量">
+-            <div class="ctx-head">
+-              <span class="ctx-seal">境</span>
+-              <h2 class="ctx-title">上下文体量</h2>
+-            </div>
+-            <div v-if="ctxLoading" class="m-muted">研墨中…</div>
+-            <div v-else-if="ctxError" class="ctx-error">{{ ctxError }}</div>
+-            <template v-else-if="ctxInfo">
+-              <div v-if="ctxInfo.percent >= 0" class="ctx-bar">
+-                <div class="ctx-bar-fill" :style="{ width: ctxInfo.percent + '%' }"></div>
+-              </div>
+-              <div class="ctx-nums">
+-                <div class="ctx-num"><span class="ctx-num-v">{{ ctxInfo.percent >= 0 ? ctxInfo.percent.toFixed(1) + '%' : '—' }}</span><span class="ctx-num-l">占用</span></div>
+-                <div class="ctx-num"><span class="ctx-num-v">{{ fmtNum(ctxInfo.used) }}</span><span class="ctx-num-l">已用 tokens</span></div>
+-                <div class="ctx-num"><span class="ctx-num-v">{{ fmtNum(ctxInfo.max) }}</span><span class="ctx-num-l">上限</span></div>
+-              </div>
+-              <p v-if="ctxInfo.model" class="ctx-note">模型：{{ ctxInfo.model }}</p>
+-              <p v-if="ctxInfo.note" class="ctx-note">{{ ctxInfo.note }}</p>
+-            </template>
+-            <div class="ctx-actions">
+-              <GfButton variant="ghost" small @click="openContext">刷新</GfButton>
+-              <GfButton variant="ghost" small @click="ctxOpen = false">合上</GfButton>
+-            </div>
+-          </div>
+-        </div>
+-      </Teleport>
+-
+-      <!-- 轻提示 -->
+-      <Transition name="toast">
+-        <div v-if="toast" class="m-toast" role="status">{{ toast }}</div>
+-      </Transition>
+-
+-      <!-- 底部固定操作栏：快捷对话输入 -->
+-      <form class="composer" @submit.prevent="sendChat">
+-        <input
+-          v-model="draft"
+-          class="composer-input"
+-          type="text"
+-          placeholder="捎句话给智能体…"
+-          :disabled="sending"
+-          autocomplete="off"
+-          enterkeyhint="send"
+-          @keyup.enter.prevent="sendChat"
+-        />
+-        <button class="composer-send" type="submit" :disabled="sending || !draft.trim()">
+-          {{ sending ? '寄出中…' : '发送' }}
+-        </button>
+-      </form>
+-    </template>
+-  </div>
+-</template>
+-
+-<style scoped>
+-/* ── 窄屏优先布局 ── */
+-.mobile-view {
+-  max-width: 560px;
+-  margin: 0 auto;
+-  padding: 4px 10px 108px; /* 底部留白给固定操作栏 */
+-}
+-
+-/* 无边框浮动窗口需要显式拖动区；交互控件必须保持可点击、可输入。 */
+-.floating-titlebar {
+-  position: sticky;
+-  top: 0;
+-  z-index: 80;
+-  height: 32px;
+-  margin: -4px -10px 8px;
+-  display: flex;
+-  align-items: center;
+-  justify-content: center;
+-  gap: 8px;
+-  border-bottom: 1px solid var(--line);
+-  background: color-mix(in srgb, var(--card-solid) 92%, transparent);
+-  color: var(--ink-muted);
+-  font-family: var(--font-kai);
+-  font-size: 11px;
+-  letter-spacing: 2px;
+-  user-select: none;
+-  cursor: move;
+-  -webkit-app-region: drag;
+-}
+-.floating-titlebar-handle {
+-  width: 22px;
+-  height: 3px;
+-  border-radius: 999px;
+-  background: var(--gold-line);
+-}
+-.mobile-view--floating :is(button, input, textarea, select, a, [role='button']) {
+-  -webkit-app-region: no-drag;
+-}
+-
+-/* ── 配对门禁（整页） ── */
+-.gate {
+-  min-height: 72vh;
+-  display: grid;
+-  place-items: center;
+-}
+-.gate-card {
+-  width: 100%;
+-  max-width: 420px;
+-  display: grid;
+-  justify-items: center;
+-  gap: 14px;
+-  padding: 40px 28px;
+-  background: var(--card);
+-  backdrop-filter: blur(8px);
+-  -webkit-backdrop-filter: blur(8px);
+-  border: 1px solid var(--line);
+-  border-radius: 24px;
+-  box-shadow: var(--shadow-card);
+-  text-align: center;
+-}
+-.gate-seal {
+-  font-family: var(--font-kai);
+-  font-size: 26px;
+-  font-weight: 700;
+-  width: 64px;
+-  height: 64px;
+-  display: grid;
+-  place-items: center;
+-  color: #FDF6E9;
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  border-radius: var(--radius-seal);
+-  box-shadow: var(--shadow-seal);
+-}
+-.gate-title {
+-  font-family: var(--font-kai);
+-  font-size: 28px;
+-  letter-spacing: 6px;
+-  color: var(--ink);
+-}
+-.gate-sub {
+-  font-size: 13px;
+-  line-height: 1.8;
+-  color: var(--ink-soft);
+-  overflow-wrap: anywhere;
+-}
+-.gate-actions { margin-top: 4px; }
+-.gate-manual {
+-  display: flex;
+-  gap: 8px;
+-  align-items: center;
+-  width: 100%;
+-  max-width: 320px;
+-}
+-.gate-manual-input {
+-  flex: 1;
+-  min-width: 0;
+-  height: 36px;
+-  padding: 0 14px;
+-  border: 1px solid var(--line);
+-  border-radius: 999px;
+-  background: var(--card-solid);
+-  color: var(--ink);
+-  font-size: 12px;
+-  font-family: var(--font-mono);
+-  transition: border-color .2s ease, box-shadow .2s ease;
+-}
+-.gate-manual-input:focus {
+-  outline: none;
+-  border-color: var(--cinnabar);
+-  box-shadow: 0 0 0 3px var(--rouge-glow);
+-}
+-.gate-manual-input:disabled { opacity: .55; }
+-.gate-hint {
+-  font-size: 11px;
+-  line-height: 1.8;
+-  color: var(--ink-muted);
+-}
+-.gate-hint code {
+-  font-family: var(--font-mono);
+-  font-size: 10px;
+-  color: var(--dai);
+-}
+-
+-/* ── 顶部小页眉 ── */
+-.m-hero {
+-  display: flex;
+-  align-items: center;
+-  gap: 12px;
+-  padding: 8px 2px 16px;
+-}
+-.m-seal {
+-  font-family: var(--font-kai);
+-  font-size: 20px;
+-  font-weight: 700;
+-  width: 46px;
+-  height: 46px;
+-  display: grid;
+-  place-items: center;
+-  color: #FDF6E9;
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  border-radius: var(--radius-seal);
+-  box-shadow: var(--shadow-seal);
+-  flex-shrink: 0;
+-}
+-.m-hero-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+-.m-title {
+-  font-family: var(--font-kai);
+-  font-size: 26px;
+-  font-weight: 700;
+-  letter-spacing: 5px;
+-  color: var(--ink);
+-  line-height: 1.15;
+-}
+-.m-en {
+-  font-size: 10px;
+-  letter-spacing: 3px;
+-  color: var(--ink-muted);
+-  font-family: var(--font-mono);
+-}
+-.m-hero-side {
+-  margin-left: auto;
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  flex-wrap: wrap;
+-  justify-content: flex-end;
+-}
+-.m-unpair {
+-  border: 1px solid var(--gold-line);
+-  background: var(--card);
+-  color: var(--ink-muted);
+-  border-radius: 999px;
+-  padding: 3px 12px;
+-  font-size: 11px;
+-  letter-spacing: 1px;
+-  font-family: var(--font-kai);
+-  transition: color .18s ease, border-color .18s ease;
+-}
+-.m-unpair:hover { color: var(--cinnabar); border-color: var(--rouge); }
+-
+-/* ── 区块 ── */
+-.m-section { margin-bottom: 16px; border-radius: 20px; }
+-.m-muted {
+-  color: var(--ink-soft);
+-  font-size: 13px;
+-  padding: 14px 0;
+-  font-family: var(--font-kai);
+-  letter-spacing: 2px;
+-}
+-.m-notice {
+-  margin-bottom: 12px;
+-  padding: 8px 12px;
+-  border: 1px solid var(--gold-line);
+-  border-radius: var(--radius-small);
+-  background: color-mix(in srgb, var(--gold) 8%, transparent);
+-  color: color-mix(in srgb, var(--gold) 70%, var(--ink));
+-  font-size: 11px;
+-  letter-spacing: 1px;
+-}
+-
+-/* ── 任务卡片：大色块状态徽标 ── */
+-.run-list { list-style: none; display: grid; gap: 12px; }
+-.run-card {
+-  border: 1px solid var(--line);
+-  border-radius: var(--radius-card);
+-  background: var(--card);
+-  padding: 12px;
+-  transition: border-color .2s ease, box-shadow .2s ease;
+-}
+-.run-card--review {
+-  border-color: color-mix(in srgb, var(--gold) 55%, transparent);
+-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 12%, transparent);
+-}
+-.run-row { display: flex; gap: 12px; align-items: stretch; }
+-.run-status {
+-  flex-shrink: 0;
+-  width: 64px;
+-  min-height: 64px;
+-  display: grid;
+-  place-items: center;
+-  border-radius: 14px;
+-  font-family: var(--font-kai);
+-  font-size: 15px;
+-  font-weight: 700;
+-  letter-spacing: 2px;
+-  writing-mode: vertical-lr;
+-  color: #FDF6E9;
+-  background: var(--ink-muted);
+-}
+-.run-status[data-st='run'] {
+-  background: linear-gradient(160deg, var(--dai), var(--dai-deep));
+-  animation: st-pulse 1.8s ease-in-out infinite;
+-}
+-.run-status[data-st='review'] { background: linear-gradient(160deg, var(--gold), color-mix(in srgb, var(--gold) 70%, var(--cinnabar-deep))); }
+-.run-status[data-st='ok'] { background: linear-gradient(160deg, var(--bamboo), color-mix(in srgb, var(--bamboo) 72%, var(--ink))); }
+-.run-status[data-st='bad'] { background: linear-gradient(160deg, var(--cinnabar), var(--cinnabar-deep)); }
+-.run-status[data-st='idle'] { background: var(--ink-muted); }
+-@keyframes st-pulse {
+-  0%, 100% { box-shadow: 0 0 0 0 var(--rouge-glow); }
+-  50% { box-shadow: 0 0 0 6px transparent; }
+-}
+-.run-main { min-width: 0; flex: 1; display: grid; gap: 5px; align-content: start; }
+-.run-title {
+-  font-size: 14px;
+-  font-weight: 600;
+-  color: var(--ink);
+-  overflow-wrap: anywhere;
+-}
+-.run-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+-.run-time { font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted); }
+-.run-summary {
+-  font-size: 12px;
+-  line-height: 1.7;
+-  color: var(--ink-soft);
+-  overflow-wrap: anywhere;
+-}
+-.run-decide {
+-  display: grid;
+-  grid-template-columns: 1fr 1fr;
+-  gap: 10px;
+-  margin-top: 12px;
+-}
+-
+-/* ── 触屏大按钮 ── */
+-.big-btn {
+-  display: inline-flex;
+-  align-items: center;
+-  justify-content: center;
+-  gap: 8px;
+-  min-height: 56px;
+-  padding: 12px 16px;
+-  border-radius: 16px;
+-  border: 1px solid transparent;
+-  font-family: var(--font-kai);
+-  font-size: 16px;
+-  letter-spacing: 3px;
+-  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease, color .18s ease;
+-}
+-.big-btn:active { transform: translateY(1px) scale(.98); }
+-.big-btn:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+-.big-btn--approve {
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  color: #FDF6E9;
+-  box-shadow: 0 2px 12px var(--cinnabar-glow), var(--shadow-card);
+-}
+-.big-btn--approve:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 18px var(--cinnabar-glow), var(--shadow-glow-rouge); }
+-.big-btn--reject {
+-  background: var(--card);
+-  border-color: color-mix(in srgb, var(--cinnabar) 55%, transparent);
+-  color: var(--cinnabar);
+-}
+-.big-btn--reject:hover:not(:disabled) { transform: translateY(-2px); background: color-mix(in srgb, var(--cinnabar) 8%, transparent); }
+-.big-btn--ghost {
+-  flex-direction: column;
+-  gap: 6px;
+-  min-height: 88px;
+-  background: var(--card);
+-  border-color: var(--gold-line);
+-  color: var(--ink-soft);
+-  font-size: 14px;
+-  letter-spacing: 2px;
+-}
+-.big-btn--ghost:hover:not(:disabled) {
+-  transform: translateY(-2px);
+-  border-color: var(--rouge);
+-  color: var(--cinnabar);
+-  box-shadow: var(--shadow-glow-rouge);
+-}
+-.big-btn--on {
+-  border-color: color-mix(in srgb, var(--bamboo) 60%, transparent);
+-  background: color-mix(in srgb, var(--bamboo) 12%, transparent);
+-  color: color-mix(in srgb, var(--bamboo) 70%, var(--ink));
+-}
+-.action-grid {
+-  display: grid;
+-  grid-template-columns: repeat(3, 1fr);
+-  gap: 10px;
+-}
+-@media (max-width: 380px) {
+-  .action-grid { grid-template-columns: 1fr; }
+-}
+-
+-/* ── 消息流气泡 ── */
+-.msg-flow { display: grid; gap: 10px; padding: 2px 0 4px; }
+-.msg { display: grid; gap: 3px; max-width: 86%; }
+-.msg[data-role='me'] { justify-self: end; justify-items: end; }
+-.msg[data-role='agent'] { justify-self: start; justify-items: start; }
+-.msg[data-role='sys'] { justify-self: center; max-width: 100%; }
+-.msg-bubble {
+-  padding: 10px 14px;
+-  border-radius: 16px;
+-  font-size: 13px;
+-  line-height: 1.75;
+-  overflow-wrap: anywhere;
+-  border: 1px solid transparent;
+-}
+-.msg[data-role='me'] .msg-bubble {
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  color: #FDF6E9;
+-  border-bottom-right-radius: 6px;
+-  box-shadow: 0 2px 10px var(--cinnabar-glow);
+-}
+-.msg[data-role='agent'] .msg-bubble {
+-  background: var(--card);
+-  border-color: var(--line);
+-  color: var(--ink);
+-  border-bottom-left-radius: 6px;
+-}
+-.msg[data-role='sys'] .msg-bubble {
+-  background: color-mix(in srgb, var(--gold) 8%, transparent);
+-  border-color: var(--gold-line);
+-  color: var(--ink-muted);
+-  font-size: 11px;
+-  padding: 6px 12px;
+-}
+-.msg-time { font-family: var(--font-mono); font-size: 9px; color: var(--ink-muted); padding: 0 6px; }
+-.msg[data-role='sys'] .msg-time { display: none; }
+-.msg-end { height: 1px; }
+-
+-/* ── 上下文弹层 ── */
+-.ctx-mask {
+-  position: fixed;
+-  inset: 0;
+-  z-index: 60;
+-  display: grid;
+-  place-items: center;
+-  padding: 20px;
+-  background: color-mix(in srgb, var(--ink) 38%, transparent);
+-  backdrop-filter: blur(4px);
+-  -webkit-backdrop-filter: blur(4px);
+-}
+-.ctx-panel {
+-  width: 100%;
+-  max-width: 440px;
+-  display: grid;
+-  gap: 14px;
+-  padding: 22px;
+-  background: var(--card-solid);
+-  border: 1px solid var(--gold-line);
+-  border-radius: 20px;
+-  box-shadow: var(--shadow-lift);
+-}
+-.ctx-head { display: flex; align-items: center; gap: 10px; }
+-.ctx-seal {
+-  font-family: var(--font-kai);
+-  font-size: 14px;
+-  font-weight: 700;
+-  width: 28px;
+-  height: 28px;
+-  display: grid;
+-  place-items: center;
+-  color: #FDF6E9;
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  border-radius: var(--radius-seal);
+-  box-shadow: 0 0 10px var(--cinnabar-glow);
+-}
+-.ctx-title { font-family: var(--font-kai); font-size: 20px; letter-spacing: 4px; color: var(--ink); }
+-.ctx-error {
+-  font-size: 12px;
+-  line-height: 1.7;
+-  color: var(--cinnabar-deep);
+-  overflow-wrap: anywhere;
+-}
+-.ctx-bar {
+-  height: 12px;
+-  border-radius: 999px;
+-  background: var(--line-soft);
+-  border: 1px solid var(--line);
+-  overflow: hidden;
+-}
+-.ctx-bar-fill {
+-  height: 100%;
+-  border-radius: 999px;
+-  background: linear-gradient(90deg, var(--bamboo), var(--gold), var(--cinnabar));
+-  transition: width .4s ease;
+-}
+-.ctx-nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; }
+-.ctx-num { display: grid; gap: 4px; }
+-.ctx-num-v { font-family: var(--font-kai); font-size: 20px; font-weight: 700; color: var(--ink); }
+-.ctx-num-l { font-size: 10px; letter-spacing: 1px; color: var(--ink-muted); }
+-.ctx-note { font-size: 12px; line-height: 1.7; color: var(--ink-soft); overflow-wrap: anywhere; }
+-.ctx-actions { display: flex; justify-content: flex-end; gap: 8px; }
+-
+-/* ── 轻提示 ── */
+-.m-toast {
+-  position: fixed;
+-  left: 50%;
+-  bottom: 92px;
+-  transform: translateX(-50%);
+-  z-index: 70;
+-  max-width: min(480px, calc(100vw - 40px));
+-  padding: 10px 18px;
+-  border-radius: 999px;
+-  background: var(--card-solid);
+-  border: 1px solid var(--gold-line);
+-  box-shadow: var(--shadow-lift);
+-  color: var(--ink);
+-  font-size: 12px;
+-  letter-spacing: 1px;
+-  text-align: center;
+-}
+-.toast-enter-active, .toast-leave-active { transition: opacity .25s ease, transform .25s ease; }
+-.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
+-
+-/* ── 底部固定操作栏（对话输入） ── */
+-.composer {
+-  position: fixed;
+-  left: 50%;
+-  bottom: 0;
+-  transform: translateX(-50%);
+-  z-index: 50;
+-  width: min(560px, 100%);
+-  display: flex;
+-  gap: 10px;
+-  align-items: center;
+-  padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+-  background: var(--card);
+-  backdrop-filter: blur(12px);
+-  -webkit-backdrop-filter: blur(12px);
+-  border-top: 1px solid var(--gold-line);
+-  border-radius: 20px 20px 0 0;
+-  box-shadow: 0 -6px 24px rgba(51, 46, 42, .08);
+-}
+-.composer-input {
+-  flex: 1;
+-  min-width: 0;
+-  height: 48px;
+-  padding: 0 18px;
+-  border: 1px solid var(--line);
+-  border-radius: 999px;
+-  background: var(--card-solid);
+-  color: var(--ink);
+-  font-size: 14px;
+-  transition: border-color .2s ease, box-shadow .2s ease;
+-}
+-.composer-input:focus {
+-  outline: none;
+-  border-color: var(--cinnabar);
+-  box-shadow: 0 0 0 3px var(--rouge-glow);
+-}
+-.composer-input:disabled { opacity: .6; }
+-.composer-send {
+-  flex-shrink: 0;
+-  height: 48px;
+-  min-width: 84px;
+-  padding: 0 20px;
+-  border: 1px solid transparent;
+-  border-radius: 999px;
+-  background: linear-gradient(135deg, var(--cinnabar), var(--cinnabar-deep));
+-  color: #FDF6E9;
+-  font-family: var(--font-kai);
+-  font-size: 15px;
+-  letter-spacing: 3px;
+-  box-shadow: 0 2px 12px var(--cinnabar-glow);
+-  transition: transform .18s ease, box-shadow .18s ease;
+-}
+-.composer-send:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 18px var(--cinnabar-glow), var(--shadow-glow-rouge); }
+-.composer-send:active { transform: translateY(1px) scale(.98); }
+-.composer-send:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+-</style>
+diff --git a/frontend/console-vue/src/views/platform/SettingsView.vue b/frontend/console-vue/src/views/platform/SettingsView.vue
+index 60dfa71..1c2f987 100644
+--- a/frontend/console-vue/src/views/platform/SettingsView.vue
++++ b/frontend/console-vue/src/views/platform/SettingsView.vue
+@@ -15,8 +15,6 @@ declare global {
+       setAutostart?: (enable: boolean) => unknown
+       setPreventSleep?: (enable: boolean) => unknown
+       getPreventSleep?: () => Promise<{ enabled?: boolean; mode?: string }>
+-      lanEnable?: (token?: string) => Promise<{ enabled?: boolean; lan_url?: string; host?: string; port?: number }>
+-      lanDisable?: () => Promise<{ enabled?: boolean; lan_url?: string | null; host?: string; port?: number }>
+     }
+   }
+ }
+@@ -37,15 +35,6 @@ interface PowerState {
+   mode?: string
+ }
+ 
+-interface LanStatus {
+-  enabled?: boolean
+-  lan_url?: string
+-  qr_payload?: string
+-  token?: string
+-  message?: string
+-  simulated?: boolean
+-}
+-
+ interface EmulatorDownload {
+   id: string
+   name?: string
+@@ -78,8 +67,6 @@ const langOptions: { value: LangChoice; label: string }[] = [
+ 
+ /* ── 桌面桥（preload 暴露的 window.wanweiDesktop；浏览器环境为 undefined） ── */
+ const desktop = window.wanweiDesktop
+-/** 桌面端具备 lanEnable/lanDisable 才能真实切换 0.0.0.0 监听 */
+-const canDriveLan = !!(desktop?.lanEnable && desktop?.lanDisable)
+ 
+ /* ── 基础状态 ── */
+ const theme = ref<ThemeChoice>(readTheme())
+@@ -95,9 +82,6 @@ const savingKey = shallowRef('')
+ const notice = shallowRef('')
+ const error = shallowRef('')
+ 
+-const lanStatus = shallowRef<LanStatus | null>(null)
+-const lanBusy = shallowRef(false)
+-const lanOffline = ref(false)
+ 
+ const downloads = shallowRef<EmulatorDownload[]>([])
+ const emuLoading = ref(true)
+@@ -291,63 +275,6 @@ async function togglePreventSleep() {
+   }
+ }
+ 
+-/* ── 局域网手机控制 ── */
+-async function loadLanStatus() {
+-  try {
+-    lanStatus.value = await apiGet<LanStatus>('/system/lan/status')
+-    lanOffline.value = false
+-  } catch {
+-    lanOffline.value = true
+-    lanStatus.value = { enabled: false, simulated: true, message: '后端暂不可达，以下为占位状态。' }
+-  }
+-}
+-
+-async function enableLan() {
+-  if (lanBusy.value || !canDriveLan) return
+-  lanBusy.value = true
+-  try {
+-    // 1) 后端生成配对 token 并记录状态；2) 桌面端以同一把 token 重启后端绑 0.0.0.0
+-    // 后端契约：body 必须显式声明 device 档（局域网暴露面的显式授权确认），
+-    // 且 device 档默认禁用（WANWEI_DEVICE_GEAR_ENABLED=1 才放行），缺省/错误均 4xx
+-    const res = await apiPost<LanStatus>('/system/lan/enable', { gear: 'device' })
+-    const dres = await desktop!.lanEnable!(res.token ?? '')
+-    // 桌面端返回的 lan_url 为真实网卡 IP + 实际端口 + 同一把 token，以其为准
+-    lanStatus.value = { ...res, ...dres, enabled: true, qr_payload: dres.lan_url ?? res.qr_payload }
+-    lanOffline.value = false
+-    notice.value = '局域网访问已开启，手机浏览器打开下方地址即可。'
+-  } catch (err) {
+-    const msg = err instanceof Error ? err.message : String(err)
+-    notice.value = /403|device 档|gear/i.test(msg)
+-      ? '局域网开启被拒：device 档默认禁用，需在后端设置 WANWEI_DEVICE_GEAR_ENABLED=1 后重试。'
+-      : '局域网服务开启失败：后端暂不可达，或桌面端切换监听地址失败。'
+-    await loadLanStatus()   // 以后端真实状态为准刷新
+-  } finally {
+-    lanBusy.value = false
+-  }
+-}
+-
+-async function disableLan() {
+-  if (lanBusy.value) return
+-  lanBusy.value = true
+-  try {
+-    await apiPost('/system/lan/disable')
+-    lanOffline.value = false
+-    let rebound = true
+-    if (desktop?.lanDisable) {
+-      // 同步回收桌面端 0.0.0.0 监听，避免「以为关了、端口还开着」
+-      try { await desktop.lanDisable() } catch { rebound = false }
+-    }
+-    lanStatus.value = { enabled: false }
+-    notice.value = rebound
+-      ? '局域网访问已关闭。'
+-      : '配对已关闭；桌面端监听回收失败，请重启桌面客户端确认。'
+-  } catch {
+-    lanOffline.value = true
+-    notice.value = '局域网服务关闭失败：后端暂不可达。'
+-  } finally {
+-    lanBusy.value = false
+-  }
+-}
+ 
+ /* ── 开发模拟器下载 ── */
+ function normalizeDownload(raw: EmulatorDownload, index: number): EmulatorDownload {
+@@ -468,7 +395,6 @@ onMounted(() => {
+     if (bgDataUrl.value) applyBodyBackground(bgDataUrl.value)
+   })
+   syncPreventSleep()
+-  loadLanStatus()
+   loadDownloads()
+   if (desktop?.getAutostart) {
+     desktop.getAutostart()
+@@ -489,7 +415,7 @@ onUnmounted(() => {
+       seal="设"
+       title="通用设置"
+       en="SETTINGS"
+-      sub="主题、背景、系统行为与局域网控制。偏好即刻写入本机；后端离线时自动退为浏览器本地保存。"
++      sub="主题、背景与系统行为。偏好即刻写入本机；后端离线时自动退为浏览器本地保存。"
+     />
+ 
+     <div v-if="error" class="notice error" role="alert" aria-live="polite">
+@@ -591,59 +517,6 @@ onUnmounted(() => {
+         <p v-if="settingsOffline" class="hint">当前后端离线：以上选择暂存于本机浏览器，联机后将以此为准重新写入。</p>
+       </GfCard>
+ 
+-      <!-- ══ 局域网手机控制 ══ -->
+-      <GfCard title="局域网手机控制" seal="联">
+-        <div class="row">
+-          <div class="row-txt">
+-            <b>服务状态</b>
+-            <p>开启后，同一局域网内的手机可浏览器访问控制台。</p>
+-          </div>
+-          <GfTag :tone="lanStatus?.enabled ? 'bamboo' : 'ink'">{{ lanStatus?.enabled ? '已开启' : '已关闭' }}</GfTag>
+-        </div>
+-        <div class="bg-actions">
+-          <GfButton
+-            small
+-            :disabled="lanBusy || !!lanStatus?.enabled || !canDriveLan"
+-            :title="canDriveLan ? '开启局域网手机控制' : '浏览器环境无法切换后端监听地址，请在桌面客户端中操作'"
+-            @click="enableLan"
+-          >{{ lanBusy ? '处理中…' : '开启' }}</GfButton>
+-          <GfButton variant="ghost" small :disabled="lanBusy || !lanStatus?.enabled" @click="disableLan">关闭</GfButton>
+-          <GfTag v-if="lanOffline || lanStatus?.simulated" tone="gold">离线占位</GfTag>
+-        </div>
+-        <p v-if="!canDriveLan" class="hint">当前为浏览器访问：可查看配对状态，但切换监听地址（0.0.0.0 重绑）需「枢忆·花朝」桌面客户端，请在其中开启。</p>
+-
+-        <div v-if="lanStatus?.enabled && (lanStatus.lan_url || lanStatus.qr_payload)" class="lan-panel">
+-          <div class="qr-box" aria-hidden="true">
+-            <svg viewBox="0 0 96 96" width="96" height="96">
+-              <rect x="6" y="6" width="26" height="26" class="qr-eye" />
+-              <rect x="64" y="6" width="26" height="26" class="qr-eye" />
+-              <rect x="6" y="64" width="26" height="26" class="qr-eye" />
+-              <rect x="12" y="12" width="14" height="14" class="qr-eye-in" />
+-              <rect x="70" y="12" width="14" height="14" class="qr-eye-in" />
+-              <rect x="12" y="70" width="14" height="14" class="qr-eye-in" />
+-              <rect x="42" y="8" width="8" height="8" class="qr-dot" />
+-              <rect x="56" y="20" width="8" height="8" class="qr-dot" />
+-              <rect x="42" y="34" width="8" height="8" class="qr-dot" />
+-              <rect x="8" y="42" width="8" height="8" class="qr-dot" />
+-              <rect x="26" y="48" width="8" height="8" class="qr-dot" />
+-              <rect x="48" y="48" width="8" height="8" class="qr-dot" />
+-              <rect x="68" y="42" width="8" height="8" class="qr-dot" />
+-              <rect x="84" y="52" width="8" height="8" class="qr-dot" />
+-              <rect x="42" y="66" width="8" height="8" class="qr-dot" />
+-              <rect x="58" y="78" width="8" height="8" class="qr-dot" />
+-              <rect x="76" y="70" width="8" height="8" class="qr-dot" />
+-            </svg>
+-            <GfTag tone="gold">二维码占位</GfTag>
+-          </div>
+-          <div class="lan-txt">
+-            <p class="lan-tip">手机浏览器打开此地址：</p>
+-            <code class="lan-url">{{ lanStatus.lan_url || lanStatus.qr_payload }}</code>
+-            <p v-if="lanStatus.qr_payload && lanStatus.lan_url" class="hint">扫码内容：{{ lanStatus.qr_payload }}</p>
+-            <p class="hint">真实二维码渲染尚未接入，当前为占位图案。</p>
+-          </div>
+-        </div>
+-        <p v-else-if="lanStatus?.message" class="hint">{{ lanStatus.message }}</p>
+-      </GfCard>
+ 
+       <!-- ══ 开发模拟器 ══ -->
+       <GfCard title="开发模拟器" seal="拟" class="span-2">
+@@ -806,45 +679,6 @@ onUnmounted(() => {
+ }
+ .bg-caption { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--ink-muted); flex-wrap: wrap; }
+ 
+-/* ── 局域网 ── */
+-.lan-panel {
+-  display: flex;
+-  gap: 16px;
+-  align-items: center;
+-  margin-top: 14px;
+-  padding: 14px;
+-  border: 1px dashed var(--gold-line);
+-  border-radius: var(--radius-small);
+-  background: color-mix(in srgb, var(--gold) 5%, transparent);
+-  flex-wrap: wrap;
+-}
+-.qr-box {
+-  display: grid;
+-  place-items: center;
+-  gap: 6px;
+-  padding: 10px;
+-  border-radius: var(--radius-small);
+-  background: var(--card-solid);
+-  border: 1px solid var(--line);
+-}
+-.qr-eye { fill: none; stroke: var(--ink); stroke-width: 3; }
+-.qr-eye-in { fill: var(--ink); }
+-.qr-dot { fill: var(--ink-soft); }
+-.lan-txt { flex: 1; min-width: 220px; }
+-.lan-tip { font-family: var(--font-kai); font-size: 13px; letter-spacing: 2px; color: var(--ink); }
+-.lan-url {
+-  display: inline-block;
+-  margin-top: 6px;
+-  padding: 6px 12px;
+-  border-radius: var(--radius-small);
+-  border: 1px solid var(--line);
+-  background: var(--bg-soft);
+-  font-family: var(--font-mono);
+-  font-size: 12px;
+-  color: var(--dai);
+-  overflow-wrap: anywhere;
+-  user-select: all;
+-}
+ 
+ /* ── 模拟器下载 ── */
+ .dl-list { display: grid; gap: 12px; margin-top: 12px; }
+diff --git a/frontend/console-vue/src/views/platform/WorkbenchView.vue b/frontend/console-vue/src/views/platform/WorkbenchView.vue
+index 8d9d1ff..0d2edfd 100644
+--- a/frontend/console-vue/src/views/platform/WorkbenchView.vue
++++ b/frontend/console-vue/src/views/platform/WorkbenchView.vue
+@@ -709,7 +709,7 @@ async function approveRun(run: RunRecord): Promise<void> {
+   try {
+     const res = await apiPost<Record<string, any>>(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
+     // 以后端返回的真实 status 为准（批准后通常回到 running 继续推进），不再本地假置 approved；
+-    // 响应缺 status 时回退为整表刷新（与 MobileView decide() 修法对齐）。
++    // 响应缺 status 时回退为整表刷新。
+     const actual = typeof res?.status === 'string' && res.status ? res.status : ''
+     if (actual) {
+       runs.value = runs.value.map((r) => (r.id === run.id ? { ...r, status: actual } : r))

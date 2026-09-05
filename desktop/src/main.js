@@ -222,10 +222,25 @@ const BACKEND_RUNTIME_PROBE_TIMEOUT_MS = 15_000;
 function isBackendEnvHealthy(python, probe = BACKEND_RUNTIME_PROBE) {
   const result = spawnSync(python, ['-c', probe, BACKEND_DIR], {
     cwd: BACKEND_DIR,
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: BACKEND_RUNTIME_PROBE_TIMEOUT_MS,
   });
   return !result.error && result.status === 0;
+}
+
+/**
+ * 识别麒麟 KySec 执行控制对 venv 原生扩展的拦截（failed to map segment）。
+ * 这种失败重建 venv 也治不好——是安全策略不是坏 wheel；必须提示用户打
+ * 信任标签，否则探针失败 → 重建 → 再失败的死循环。
+ */
+function looksLikeKysecDenial(logText) {
+  return /failed to map segment from shared object|ImportError.*\.so/i.test(String(logText || ''));
+}
+
+/** KySec 信任标签指引（麒麟 V11:对应用数据目录递归打 exectl 标签）。 */
+function kysecRemedyHint() {
+  return '检测到麒麟 KySec 拦截 venv 原生扩展加载。请在终端执行一次: '
+    + 'sudo kyexectl -s -r ' + USER_DATA + ' 后重启应用（详见使用说明书 6.1）。';
 }
 
 /**
@@ -268,7 +283,9 @@ async function ensureBackendEnv(notify) {
       { stdio: 'inherit', env: { ...process.env, PIP_INDEX_URL: process.env.PIP_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple' } });
     if (r.status !== 0) throw new Error('后端依赖安装失败，详见 ' + LOG_FILE);
     if (!isBackendEnvHealthy(stagingPy)) {
-      throw new Error('后端依赖安装后运行时预检失败，详见 ' + LOG_FILE);
+      const probeLog = spawnSync(stagingPy, ['-c', 'import pydantic_core'], { encoding: 'utf8' });
+      const hint = looksLikeKysecDenial(probeLog.stderr) ? ' ' + kysecRemedyHint() : '';
+      throw new Error('后端依赖安装后运行时预检失败，详见 ' + LOG_FILE + hint);
     }
     await fsp.writeFile(stagingMarker, reqHash);
     await swapBackendEnv(VENV_DIR, stagingDir, logLine);
