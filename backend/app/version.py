@@ -12,6 +12,7 @@ VERSION_HISTORY = [
         "version": "v1.0.0",
         "date": "2026-09-05",
         "summary": "首个正式发布:治理层 + EGPM/TKE 双演化体系 + 常驻麒麟 SDK bridge(全链路 p95 83ms)",
+        "status": "released",
     },
     {
         "version": "v0.11.0-wanshu",
