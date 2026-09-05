@@ -284,6 +284,11 @@ private:
 
 // 请求间复用的运行时缓存:模型加载与向量库连接只在首个请求发生一次,
 // 键含全部会影响运行时构造的配置项——配置变化时自然重建,不跨配置复用。
+//
+// 缓存有界:每个 EmbeddingRuntime 持有一份加载到内存的 embedding 模型,
+// VectorRuntime 持有一条向量库连接——无界缓存会在多配置场景耗尽原生资源
+// (模型内存/连接数)。上限 4 个配置(实际部署恒为 1);超限即清空重建,
+// 宁可重载一次模型,不让常驻进程无限吃内存。
 class RuntimeCache {
 public:
     EmbeddingRuntime& embedding(const json& request) {
@@ -291,6 +296,9 @@ public:
         const auto it = embeddings_.find(key);
         if (it != embeddings_.end()) {
             return *it->second;
+        }
+        if (embeddings_.size() >= kMaxEntriesPerKind) {
+            embeddings_.clear();
         }
         return *embeddings_.emplace(key, std::make_unique<EmbeddingRuntime>(request)).first->second;
     }
@@ -304,10 +312,14 @@ public:
         if (it != vector_dbs_.end()) {
             return *it->second;
         }
+        if (vector_dbs_.size() >= kMaxEntriesPerKind) {
+            vector_dbs_.clear();
+        }
         return *vector_dbs_.emplace(key, std::make_unique<VectorRuntime>(request)).first->second;
     }
 
 private:
+    static constexpr std::size_t kMaxEntriesPerKind = 4;
     std::map<std::string, std::unique_ptr<EmbeddingRuntime>> embeddings_;
     std::map<std::string, std::unique_ptr<VectorRuntime>> vector_dbs_;
 };

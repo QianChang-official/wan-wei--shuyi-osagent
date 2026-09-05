@@ -225,7 +225,12 @@ class _PersistentBridge:
             bufsize=1,
         )
         # 预热:首个请求(探针)把模型加载从第一次真实查询挪到 spawn 期。
-        self._exchange(proc, self._warmup_request, timeout=60.0)
+        # 探针失败(ok:false / 协议坏 / 超时)直接杀掉并抛错——调用方回落
+        # one-shot;绝不让已知坏状态的进程活着接后续请求。
+        warmup = self._exchange(proc, self._warmup_request, timeout=60.0)
+        if not isinstance(warmup, dict) or not warmup.get("ok"):
+            self._kill(proc)
+            raise KylinNativeSdkError("bridge_warmup_failed")
         return proc
 
     def _kill(self, proc: subprocess.Popen | None) -> None:
@@ -241,7 +246,8 @@ class _PersistentBridge:
     def _exchange(proc: subprocess.Popen, request: dict[str, Any], *, timeout: float) -> dict[str, Any] | None:
         """一次请求-响应交换;任何异常返回 None(由调用方决定回落)。"""
         try:
-            assert proc.stdin is not None and proc.stdout is not None
+            if proc.stdin is None or proc.stdout is None:
+                return None
             proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
             proc.stdin.flush()
             # 超时看门狗:管道 readline 无原生超时,到点杀进程让其返回 EOF。
@@ -251,7 +257,9 @@ class _PersistentBridge:
                 line = proc.stdout.readline()
             finally:
                 watchdog.cancel()
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
+            # TypeError: 请求负载不可 JSON 序列化(调用方数据问题);
+            # OSError: 管道已断(进程死亡);ValueError: 已关闭的管道写。
             return None
         if not line:
             return None
