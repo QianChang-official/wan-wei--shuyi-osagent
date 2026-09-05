@@ -95,8 +95,8 @@ def test_verified_backup_and_restore_round_trip(tmp_path, monkeypatch):
     init_db()
     conn = get_conn()
     conn.execute(
-        "INSERT INTO audit_logs VALUES (?, ?, ?, ?)",
-        ("audit_original", "test", json.dumps({"value": "original"}), "2026-07-10T00:00:00Z"),
+        "INSERT INTO audit_logs(audit_id,event_type,payload,created_at,owner_id) VALUES (?, ?, ?, ?, ?)",
+        ("audit_original", "test", json.dumps({"value": "original"}), "2026-07-10T00:00:00Z", "id_backup_owner"),
     )
     conn.commit()
 
@@ -112,8 +112,8 @@ def test_verified_backup_and_restore_round_trip(tmp_path, monkeypatch):
     close_all()
     restored = restore_backup(backup, force=True)
     assert restored["status"] == "restored"
-    row = get_conn().execute("SELECT audit_id FROM audit_logs").fetchone()
-    assert row[0] == "audit_original"
+    row = get_conn().execute("SELECT audit_id, owner_id FROM audit_logs").fetchone()
+    assert tuple(row) == ("audit_original", "id_backup_owner")
 
 
 def test_restore_requires_explicit_force(tmp_path):

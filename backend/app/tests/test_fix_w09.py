@@ -397,16 +397,15 @@ def test_forget_confirm_uses_materialized_legacy_links(tmp_path):
     )
 
 
-def test_ownerless_forget_ticket_only_configured_actor_can_claim(tmp_path, monkeypatch):
+def test_ownerless_forget_ticket_only_configured_actor_can_claim(tmp_path, monkeypatch, seed_identity):
     client = _client(tmp_path, api_key="owner-a")
 
     from backend.app import app_runtime as runtime
-    from backend.app.audit.service import record
     from backend.app.db import get_conn, transaction
     from backend.app.soul.ownership import actor_id_from_api_key
 
     owner_a = actor_id_from_api_key("owner-a")
-    owner_b = actor_id_from_api_key("owner-b")
+    seed_identity("owner-b")
     # Freeze the compatibility actor while exercising a second authenticated key.
     monkeypatch.setattr(runtime, "configured_actor_id", lambda: owner_a)
     with transaction() as conn:
@@ -525,7 +524,7 @@ def test_audit_trace_id_exact_match_no_wildcard_no_nested(isolated_db):
     assert list_logs(50, trace_id="nested_1") == []
 
 
-def test_audit_logs_endpoint_is_owner_scoped_and_keeps_configured_legacy_rows(tmp_path):
+def test_audit_logs_endpoint_is_owner_scoped_and_keeps_configured_legacy_rows(tmp_path, seed_identity):
     client = _client(tmp_path, api_key="owner-a")
 
     from backend.app.audit.service import record
@@ -533,7 +532,7 @@ def test_audit_logs_endpoint_is_owner_scoped_and_keeps_configured_legacy_rows(tm
     from backend.app.soul.ownership import actor_id_from_api_key
 
     owner_a = actor_id_from_api_key("owner-a")
-    owner_b = actor_id_from_api_key("owner-b")
+    owner_b = seed_identity("owner-b")
     record("audit_owner_a", {"trace_id": "owner-scope"}, owner_id=owner_a)
     record("audit_owner_b", {"trace_id": "owner-scope"}, owner_id=owner_b)
     with transaction() as conn:

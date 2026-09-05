@@ -127,8 +127,9 @@ def test_provider_config_concurrent_partial_updates_are_not_lost(monkeypatch):
         for future in futures:
             future.result(timeout=5)
 
-    assert store.data['openai']['model'] == 'model-a'
-    assert store.data['openai']['enabled'] is True
+    record = providers._provider_record_for_owner('openai', providers.configured_actor_id())
+    assert record['model'] == 'model-a'
+    assert record['enabled'] is True
 
 
 def test_space_updates_and_cascade_delete_use_atomic_store_mutations(monkeypatch):

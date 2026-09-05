@@ -1,7 +1,7 @@
 """身份层解耦测试：owner_id 独立 UUID + key 轮换。
 
 覆盖：
-- 首次使用自动注册 identity
+- 仅配置的 owner key 首次使用自动注册 identity
 - 重复调用返回同一 identity_id
 - key 轮换后新 key 继承同一身份
 - 旧 key 轮换后失效
@@ -10,9 +10,9 @@
 from __future__ import annotations
 
 import importlib
-import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,7 +40,7 @@ def client(db_path, monkeypatch):
 
 
 class TestIdentityRegistration:
-    """首次使用自动注册，后续调用返回同一身份。"""
+    """配置的 owner 首次使用自动注册，后续调用返回同一身份。"""
 
     def test_first_use_registers_identity(self, client):
         r = client.get("/memory/identity", headers={"x-api-key": "test-owner-key-0123456789abcdef"})
@@ -54,21 +54,52 @@ class TestIdentityRegistration:
         r2 = client.get("/memory/identity", headers={"x-api-key": "test-owner-key-0123456789abcdef"})
         assert r1.json()["owner_id"] == r2.json()["owner_id"]
 
-    def test_concurrent_first_use_registers_one_identity(self, isolated_db):
+    def test_concurrent_owner_first_use_registers_one_identity(self, isolated_db, monkeypatch):
         from backend.app.db import get_conn
         from backend.app.security.auth import _api_key_hash, actor_id_from_api_key
 
         key = "same-first-use-key"
+        monkeypatch.setenv("WANWEI_API_KEY", key)
+        barrier = Barrier(8)
+
+        def resolve(_):
+            barrier.wait(timeout=10)
+            return actor_id_from_api_key(key)
+
         with ThreadPoolExecutor(max_workers=8) as executor:
-            identity_ids = list(executor.map(actor_id_from_api_key, [key] * 16))
+            identity_ids = list(executor.map(resolve, range(16)))
 
         assert len(set(identity_ids)) == 1
+        assert identity_ids[0].startswith("id_")
         rows = get_conn().execute(
             "SELECT identity_id FROM identity WHERE api_key_hash=?",
             (_api_key_hash(key),),
         ).fetchall()
         assert len(rows) == 1
         assert rows[0]["identity_id"] == identity_ids[0]
+
+
+    def test_stranger_http_requests_never_register_or_authenticate(self, client):
+        from backend.app.db import get_conn
+        from backend.app.security.auth import _api_key_hash, _verify_api_key
+
+        key = "unprovisioned-identity-key-0123456789"
+        conn = get_conn()
+        before = conn.execute("SELECT COUNT(*) FROM identity").fetchone()[0]
+        for _ in range(2):
+            response = client.get("/memory/identity", headers={"x-api-key": key})
+            assert response.status_code == 401, response.text
+        response = client.post(
+            "/memory/identity/rotate",
+            headers={"x-api-key": key},
+            json={"new_key": "replacement-stranger-key-0123456789"},
+        )
+        assert response.status_code == 401, response.text
+        assert not _verify_api_key(key)
+        assert conn.execute("SELECT COUNT(*) FROM identity").fetchone()[0] == before
+        assert conn.execute(
+            "SELECT 1 FROM identity WHERE api_key_hash=?", (_api_key_hash(key),)
+        ).fetchone() is None
 
 
 class TestKeyRotation:
@@ -131,7 +162,7 @@ class TestKeyRotation:
 
     @pytest.mark.parametrize("other_key_active", [True, False])
     def test_rotate_rejects_key_owned_by_other_identity(
-        self, isolated_db, other_key_active
+        self, isolated_db, seed_identity, other_key_active
     ):
         from backend.app.security.auth import (
             _verify_api_key,
@@ -142,8 +173,8 @@ class TestKeyRotation:
         first_key = "first-identity-key"
         other_key = "other-identity-key"
         other_replacement = "other-replacement-key"
-        first_identity = actor_id_from_api_key(first_key)
-        other_identity = actor_id_from_api_key(other_key)
+        first_identity = seed_identity(first_key)
+        other_identity = seed_identity(other_key)
         if not other_key_active:
             assert rotate_api_key(other_key, other_replacement) == other_identity
 
@@ -154,7 +185,7 @@ class TestKeyRotation:
         assert actor_id_from_api_key(first_key) == first_identity
         assert actor_id_from_api_key(other_key) == other_identity
 
-    def test_concurrent_rotations_cannot_claim_same_new_key(self, isolated_db):
+    def test_concurrent_rotations_cannot_claim_same_new_key(self, isolated_db, seed_identity):
         from backend.app.db import get_conn
         from backend.app.security.auth import (
             _api_key_hash,
@@ -164,7 +195,7 @@ class TestKeyRotation:
         )
 
         old_keys = ["rotation-source-a", "rotation-source-b"]
-        identities = {key: actor_id_from_api_key(key) for key in old_keys}
+        identities = {key: seed_identity(key) for key in old_keys}
         new_key = "contended-new-key"
 
         def rotate(old_key):
@@ -188,6 +219,29 @@ class TestKeyRotation:
             "SELECT COUNT(*) FROM identity WHERE api_key_hash=?",
             (_api_key_hash(new_key),),
         ).fetchone()[0] == 1
+
+
+    def test_failed_insert_rolls_back_old_key_deactivation(self, isolated_db, seed_identity):
+        from backend.app.db import get_conn
+        from backend.app.security.auth import _verify_api_key, rotate_api_key
+
+        old_key = "rollback-source-key"
+        identity = seed_identity(old_key)
+        conn = get_conn()
+        before = [tuple(row) for row in conn.execute("SELECT * FROM identity")]
+        conn.execute(
+            "CREATE TRIGGER fail_identity_insert AFTER INSERT ON identity "
+            "BEGIN SELECT RAISE(FAIL, 'injected insert failure'); END"
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="injected insert failure"):
+            rotate_api_key(old_key, "rollback-target-key")
+        assert [tuple(row) for row in conn.execute("SELECT * FROM identity")] == before
+        assert _verify_api_key(old_key)
+        assert not _verify_api_key("rollback-target-key")
+        conn.execute("DROP TRIGGER fail_identity_insert")
+        conn.commit()
+        assert rotate_api_key(old_key, "rollback-target-key") == identity
 
 
 class TestKeyRevocation:

@@ -1,7 +1,6 @@
 """Input validation and size limits to prevent DoS attacks."""
 from __future__ import annotations
 
-import json
 from fastapi import HTTPException, status
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse

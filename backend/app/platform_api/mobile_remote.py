@@ -14,12 +14,10 @@ import json
 import logging
 import re
 import sqlite3
-import threading
 import time
 import uuid
 from itertools import count
 from pathlib import Path
-from typing import Optional
 
 import asyncio
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -205,7 +203,7 @@ async def realtime_events(
 def recent_tool_calls(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
-    since: Optional[float] = Query(None, description='只返回 ts > since 的记录'),
+    since: float | None = Query(None, description='只返回 ts > since 的记录'),
 ):
     """最近工具调用记录（轮询用，手机端可每 5s 拉一次）。"""
     # 从审计日志里筛 mcp_tool_call / tool_call 事件

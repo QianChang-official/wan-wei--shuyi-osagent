@@ -381,7 +381,7 @@ def test_workflow_legacy_schema_migrates_and_only_configured_actor_claims(
     ).fetchone()[0] == owner
 
 
-def test_workflow_http_routes_are_owner_scoped(test_db, monkeypatch):
+def test_workflow_http_routes_are_owner_scoped(test_db, monkeypatch, seed_identity):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -393,7 +393,7 @@ def test_workflow_http_routes_are_owner_scoped(test_db, monkeypatch):
     key_b = 'workflow-http-owner-b'
     monkeypatch.setenv('WANWEI_API_KEY', key_a)
     owner_a = actor_id_from_api_key(key_a)
-    owner_b = actor_id_from_api_key(key_b)
+    owner_b = seed_identity(key_b)
 
     app = FastAPI()
     app.include_router(workflow_router)

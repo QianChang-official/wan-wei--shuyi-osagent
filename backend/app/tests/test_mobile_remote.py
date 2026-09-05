@@ -97,10 +97,9 @@ def test_mobile_upload_file_size_boundary(tmp_path, monkeypatch, size):
         assert response.json()['size_bytes'] == size
 
 
-def test_missing_disk_file_can_be_deleted_only_by_owner(tmp_path, monkeypatch):
+def test_missing_disk_file_can_be_deleted_only_by_owner(tmp_path, monkeypatch, seed_identity):
     client = _client(tmp_path)
     from backend.app.platform_api import mobile_remote
-    from backend.app.security.auth import actor_id_from_api_key
     from backend.app.db import get_conn
 
     monkeypatch.setattr(mobile_remote, '_UPLOAD_DIR', tmp_path / 'uploads')
@@ -112,7 +111,7 @@ def test_missing_disk_file_can_be_deleted_only_by_owner(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     fid = response.json()['file_id']
     (mobile_remote._UPLOAD_DIR / fid).unlink()
-    actor_id_from_api_key('mobile-missing-other')
+    seed_identity('mobile-missing-other')
     foreign = client.delete(f'/platform/mobile/{fid}', headers={'x-api-key': 'mobile-missing-other'})
     assert foreign.status_code == 404
     assert get_conn().execute('SELECT file_id FROM mobile_files WHERE file_id=?', (fid,)).fetchone()
@@ -274,12 +273,11 @@ def test_sse_stream_emits_upload_event(tmp_path):
     assert any('file_upload' in e for e in received)
 
 
-def test_mobile_files_are_isolated_by_actor(tmp_path):
+def test_mobile_files_are_isolated_by_actor(tmp_path, seed_identity):
     """上传、列表、读取、删除均不能跨 API actor 访问。"""
     client = _client(tmp_path)
-    from backend.app.security.auth import actor_id_from_api_key
 
-    actor_id_from_api_key('mobile-owner-b')
+    seed_identity('mobile-owner-b')
     headers_b = {'x-api-key': 'mobile-owner-b'}
     uploaded = client.post(
         '/platform/mobile/upload',
@@ -299,14 +297,13 @@ def test_mobile_files_are_isolated_by_actor(tmp_path):
     ).json()['items'])
 
 
-def test_legacy_mobile_files_migrate_and_only_configured_actor_can_claim(tmp_path):
+def test_legacy_mobile_files_migrate_and_only_configured_actor_can_claim(tmp_path, seed_identity):
     """旧五列 mobile_files 表迁移后，仅配置 actor 能认领 ownerless 文件。"""
     client = _client(tmp_path)
     from backend.app.db import get_conn
     from backend.app.platform_api import mobile_remote
-    from backend.app.security.auth import actor_id_from_api_key
 
-    actor_id_from_api_key('mobile-legacy-other')
+    seed_identity('mobile-legacy-other')
     conn = get_conn()
     conn.execute('DROP TABLE IF EXISTS mobile_files')
     conn.execute(

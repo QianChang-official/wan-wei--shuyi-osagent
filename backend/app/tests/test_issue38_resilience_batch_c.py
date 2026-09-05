@@ -605,7 +605,9 @@ def test_app_lifespan_restarts_and_fully_shuts_down_smoke_executor(
     from backend.app import app_runtime
 
     monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
-    monkeypatch.setattr(gateway_service, "_get_config", lambda _provider: _configured_provider())
+    monkeypatch.setattr(
+        gateway_service, "_get_config", lambda _provider, owner_id=None: _configured_provider()
+    )
     monkeypatch.setattr(
         gateway_service,
         "_openai_compatible_smoke",

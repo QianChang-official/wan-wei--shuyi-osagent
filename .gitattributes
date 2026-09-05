@@ -8,6 +8,9 @@
 *.md text eol=lf
 *.json text eol=lf
 
+# Unified diffs must preserve source line endings and blank context lines.
+desktop/packaging/release-clean.patch -text whitespace=-trailing-space,cr-at-eol
+
 # Preserve captured VM evidence byte-for-byte so SHA256SUMS remains portable.
 reports/kylin-native-sdk-evidence/* -text whitespace=-trailing-space,cr-at-eol
 

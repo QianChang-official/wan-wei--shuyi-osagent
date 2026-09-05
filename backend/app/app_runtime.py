@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .security.auth import APIKeyMiddleware, MIN_PRODUCTION_API_KEY_LENGTH, OriginHostGuardMiddleware, get_api_key, is_production_mode, warn_if_exposed_bind
 from .security import encryption
-from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length, validate_prompt_length
+from .security.input_limits import BodySizeLimitMiddleware, validate_search_params, validate_goal_length
 from .security.headers import SecurityHeadersMiddleware
 from .security.rate_limit import RateLimitMiddleware
 from .security.redaction import redact_capsule_for_output
@@ -56,22 +56,21 @@ def _connect_forget_tx() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
-from .memory_runtime.policy_gate import evaluate_policy
-from .audit.service import list_logs, record, record_in_transaction
-from .retrieval.service import search as do_search
-from .memory_runtime.capsule_store import (
-    forget_capsules,
+from .memory_runtime.policy_gate import evaluate_policy  # noqa: E402  # intentional early imports after get_conn initialization
+from .audit.service import list_logs, record, record_in_transaction  # noqa: E402  # intentional early imports after get_conn initialization
+from .retrieval.service import search as do_search  # noqa: E402  # intentional early imports after get_conn initialization
+from .memory_runtime.capsule_store import (  # noqa: E402  # intentional early imports after get_conn initialization
     forget_capsules_in_transaction,
     get_capsule,
     list_capsules,
     write_capsule,
 )
-from .memory_runtime.retrieval import search_capsules, search_capsules_with_status
-from .memory_runtime.evidence import build_evidence_card
-from .kylin_sdk.native import get_native_sdk
-from .memory_runtime.command_loop import run_command_loop
-from .memory_runtime.evolution import reflect_task
-from .memory_runtime.tier_manager import (
+from .memory_runtime.retrieval import search_capsules_with_status  # noqa: E402  # intentional early imports after get_conn initialization
+from .memory_runtime.evidence import build_evidence_card  # noqa: E402  # intentional early imports after get_conn initialization
+from .kylin_sdk.native import get_native_sdk  # noqa: E402  # intentional early imports after get_conn initialization
+from .memory_runtime.command_loop import run_command_loop  # noqa: E402  # intentional early imports after get_conn initialization
+from .memory_runtime.evolution import reflect_task  # noqa: E402  # intentional early imports after get_conn initialization
+from .memory_runtime.tier_manager import (  # noqa: E402  # intentional early imports after get_conn initialization
     get_tier_stats,
     list_capsules_by_tier,
     run_auto_flow,
@@ -79,17 +78,17 @@ from .memory_runtime.tier_manager import (
     tier_promote,
     transition_history,
 )
-from .memory_arena.metrics_contract import arena_metrics_validation_error
-from .memoryos import governance as memoryos_governance
-from .memoryos import health as memoryos_health
-from .memoryos import lifecycle as memoryos_lifecycle
-from .memoryos import accounting as memoryos_accounting
-from .memoryos import harness as memoryos_harness
-from .memoryos import certificate as memoryos_certificate
-from .memoryos import export as memoryos_export
-from .platform.service import list_modules, module_summary
-from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn
-from .model_gateway.service import (
+from .memory_arena.metrics_contract import arena_metrics_validation_error  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import governance as memoryos_governance  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import health as memoryos_health  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import lifecycle as memoryos_lifecycle  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import accounting as memoryos_accounting  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import harness as memoryos_harness  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import certificate as memoryos_certificate  # noqa: E402  # intentional early imports after get_conn initialization
+from .memoryos import export as memoryos_export  # noqa: E402  # intentional early imports after get_conn initialization
+from .platform.service import list_modules, module_summary  # noqa: E402  # intentional early imports after get_conn initialization
+from .model_gateway.schemas import ModelGatewayConfigIn, ModelGatewayTestIn  # noqa: E402  # intentional early imports after get_conn initialization
+from .model_gateway.service import (  # noqa: E402  # intentional early imports after get_conn initialization
     _run_smoke_in_dedicated_pool,
     _run_smoke_in_dedicated_pool_async,
     delete_config,
@@ -100,15 +99,15 @@ from .model_gateway.service import (
     start_smoke_executor,
     upsert_config,
 )
-from .tool_registry.service import list_skills, list_tools
-from .tuning.service import get_defaults, list_policy_modes
-from .export_center.service import list_packages
-from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map
-from .utils.cjk_text import cjk_space
-from .utils.datetime_utils import utc_now_iso
-from .soul import build_injection_prompt, create_persona, get_persona, update_persona, get_soul_state, route_chat
-from .soul.persona import PersonaPolicyViolation, PersonaStoreError
-from .soul.ownership import (
+from .tool_registry.service import list_skills, list_tools  # noqa: E402  # intentional early imports after get_conn initialization
+from .tuning.service import get_defaults, list_policy_modes  # noqa: E402  # intentional early imports after get_conn initialization
+from .export_center.service import list_packages  # noqa: E402  # intentional early imports after get_conn initialization
+from .research_adoption.service import list_routes as list_adoption_routes, list_technologies, version_map  # noqa: E402  # intentional early imports after get_conn initialization
+from .utils.cjk_text import cjk_space  # noqa: E402  # intentional early imports after get_conn initialization
+from .utils.datetime_utils import utc_now_iso  # noqa: E402  # intentional early imports after get_conn initialization
+from .soul import build_injection_prompt, create_persona, get_persona, update_persona, get_soul_state, route_chat  # noqa: E402  # intentional early imports after get_conn initialization
+from .soul.persona import PersonaPolicyViolation, PersonaStoreError  # noqa: E402  # intentional early imports after get_conn initialization
+from .soul.ownership import (  # noqa: E402  # intentional early imports after get_conn initialization
     SoulAccessDenied,
     SoulScope,
     SoulSelectionRequired,
@@ -116,21 +115,19 @@ from .soul.ownership import (
     configured_actor_id,
     resolve_owned_soul,
 )
-from .affect import (
+from .affect import (  # noqa: E402  # intentional early imports after get_conn initialization
     AffectSoulNotFoundError,
-    AffectState,
     InvalidAffectIntensityError,
     SUPPORTED_AFFECT_TRIGGERS,
     UnsupportedAffectTriggerError,
     load_affect,
-    save_affect,
     transition,
     tune_response_style,
 )
-from .affect.decay_daemon import run_decay_daemon
-from .perception import intake_perception
-from .dream import run_dream, run_dream_scheduler
-from .workflow.service import (
+from .affect.decay_daemon import run_decay_daemon  # noqa: E402  # intentional early imports after get_conn initialization
+from .perception import intake_perception  # noqa: E402  # intentional early imports after get_conn initialization
+from .dream import run_dream, run_dream_scheduler  # noqa: E402  # intentional early imports after get_conn initialization
+from .workflow.service import (  # noqa: E402  # intentional early imports after get_conn initialization
     WorkflowRunIn,
     cleanup_old_runs as workflow_cleanup_old_runs,
     competition_mapping as workflow_competition_mapping,
@@ -143,7 +140,7 @@ from .workflow.service import (
     run_dry_run as workflow_run_dry_run,
     workflow_design,
 )
-from .deepening.service import (
+from .deepening.service import (  # noqa: E402  # intentional early imports after get_conn initialization
     InterrogationAnswerIn,
     ReasoningDepthSimulateIn,
     RedQueenEvaluateIn,
@@ -162,7 +159,7 @@ from .deepening.service import (
     visual_checklist_dry_run as deepening_visual_checklist_dry_run,
     visual_protocol as deepening_visual_protocol,
 )
-from .reproduction.service import (
+from .reproduction.service import (  # noqa: E402  # intentional early imports after get_conn initialization
     HippoRecallIn,
     MemoryToolDryRunIn,
     ReflexionEvaluateIn,
@@ -2052,7 +2049,7 @@ def tier_list(
             soul_id=soul_scope.soul_id if soul_scope else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail={'error': 'invalid_tier', 'message': str(exc)})
+        raise HTTPException(status_code=422, detail={'error': 'invalid_tier', 'message': str(exc)}) from None
     return {'tier': tier, 'items': [_public_capsule(item) for item in items]}
 
 @memory_router.post('/memory/tier/promote')
@@ -2073,8 +2070,8 @@ def tier_promote_endpoint(req: TierTransitionIn, request: Request = None):
     except ValueError as exc:
         message = str(exc)
         if 'not found' in message:
-            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message})
-        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message})
+            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message}) from None
+        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message}) from None
 
 @memory_router.post('/memory/tier/demote')
 def tier_demote_endpoint(req: TierTransitionIn, request: Request = None):
@@ -2094,8 +2091,8 @@ def tier_demote_endpoint(req: TierTransitionIn, request: Request = None):
     except ValueError as exc:
         message = str(exc)
         if 'not found' in message:
-            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message})
-        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message})
+            raise HTTPException(status_code=404, detail={'error': 'not_found', 'message': message}) from None
+        raise HTTPException(status_code=400, detail={'error': 'invalid_transition', 'message': message}) from None
 
 @memory_router.post('/memory/tier/auto-flow')
 def tier_auto_flow_endpoint(req: TierAutoFlowIn, request: Request = None):
@@ -3104,7 +3101,7 @@ def agent_audit_run():
 # 万枢协作平台聚合路由：platform_api 包自动发现子模块 router，
 # 单个子模块导入失败记 error 日志并跳过，不影响整体启动（03-#19）。
 # 03-#13: 统一相对导入。
-from .platform_api import api_router as platform_api_router
+from .platform_api import api_router as platform_api_router  # noqa: E402  # intentional late import isolates optional platform failures
 app.include_router(platform_api_router, prefix='/platform')
 
 # Issue #91: register modular routers

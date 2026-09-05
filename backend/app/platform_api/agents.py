@@ -699,7 +699,7 @@ def _index_insert_run(run: dict) -> None:
         return
     lst = _runs_agent_index.setdefault(key, [])
     # 若同一 run 已存在则先移除，再按 created_at 插入正确位置（升序）
-    for i, (c, existing_rid) in enumerate(lst):
+    for i, (_c, existing_rid) in enumerate(lst):
         if existing_rid == rid:
             lst.pop(i)
             break
@@ -740,7 +740,7 @@ def _enforce_runs_retention() -> None:
             _runs_agent_index = _build_runs_agent_index_from(all_runs)
 
     excess: list[str] = []
-    for key, lst in _runs_agent_index.items():
+    for _key, lst in _runs_agent_index.items():
         if len(lst) <= RUNS_RETENTION_PER_AGENT:
             continue
         # 升序列表：前端为 oldest，弹出直到保留最近 RUNS_RETENTION_PER_AGENT 条

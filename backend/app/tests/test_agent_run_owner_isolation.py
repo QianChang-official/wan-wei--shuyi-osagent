@@ -20,21 +20,18 @@ HEADERS_B = {"x-api-key": OWNER_B}
 
 
 @pytest.fixture()
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, seed_identity):
     monkeypatch.setenv("WANWEI_API_KEY", OWNER_A)
     monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "memory.db"))
     monkeypatch.setenv("WANWEI_PLATFORM_DIR", str(tmp_path / "platform"))
     monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-    import backend.app.security.auth as auth
     import backend.app.init_db
     import backend.app.app_runtime as runtime_mod
     import backend.app.main as main_mod
     from backend.app.platform_api import agents as agents_mod
 
-    verify = lambda provided: provided in {OWNER_A, OWNER_B}  # noqa: E731
-    monkeypatch.setattr(auth, "_verify_api_key", verify)
     # Ownership assertions must not race background execution or call providers.
     monkeypatch.setattr(agents_mod, "_spawn", lambda coro: coro.close())
     monkeypatch.setattr(agents_mod, "_runs_agent_index", None)
@@ -42,6 +39,7 @@ def client(tmp_path, monkeypatch):
     importlib.reload(runtime_mod)
     importlib.reload(main_mod)
     backend.app.init_db.main()
+    seed_identity(OWNER_B)
     with TestClient(main_mod.app, raise_server_exceptions=False) as test_client:
         yield test_client
 

@@ -40,7 +40,8 @@ rm "$STAGE/source.tar"
 
 if [ -f "$STAGE/desktop/packaging/release-clean.patch" ]; then
   echo "[stage] applying release-clean.patch (mobile removal, package only) ..."
-  git -C "$REPO" --work-tree="$STAGE" apply "$STAGE/desktop/packaging/release-clean.patch"
+  git -C "$STAGE" --git-dir="$REPO/.git" --work-tree="$STAGE" apply --check "$STAGE/desktop/packaging/release-clean.patch"
+  git -C "$STAGE" --git-dir="$REPO/.git" --work-tree="$STAGE" apply "$STAGE/desktop/packaging/release-clean.patch"
 else
   echo "ERROR: packaging/release-clean.patch missing" >&2
   exit 1

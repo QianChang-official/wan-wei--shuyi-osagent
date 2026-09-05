@@ -1196,7 +1196,8 @@ def _bump_slow_down(
         extra = 0
     new_extra = extra + _OAUTH_SLOW_DOWN_EXTRA_S
 
-    key = _pending_key(owner_id)
+    actor = owner_id or configured_actor_id()
+    key = _pending_key(actor)
     def _apply(data: dict) -> int:
         pending = data.get(key)
         pending = dict(pending) if isinstance(pending, dict) else {}
@@ -1206,6 +1207,11 @@ def _bump_slow_down(
             current['slow_down_extra'] = new_extra
             pending[pid] = current
             data[key] = pending
+            if _legacy_owner_allowed(actor):
+                legacy = data.get(_OAUTH_PENDING_KEY)
+                legacy = dict(legacy) if isinstance(legacy, dict) else {}
+                legacy[pid] = current
+                data[_OAUTH_PENDING_KEY] = legacy
         return base_interval + new_extra
 
     return _store.mutate(_apply)

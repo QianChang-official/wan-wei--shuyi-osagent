@@ -9,9 +9,34 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def seed_identity():
+    """Explicitly provision a key after the test initializes its database.
+
+    This opt-in fixture does not initialize a DB or replace authentication.
+    Duplicate keys deliberately fail SQL constraints.
+    """
+    from backend.app.db import transaction
+    from backend.app.security.auth import _api_key_hash
+    from backend.app.utils.datetime_utils import utc_now_iso_compact
+
+    def seed(api_key, *, identity_id=None, is_active=True):
+        identity_id = identity_id or "id_" + uuid.uuid4().hex[:16]
+        with transaction() as conn:
+            conn.execute(
+                "INSERT INTO identity(identity_id, api_key_hash, created_at, is_active) "
+                "VALUES (?,?,?,?)",
+                (identity_id, _api_key_hash(api_key), utc_now_iso_compact(), int(is_active)),
+            )
+        return identity_id
+
+    return seed
 
 
 def _shutdown_loaded_smoke_executor() -> None:
