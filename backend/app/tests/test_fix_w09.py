@@ -308,18 +308,18 @@ def test_audit_legacy_link_scan_filtered_and_newest_wins(isolated_db):
 
     with transaction() as conn:
         conn.execute(
-            "INSERT INTO audit_logs VALUES ('w09_a1','memory_write',?,'2024-01-01T00:00:00Z')",
+            "INSERT INTO audit_logs (audit_id,event_type,payload,created_at) VALUES ('w09_a1','memory_write',?,'2024-01-01T00:00:00Z')",
             (json.dumps({"event_id": "e1", "capsule_id": "cap_old"}),),
         )
         conn.execute(
-            "INSERT INTO audit_logs VALUES ('w09_a2','memory_write',?,'2024-01-02T00:00:00Z')",
+            "INSERT INTO audit_logs (audit_id,event_type,payload,created_at) VALUES ('w09_a2','memory_write',?,'2024-01-02T00:00:00Z')",
             (json.dumps({"event_id": "e1", "capsule_id": "cap_new"}),),
         )
         conn.execute(
-            "INSERT INTO audit_logs VALUES ('w09_a3','memory_write','not-a-json','2024-01-03T00:00:00Z')"
+            "INSERT INTO audit_logs (audit_id,event_type,payload,created_at) VALUES ('w09_a3','memory_write','not-a-json','2024-01-03T00:00:00Z')"
         )
         conn.execute(
-            "INSERT INTO audit_logs VALUES ('w09_a4','memory_write',?,'2024-01-04T00:00:00Z')",
+            "INSERT INTO audit_logs (audit_id,event_type,payload,created_at) VALUES ('w09_a4','memory_write',?,'2024-01-04T00:00:00Z')",
             (json.dumps({"event_id": "e_other", "capsule_id": "cap_other"}),),
         )
 

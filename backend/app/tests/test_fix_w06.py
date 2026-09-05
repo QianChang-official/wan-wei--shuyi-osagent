@@ -442,13 +442,19 @@ def test_finalize_run_annotates_actual_provider(client, monkeypatch):
     agents_mod = _agents_mod()
     import backend.app.model_gateway.service as mgw
 
-    monkeypatch.setattr(mgw, "_provider_config", lambda name: {
-        "provider": name,
-        "api_base": "http://127.0.0.1:8080/v1",
-        "api_key": "",
-        "model": "local-model",
-        "enabled": True,
-    } if name == "openai_compatible" else None)
+    config_calls = []
+
+    def fake_config(name, owner_id=None):
+        config_calls.append((name, owner_id))
+        return {
+            "provider": name,
+            "api_base": "http://127.0.0.1:8080/v1",
+            "api_key": "",
+            "model": "local-model",
+            "enabled": True,
+        } if name == "openai_compatible" else None
+
+    monkeypatch.setattr(mgw, "_provider_config", fake_config)
     monkeypatch.setattr(
         mgw, "_openai_compatible_smoke",
         lambda api_base, api_key, model, prompt, max_tokens: ("ok", 1, "真实结论"),
@@ -469,6 +475,9 @@ def test_finalize_run_annotates_actual_provider(client, monkeypatch):
     run = agents_mod._runs.get(rid)  # noqa: SLF001
     assert run["engine"] == "gateway"
     assert run["provider_used"] == "openai_compatible"
+    assert run["owner_id"]
+    assert ("openai_compatible", run["owner_id"]) in config_calls
+    assert all(owner == run["owner_id"] for _, owner in config_calls)
     assert "provider=openai_compatible" in run["result"]
     assert "真实结论" in run["result"]
 
