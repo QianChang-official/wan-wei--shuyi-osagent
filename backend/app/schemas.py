@@ -223,3 +223,32 @@ class KnowledgeRerankIn(BaseModel):
     capsule_ids: list[str] = Field(min_length=1, max_length=200)
     top_k: int | None = Field(default=None, ge=1, le=200)
     soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+# TKE（Temporal Knowledge Evolution）schemas（issue #204：知识双时态与演化时间轴）
+
+class KnowledgeValidTimeIn(BaseModel):
+    """写入知识的 valid_time 区间（双时态的真值时间轴；None=不改该端点）。"""
+    capsule_id: str = Field(min_length=1, max_length=64)
+    valid_from: str | None = Field(default=None, max_length=40)
+    valid_until: str | None = Field(default=None, max_length=40)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeAsOfIn(BaseModel):
+    """as-of 历史回放：时刻 T 的 active knowledge。
+
+    mode: truth=世界真值（valid_time 判定，延迟导入场景）；belief=系统
+    当时认知（valid_time+transaction_time 双过滤，严格双时态）。
+    """
+    capsule_ids: list[str] = Field(min_length=1, max_length=200)
+    at: str = Field(min_length=10, max_length=40)
+    mode: Literal['truth', 'belief'] = 'truth'
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class KnowledgeVerifyIn(BaseModel):
+    """记录知识的最近验证时间（freshness 输入；缺省取当前时间）。"""
+    capsule_id: str = Field(min_length=1, max_length=64)
+    verified_at: str | None = Field(default=None, max_length=40)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
