@@ -221,8 +221,9 @@ def test_argv_host_beats_env(monkeypatch):
     from backend.app.security import auth
 
     monkeypatch.setenv("WANWEI_HOST", "127.0.0.1")
-    monkeypatch.setattr(sys, "argv", ["uvicorn", "--host", "0.0.0.0", "app:app"])
-    assert auth._effective_bind_host() == "0.0.0.0"
+    # nosec B104 —— 测试夹具字符串(验证 0.0.0.0 不被误判回环),非真实绑定。
+    monkeypatch.setattr(sys, "argv", ["uvicorn", "--host", "0.0.0.0", "app:app"])  # nosec B104
+    assert auth._effective_bind_host() == "0.0.0.0"  # nosec B104
     assert auth._is_loopback_bound() is False  # 0.0.0.0 不再误判回环
 
 
