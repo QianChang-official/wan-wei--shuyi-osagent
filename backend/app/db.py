@@ -27,6 +27,91 @@ def _default_data_dir() -> Path:
 # prepare，语义与旧版「每次调用都 prepare」对齐。
 _prepared_paths: set[str] = set()
 
+#: DB 身份指纹（issue #213）：prepare 时记录 (st_dev, st_ino)。DB 文件被
+#: 移走/替换后，缓存连接仍指向已 unlink 的 inode——读写「假成功」，数据
+#: 进黑洞。指纹比对是唯一可靠的检测器（SELECT 1 永远通过：sqlite3.connect
+#: 对缺失路径会自动创建空文件）。
+_db_fingerprints: dict[str, tuple[int, int]] = {}
+
+
+class DatabaseIdentityError(RuntimeError):
+    """DB 文件身份校验失败：路径缺失或 inode 与 prepare 时不一致。
+
+    典型触发：运行中 DB 文件被移走/删除/替换（误删、备份恢复失误、磁盘
+    故障）。此时缓存连接写入的是已 unlink 的 inode——进程重启即永久丢失。
+    抛此异常让写路径返回 5xx 并留下告警，绝不静默假成功。
+    """
+
+
+def verify_db_identity(path: str | None = None) -> dict:
+    """校验 DB 文件身份与核心表存在性（readiness 消费，只读）。
+
+    三级检查（issue #213 的 readiness 真实化）：
+    1. 路径存在且 inode 与 prepare 时记录一致（文件未被移走/替换）；
+    2. 用**全新短连接**打开该路径——缓存连接可能还挂在已 unlink 的旧
+       inode 上，用它检查永远通过；
+    3. 核心表存在（非 0 表的空壳库）+ SELECT 1。
+
+    返回 ``{"status": "ok"|"failed", "detail": ...}``。
+    """
+    p = Path(path) if path else _db_path()
+    key = str(p)
+    try:
+        st = os.stat(p)
+    except OSError as exc:
+        return {"status": "failed", "detail": f"db_file_missing:{type(exc).__name__}"}
+    recorded = _db_fingerprints.get(key)
+    if recorded is not None and (st.st_dev, st.st_ino) != recorded:
+        return {
+            "status": "failed",
+            "detail": "db_file_replaced",
+            "expected_inode": recorded[1],
+            "actual_inode": st.st_ino,
+        }
+    try:
+        # 普通短连接(非 mode=ro):WAL 库崩溃后遗留 -wal 内容且无 -shm 时,
+        # 只读连接会因无法创建共享内存而误报失败;读写短连接可正常完成
+        # WAL 恢复。路径存在性已由上面的 stat 保证,连接不会凭空建文件。
+        conn = sqlite3.connect(key, timeout=5)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if not tables:
+                return {"status": "failed", "detail": "db_empty_schema"}
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return {"status": "failed", "detail": f"sqlite:{type(exc).__name__}"}
+    return {"status": "ok", "detail": "identity+schema"}
+
+
+def assert_db_identity() -> None:
+    """写路径快速校验（transaction() 每次调用）：一个 stat 的成本。
+
+    文件缺失或 inode 变化 → :class:`DatabaseIdentityError`（→ 5xx）。
+    文件还在且 inode 一致 → 通过（读旧 inode 的风险由 readiness 的
+    全新连接检查兜底——本函数只拦截「写进黑洞」这一不可逆伤害）。
+    """
+    p = _db_path()
+    key = str(p)
+    try:
+        st = os.stat(p)
+    except OSError as exc:
+        raise DatabaseIdentityError(
+            f"数据库文件不存在（可能被移走/删除）: {key}; 写入已拒绝"
+        ) from exc
+    recorded = _db_fingerprints.get(key)
+    if recorded is not None and (st.st_dev, st.st_ino) != recorded:
+        raise DatabaseIdentityError(
+            f"数据库文件已被替换: {key} inode {recorded[1]} → {st.st_ino}; "
+            "写入已拒绝（旧连接指向的 inode 已失效）"
+        )
+
 
 def _db_path() -> Path:
     # Allow tests / arena runner to point at an isolated DB via env.
@@ -47,6 +132,12 @@ def _db_path() -> Path:
                 p.chmod(0o600)
             except PermissionError:
                 pass
+        # issue #213:记录身份指纹,供写路径与 readiness 检测文件被移走/替换。
+        try:
+            st = os.stat(p)
+            _db_fingerprints[key] = (st.st_dev, st.st_ino)
+        except OSError:
+            _db_fingerprints.pop(key, None)
         with _registry_lock:
             _prepared_paths.add(key)
     return p
@@ -143,6 +234,10 @@ def transaction(*, immediate: bool = False):
     """
     conn = get_conn()
     try:
+        # issue #213:写前校验 DB 身份——文件被移走/替换时缓存连接写进的
+        # 是已 unlink 的 inode,SQLite 层面不报错、重启即丢。一个 stat 的
+        # 成本换「绝不假成功」。校验失败抛 DatabaseIdentityError → 5xx。
+        assert_db_identity()
         if immediate:
             conn.execute("BEGIN IMMEDIATE")
         yield conn
@@ -171,5 +266,7 @@ def close_all() -> None:
         # 路径级 prepare 缓存随连接代际一并失效：测试可能在 teardown 删除
         # DB 文件后以相同路径重建，下一次 get_conn 必须重新 mkdir/touch。
         _prepared_paths.clear()
+        # 身份指纹同样失效：同路径重建的文件是全新 inode（issue #213）。
+        _db_fingerprints.clear()
 
     _close_connections(local_connections)

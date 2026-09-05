@@ -21,6 +21,14 @@ def _client(tmp_path: Path) -> TestClient:
     import backend.app.main as main_mod
     importlib.reload(runtime_mod)
     importlib.reload(main_mod)
+    # TestClient 不进上下文管理器则 lifespan 不执行,init_db 不会跑——
+    # 此前 readiness 的 SELECT 1 对未初始化空文件也通过(假绿,#213 修复
+    # 后暴露),这里按 memoryos_api 夹具惯例显式初始化。
+    from backend.app.db import close_all
+    from backend.app.init_db import main as init_db
+
+    close_all()
+    init_db()
     return TestClient(main_mod.app, raise_server_exceptions=False)
 
 

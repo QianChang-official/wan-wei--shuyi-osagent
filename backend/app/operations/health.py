@@ -1,24 +1,28 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
-from ..db import get_conn
+from ..db import verify_db_identity
 from ..platform_api import failed_modules, loaded_modules
 
 
 def readiness_report(frontend_paths: tuple[Path, ...]) -> dict:
     checks: dict[str, dict[str, Any]] = {}
-    try:
-        row = get_conn().execute("SELECT 1").fetchone()
+    # issue #213:readiness 的 database 检查不能只用缓存连接的 SELECT 1——
+    # DB 文件被移走后,缓存连接仍指向已 unlink 的 inode,SELECT 1 永远通过
+    # (假绿);而 sqlite3.connect 对缺失路径会自动创建空文件,同样假绿。
+    # 改用身份校验:路径存在 + inode 与 prepare 时一致 + 全新只读连接能
+    # 看到非空 schema。
+    identity = verify_db_identity()
+    if identity["status"] == "ok":
+        checks["database"] = {"status": "ok", "detail": "identity+schema"}
+    else:
         checks["database"] = {
-            "status": "ok" if row and row[0] == 1 else "failed",
-            "detail": "sqlite_query",
+            "status": "failed",
+            "detail": identity["detail"],
         }
-    except (sqlite3.Error, OSError) as exc:
-        checks["database"] = {"status": "failed", "detail": type(exc).__name__}
 
     # Only enforce static-assets readiness in production; CI/test may run
     # without a built frontend.

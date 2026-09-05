@@ -103,6 +103,14 @@ def actor_id_from_api_key(api_key: str) -> str:
 
     向后兼容：identity 表未建（旧数据库）时回退到旧版 blake2b 派生，
     保证升级过程不中断服务。
+
+    **注册门槛（issue #211）**：自动注册**仅限配置的 owner key**（环境
+    变量 / 密钥文件来源，即 ``get_api_key()`` 返回的那把）。其余 key：
+
+    - 已在 identity 表（经 ``rotate_api_key`` 显式注册）→ 返回其 identity；
+    - 陌生 key → 返回派生 ID（``_derive_legacy_owner_id``）**但不落库**——
+      任何碰过一次服务的 key 不再静默变成永久凭据。个人单 key 使用
+      零变化：配置的那把 key 首次使用照常完成身份引导。
     """
     normalized = api_key.strip()
     if not normalized:
@@ -134,13 +142,20 @@ def actor_id_from_api_key(api_key: str) -> str:
     if row:
         return str(row["identity_id"])
 
-    # 首次使用：注册新身份。用独立事务避免与调用方的事务嵌套。
+    # 陌生 key：不注册（issue #211——此前任何首次见到的 key 都会静默落库
+    # 成永久凭据，绕过 rotate/revoke）。派生一个稳定 ID 保证作用域隔离
+    # （陌生 key 看到的是自己的空作用域，不是 owner 的数据）。
+    if not secrets.compare_digest(normalized, get_api_key()):
+        return _derive_legacy_owner_id(normalized)
+
+    # owner key 首次使用：注册新身份（一次性引导，留审计痕迹）。
     identity_id = "id_" + uuid.uuid4().hex[:16]
     conn.execute(
         "INSERT INTO identity(identity_id, api_key_hash, created_at) VALUES (?,?,?)",
         (identity_id, key_hash, utc_now_iso_compact()),
     )
     conn.commit()
+    logger.info("identity bootstrap: owner key registered as %s", identity_id)
     return identity_id
 
 
@@ -374,9 +389,54 @@ def _is_loopback_host(host: str | None) -> bool:
         return host.lower() == "localhost"
 
 
+def _argv_option(name: str) -> str | None:
+    """从进程参数里取 ``--name value`` / ``--name=value``（uvicorn CLI 路径）。
+
+    issue #211 关联发现：``uvicorn --host 0.0.0.0`` 启动而 ``WANWEI_HOST``
+    未设时,回环判定只看环境变量会误判为回环绑定。进程参数是绑定地址的
+    事实来源（CLI 部署/sysd 服务都用它）,优先于环境变量声明。
+    """
+    argv = sys.argv
+    for index, arg in enumerate(argv):
+        if arg == f"--{name}" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith(f"--{name}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _effective_bind_host() -> str:
+    """实际绑定地址：进程参数 ``--host`` > ``WANWEI_HOST`` > 127.0.0.1。"""
+    return (
+        _argv_option("host")
+        or os.getenv("WANWEI_HOST", "127.0.0.1").strip()
+        or "127.0.0.1"
+    )
+
+
+def _effective_port() -> str:
+    """实际监听端口：进程参数 ``--port`` > ``WANWEI_PORT`` > 8010。
+
+    issue #211 关联发现：回环 Origin 白名单端口此前只看 ``WANWEI_PORT``
+    (默认 8010),与 ``uvicorn --port 8000`` 的实际监听不符时,同源写请求
+    会被 Origin 守卫 403。
+    """
+    return (
+        _argv_option("port")
+        or os.getenv("WANWEI_PORT", "8010").strip()
+        or "8010"
+    )
+
+
 def _is_loopback_bound() -> bool:
-    """Whether ``WANWEI_HOST`` binds a loopback address (default 127.0.0.1)."""
-    host = os.getenv("WANWEI_HOST", "127.0.0.1").strip().lower()
+    """Whether the service actually binds a loopback address.
+
+    事实来源优先级：进程参数 ``--host``（uvicorn CLI 实际绑定）>
+    ``WANWEI_HOST`` 环境声明 > 默认 127.0.0.1。此前只看环境变量,
+    ``--host 0.0.0.0`` 启动而 env 未设时会误判回环 → 回环免密静默生效
+    （issue #211）。
+    """
+    host = _effective_bind_host().lower()
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
@@ -625,11 +685,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 def _loopback_origin_allowlist() -> frozenset[str]:
     """回环部署下被接受的 Origin 白名单（协议 + 主机 + 端口）。
 
-    端口来自 ``WANWEI_PORT``（默认 8010），与 ``scripts/run_dev`` 的启动端口一致；
-    手机伴侣 H5 等跨源前端不在此列——它们应通过 ``WANWEI_CORS_ORIGINS`` 显式放行，
-    且走 API key 鉴权，与回环免密互不叠加。
+    端口取**实际监听端口**（进程参数 ``--port`` > ``WANWEI_PORT`` > 8010，
+    issue #211 关联修复：此前只看 env 默认 8010，与 ``uvicorn --port 8000``
+    实际监听不符时同源写请求被 403）；手机伴侣 H5 等跨源前端不在此列——
+    它们应通过 ``WANWEI_CORS_ORIGINS`` 显式放行，且走 API key 鉴权，
+    与回环免密互不叠加。
     """
-    port = os.getenv("WANWEI_PORT", "8010").strip() or "8010"
+    port = _effective_port()
     return frozenset({
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",

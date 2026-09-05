@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### 2026-09-05 - 安全修复：identity 注册门槛 + DB 身份指纹（#211 / #213）
+- **#211 identity 注册门槛**：`actor_id_from_api_key` 自动注册**仅限配置的 owner key**（环境变量/密钥文件来源）——此前任何首次见到的 key（含回环免密 GET 携带的任意值）都会静默落库成永久凭据，绕过 rotate/revoke；陌生 key 改为派生稳定 ID（作用域隔离，看到自己的空 scope）**不落库**，owner key 首次使用照常完成身份引导（个人单 key 使用零变化）；轮换测试按新语义更新（原 4 条测试锁定的正是漏洞行为）。
+- **#211 回环误判修复**：`_is_loopback_bound` 实际绑定地址取进程参数 `--host` 优先于 `WANWEI_HOST` 环境声明——`uvicorn --host 0.0.0.0` 启动而 env 未设时不再误判回环（回环免密静默对外生效）；`_loopback_origin_allowlist` 端口同理取 `--port` 优先（与实际监听一致，同源写不再被 403）。
+- **#213 DB 身份指纹**：prepare 时记录 (st_dev, st_ino)；`transaction()` 写前校验（一个 stat 的成本）——文件被移走/替换时抛 `DatabaseIdentityError` → 5xx，绝不静默写入 unlinked inode（数据黑洞）。
+- **#213 readiness 真实化**：database 检查从「缓存连接 SELECT 1」（对 unlinked inode 永远通过 = 假绿）改为 `verify_db_identity`——路径存在 + inode 与 prepare 一致 + **全新短连接**能看到非空 schema。
+- **#213 启动 fail-fast**：非空但零表的文件（被替换/损坏现场）拒绝静默重建；全新 0 字节安装与含旧版表的库照常初始化/迁移（不误伤）。
+- **暴露的假绿测试修正**：`test_operations._client` 此前不进 lifespan 也不初始化 DB，靠旧 SELECT 1 的假绿通过——按 memoryos_api 夹具惯例显式 init_db。
+- 新增测试 17 条（test_db_identity.py）：写路径拒绝（替换/缺失）、readiness 红/绿、外来库 fail-fast、全新库不误伤、legacy 迁移、陌生 key 不注册、owner 引导、轮换保持 identity、argv host/port 优先级。
+
 ## 2026-09-05 - v1.0.0 首个正式发布
 
 - **全链路延迟优化（麒麟 V11 实机实测）**：麒麟 SDK bridge 改常驻进程——embedding 模型只加载一次（此前每次查询 spawn 新进程重载模型占 ~200ms 中的绝大部分）。实测：SDK 单次 15ms（原 ~200ms）；HTTP 全链路 p50 29ms / p95 83ms；1k 条 hot p95 27.9ms、10k 条 97.4ms——赛题 ≤500ms 指标 6 倍余量。`WANWEI_KYLIN_SDK_PERSISTENT=0` 可回退旧行为。
