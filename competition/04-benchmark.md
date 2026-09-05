@@ -7,5 +7,7 @@
 - 生产记忆评测：5 cases、16 assertions 全部通过，unsafe_autonomy_rate=0.0（`reports/production_memory_eval_metrics.json`）。
 - 消融对照（MEB full，非官方）：fts_only 60/60、hybrid 59/60、vector_only 58/60、no_governance 46/60；详见 `reports/baseline_compare.json`。
 - FTS5 本机检索 p95 0.8072ms；麒麟 SDK p50 195.320ms、p95 246.473ms。
+- 延迟规模曲线（端侧 SQLite FTS5）：1k 条 p95 4.61ms / 10k 77.06ms / 50k 447.94ms（`reports/latency_scale.json`）。
+- TKE Benchmark（四场景含延迟导入，真实写路径）：Active Knowledge Accuracy 100%、Evolution Chain Accuracy 100%（`reports/tke_benchmark_report.md`，复现 `PYTHONPATH=. python scripts/bench_tke.py`）。
 
-EGPM Phase-1/2/3 已在 CHANGELOG 中记录，但真实漂移与 Outcome Validation 尚未接入统一对照实验，相关项标为未验证。
+EGPM Phase-1/2/3 已在 CHANGELOG 中记录，但真实漂移与 Outcome Validation 尚未接入统一对照实验，相关项标为未验证。Preference Graph 的消融对照同样未跑，由 45 条行为测试锁定，接入统一基准后补充。
