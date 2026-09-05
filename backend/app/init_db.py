@@ -97,7 +97,46 @@ def migrate_legacy_vector_refs(conn) -> bool:
         raise
 
 
+def _preflight_foreign_db() -> None:
+    """启动 schema 预检（issue #213）：非空库零表 → fail-fast。
+
+    口径（与全新安装区分）：
+    - 文件不存在 / 0 字节 → 正常全新安装，照常初始化；
+    - 文件非空但**一张表都没有** → 明显不是本项目的库（被替换成别的
+      SQLite 文件、或损坏现场）——静默重建会把用户的旧数据入口覆盖掉，
+      拒绝启动并给出明确报错；
+    - 有表（哪怕只是旧版本 legacy 表）→ 走既有迁移路径。
+    """
+    import sqlite3
+
+    from .db import _db_path
+
+    p = _db_path()
+    try:
+        if not p.exists() or p.stat().st_size == 0:
+            return
+    except OSError:
+        return  # stat 失败交给后续连接层报错
+    probe = sqlite3.connect(str(p), timeout=5)
+    try:
+        tables = probe.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise RuntimeError(
+            f"数据库文件无法解析（可能损坏或非 SQLite 文件）: {p}: {exc}"
+        ) from exc
+    finally:
+        probe.close()
+    if tables and tables[0] == 0:
+        raise RuntimeError(
+            f"数据库文件非空但不含任何表（疑似被替换/损坏）: {p}; "
+            "拒绝静默重建。请确认文件来源或手动移走后重启。"
+        )
+
+
 def main():
+    _preflight_foreign_db()
     conn = get_conn(); cur = conn.cursor()
     cur.executescript("""
     -- legacy v0.2 tables (kept for backward compatibility)
