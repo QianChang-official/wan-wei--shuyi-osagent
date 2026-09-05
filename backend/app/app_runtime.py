@@ -300,7 +300,7 @@ async def lifespan(app: FastAPI):
             from .kylin_sdk.native import shutdown_persistent_bridges
 
             shutdown_persistent_bridges()
-        except Exception as exc:  # noqa: BLE001 —— 停机路径尽力而为
+        except (ImportError, AttributeError, OSError) as exc:
             import logging
 
             logging.getLogger(__name__).warning("persistent bridge shutdown failed: %s", exc)

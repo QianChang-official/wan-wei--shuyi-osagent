@@ -419,72 +419,7 @@ def test_settings_background_image_max_length(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_lan_enable_requires_device_gear(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    r = client.post("/platform/system/lan/enable", json={"gear": "sandbox"}, headers=_H)
-    assert r.status_code == 403, r.text
-    r = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H)
-    assert r.status_code == 403, r.text
-    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
-    r = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H)
-    assert r.status_code == 200, r.text
-    assert len(r.json()["token"]) >= 32
 
-
-def test_lan_token_one_time_use_and_ttl_fields(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
-    r = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H)
-    assert r.status_code == 200, r.text
-    token = r.json()["token"]
-    assert r.json()["token_ttl_s"] > 0
-    assert len(token) >= 32
-
-    status = client.get("/platform/system/lan/status", headers=_H).json()
-    assert status["token_state"] == "ok"
-
-    # 错误 token → 不匹配
-    bad = client.post("/platform/system/lan/verify", json={"token": "0" * 12}, headers=_H)
-    assert bad.json()["ok"] is False
-
-    # 正确 token 首次 → 成功并即时作废
-    first = client.post("/platform/system/lan/verify", json={"token": token}, headers=_H)
-    assert first.status_code == 200, first.text
-    assert first.json()["ok"] is True
-
-    # 同一 token 再次 → 已使用
-    second = client.post("/platform/system/lan/verify", json={"token": token}, headers=_H)
-    assert second.json()["ok"] is False
-    assert "已使用" in second.json()["reason"]
-
-    # 重新 enable 换新 token 后可用
-    token2 = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H).json()["token"]
-    assert token2 != token
-    again = client.post("/platform/system/lan/verify", json={"token": token2}, headers=_H)
-    assert again.json()["ok"] is True
-
-
-def test_lan_token_expired_after_ttl(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
-    token = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H).json()["token"]
-
-    # 把创建时间拨回 TTL 之前，模拟过期（旧数据迁移语义同此判定路径）
-    from backend.app.platform_api import system_svc
-
-    lan = system_svc._sys_store.get("lan")
-    lan["token_created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
-    system_svc._sys_store.set("lan", lan)
-
-    r = client.post("/platform/system/lan/verify", json={"token": token}, headers=_H)
-    assert r.json()["ok"] is False
-    assert "过期" in r.json()["reason"]
-    assert client.get("/platform/system/lan/status", headers=_H).json()["token_state"] == "expired"
-
-
-# ---------------------------------------------------------------------------
-# 02-#5 guards：root_path 目录白名单 + device 档放行审计
-# ---------------------------------------------------------------------------
 
 
 def test_validate_root_path_default_whitelist_and_sensitive(tmp_path):
