@@ -709,7 +709,7 @@ async function approveRun(run: RunRecord): Promise<void> {
   try {
     const res = await apiPost<Record<string, any>>(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
     // 以后端返回的真实 status 为准（批准后通常回到 running 继续推进），不再本地假置 approved；
-    // 响应缺 status 时回退为整表刷新（与 MobileView decide() 修法对齐）。
+    // 响应缺 status 时回退为整表刷新。
     const actual = typeof res?.status === 'string' && res.status ? res.status : ''
     if (actual) {
       runs.value = runs.value.map((r) => (r.id === run.id ? { ...r, status: actual } : r))

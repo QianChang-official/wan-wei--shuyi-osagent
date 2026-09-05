@@ -15,8 +15,6 @@ declare global {
       setAutostart?: (enable: boolean) => unknown
       setPreventSleep?: (enable: boolean) => unknown
       getPreventSleep?: () => Promise<{ enabled?: boolean; mode?: string }>
-      lanEnable?: (token?: string) => Promise<{ enabled?: boolean; lan_url?: string; host?: string; port?: number }>
-      lanDisable?: () => Promise<{ enabled?: boolean; lan_url?: string | null; host?: string; port?: number }>
     }
   }
 }
@@ -35,15 +33,6 @@ interface SystemSettings {
 interface PowerState {
   prevent_sleep?: boolean
   mode?: string
-}
-
-interface LanStatus {
-  enabled?: boolean
-  lan_url?: string
-  qr_payload?: string
-  token?: string
-  message?: string
-  simulated?: boolean
 }
 
 interface EmulatorDownload {
@@ -78,8 +67,6 @@ const langOptions: { value: LangChoice; label: string }[] = [
 
 /* ── 桌面桥（preload 暴露的 window.wanweiDesktop；浏览器环境为 undefined） ── */
 const desktop = window.wanweiDesktop
-/** 桌面端具备 lanEnable/lanDisable 才能真实切换 0.0.0.0 监听 */
-const canDriveLan = !!(desktop?.lanEnable && desktop?.lanDisable)
 
 /* ── 基础状态 ── */
 const theme = ref<ThemeChoice>(readTheme())
@@ -95,9 +82,6 @@ const savingKey = shallowRef('')
 const notice = shallowRef('')
 const error = shallowRef('')
 
-const lanStatus = shallowRef<LanStatus | null>(null)
-const lanBusy = shallowRef(false)
-const lanOffline = ref(false)
 
 const downloads = shallowRef<EmulatorDownload[]>([])
 const emuLoading = ref(true)
@@ -291,63 +275,6 @@ async function togglePreventSleep() {
   }
 }
 
-/* ── 局域网手机控制 ── */
-async function loadLanStatus() {
-  try {
-    lanStatus.value = await apiGet<LanStatus>('/system/lan/status')
-    lanOffline.value = false
-  } catch {
-    lanOffline.value = true
-    lanStatus.value = { enabled: false, simulated: true, message: '后端暂不可达，以下为占位状态。' }
-  }
-}
-
-async function enableLan() {
-  if (lanBusy.value || !canDriveLan) return
-  lanBusy.value = true
-  try {
-    // 1) 后端生成配对 token 并记录状态；2) 桌面端以同一把 token 重启后端绑 0.0.0.0
-    // 后端契约：body 必须显式声明 device 档（局域网暴露面的显式授权确认），
-    // 且 device 档默认禁用（WANWEI_DEVICE_GEAR_ENABLED=1 才放行），缺省/错误均 4xx
-    const res = await apiPost<LanStatus>('/system/lan/enable', { gear: 'device' })
-    const dres = await desktop!.lanEnable!(res.token ?? '')
-    // 桌面端返回的 lan_url 为真实网卡 IP + 实际端口 + 同一把 token，以其为准
-    lanStatus.value = { ...res, ...dres, enabled: true, qr_payload: dres.lan_url ?? res.qr_payload }
-    lanOffline.value = false
-    notice.value = '局域网访问已开启，手机浏览器打开下方地址即可。'
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    notice.value = /403|device 档|gear/i.test(msg)
-      ? '局域网开启被拒：device 档默认禁用，需在后端设置 WANWEI_DEVICE_GEAR_ENABLED=1 后重试。'
-      : '局域网服务开启失败：后端暂不可达，或桌面端切换监听地址失败。'
-    await loadLanStatus()   // 以后端真实状态为准刷新
-  } finally {
-    lanBusy.value = false
-  }
-}
-
-async function disableLan() {
-  if (lanBusy.value) return
-  lanBusy.value = true
-  try {
-    await apiPost('/system/lan/disable')
-    lanOffline.value = false
-    let rebound = true
-    if (desktop?.lanDisable) {
-      // 同步回收桌面端 0.0.0.0 监听，避免「以为关了、端口还开着」
-      try { await desktop.lanDisable() } catch { rebound = false }
-    }
-    lanStatus.value = { enabled: false }
-    notice.value = rebound
-      ? '局域网访问已关闭。'
-      : '配对已关闭；桌面端监听回收失败，请重启桌面客户端确认。'
-  } catch {
-    lanOffline.value = true
-    notice.value = '局域网服务关闭失败：后端暂不可达。'
-  } finally {
-    lanBusy.value = false
-  }
-}
 
 /* ── 开发模拟器下载 ── */
 function normalizeDownload(raw: EmulatorDownload, index: number): EmulatorDownload {
@@ -468,7 +395,6 @@ onMounted(() => {
     if (bgDataUrl.value) applyBodyBackground(bgDataUrl.value)
   })
   syncPreventSleep()
-  loadLanStatus()
   loadDownloads()
   if (desktop?.getAutostart) {
     desktop.getAutostart()
@@ -489,7 +415,7 @@ onUnmounted(() => {
       seal="设"
       title="通用设置"
       en="SETTINGS"
-      sub="主题、背景、系统行为与局域网控制。偏好即刻写入本机；后端离线时自动退为浏览器本地保存。"
+      sub="主题、背景与系统行为。偏好即刻写入本机；后端离线时自动退为浏览器本地保存。"
     />
 
     <div v-if="error" class="notice error" role="alert" aria-live="polite">
@@ -591,59 +517,6 @@ onUnmounted(() => {
         <p v-if="settingsOffline" class="hint">当前后端离线：以上选择暂存于本机浏览器，联机后将以此为准重新写入。</p>
       </GfCard>
 
-      <!-- ══ 局域网手机控制 ══ -->
-      <GfCard title="局域网手机控制" seal="联">
-        <div class="row">
-          <div class="row-txt">
-            <b>服务状态</b>
-            <p>开启后，同一局域网内的手机可浏览器访问控制台。</p>
-          </div>
-          <GfTag :tone="lanStatus?.enabled ? 'bamboo' : 'ink'">{{ lanStatus?.enabled ? '已开启' : '已关闭' }}</GfTag>
-        </div>
-        <div class="bg-actions">
-          <GfButton
-            small
-            :disabled="lanBusy || !!lanStatus?.enabled || !canDriveLan"
-            :title="canDriveLan ? '开启局域网手机控制' : '浏览器环境无法切换后端监听地址，请在桌面客户端中操作'"
-            @click="enableLan"
-          >{{ lanBusy ? '处理中…' : '开启' }}</GfButton>
-          <GfButton variant="ghost" small :disabled="lanBusy || !lanStatus?.enabled" @click="disableLan">关闭</GfButton>
-          <GfTag v-if="lanOffline || lanStatus?.simulated" tone="gold">离线占位</GfTag>
-        </div>
-        <p v-if="!canDriveLan" class="hint">当前为浏览器访问：可查看配对状态，但切换监听地址（0.0.0.0 重绑）需「枢忆·花朝」桌面客户端，请在其中开启。</p>
-
-        <div v-if="lanStatus?.enabled && (lanStatus.lan_url || lanStatus.qr_payload)" class="lan-panel">
-          <div class="qr-box" aria-hidden="true">
-            <svg viewBox="0 0 96 96" width="96" height="96">
-              <rect x="6" y="6" width="26" height="26" class="qr-eye" />
-              <rect x="64" y="6" width="26" height="26" class="qr-eye" />
-              <rect x="6" y="64" width="26" height="26" class="qr-eye" />
-              <rect x="12" y="12" width="14" height="14" class="qr-eye-in" />
-              <rect x="70" y="12" width="14" height="14" class="qr-eye-in" />
-              <rect x="12" y="70" width="14" height="14" class="qr-eye-in" />
-              <rect x="42" y="8" width="8" height="8" class="qr-dot" />
-              <rect x="56" y="20" width="8" height="8" class="qr-dot" />
-              <rect x="42" y="34" width="8" height="8" class="qr-dot" />
-              <rect x="8" y="42" width="8" height="8" class="qr-dot" />
-              <rect x="26" y="48" width="8" height="8" class="qr-dot" />
-              <rect x="48" y="48" width="8" height="8" class="qr-dot" />
-              <rect x="68" y="42" width="8" height="8" class="qr-dot" />
-              <rect x="84" y="52" width="8" height="8" class="qr-dot" />
-              <rect x="42" y="66" width="8" height="8" class="qr-dot" />
-              <rect x="58" y="78" width="8" height="8" class="qr-dot" />
-              <rect x="76" y="70" width="8" height="8" class="qr-dot" />
-            </svg>
-            <GfTag tone="gold">二维码占位</GfTag>
-          </div>
-          <div class="lan-txt">
-            <p class="lan-tip">手机浏览器打开此地址：</p>
-            <code class="lan-url">{{ lanStatus.lan_url || lanStatus.qr_payload }}</code>
-            <p v-if="lanStatus.qr_payload && lanStatus.lan_url" class="hint">扫码内容：{{ lanStatus.qr_payload }}</p>
-            <p class="hint">真实二维码渲染尚未接入，当前为占位图案。</p>
-          </div>
-        </div>
-        <p v-else-if="lanStatus?.message" class="hint">{{ lanStatus.message }}</p>
-      </GfCard>
 
       <!-- ══ 开发模拟器 ══ -->
       <GfCard title="开发模拟器" seal="拟" class="span-2">
@@ -806,45 +679,6 @@ onUnmounted(() => {
 }
 .bg-caption { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--ink-muted); flex-wrap: wrap; }
 
-/* ── 局域网 ── */
-.lan-panel {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  margin-top: 14px;
-  padding: 14px;
-  border: 1px dashed var(--gold-line);
-  border-radius: var(--radius-small);
-  background: color-mix(in srgb, var(--gold) 5%, transparent);
-  flex-wrap: wrap;
-}
-.qr-box {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  padding: 10px;
-  border-radius: var(--radius-small);
-  background: var(--card-solid);
-  border: 1px solid var(--line);
-}
-.qr-eye { fill: none; stroke: var(--ink); stroke-width: 3; }
-.qr-eye-in { fill: var(--ink); }
-.qr-dot { fill: var(--ink-soft); }
-.lan-txt { flex: 1; min-width: 220px; }
-.lan-tip { font-family: var(--font-kai); font-size: 13px; letter-spacing: 2px; color: var(--ink); }
-.lan-url {
-  display: inline-block;
-  margin-top: 6px;
-  padding: 6px 12px;
-  border-radius: var(--radius-small);
-  border: 1px solid var(--line);
-  background: var(--bg-soft);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--dai);
-  overflow-wrap: anywhere;
-  user-select: all;
-}
 
 /* ── 模拟器下载 ── */
 .dl-list { display: grid; gap: 12px; margin-top: 12px; }

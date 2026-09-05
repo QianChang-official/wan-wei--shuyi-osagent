@@ -80,7 +80,6 @@ const navGroups = [
       { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
       { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
       { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
-      { to: '/mobile', seal: '伴', name: '手机伴侣', en: 'Mobile' },
     ],
   },
 ]

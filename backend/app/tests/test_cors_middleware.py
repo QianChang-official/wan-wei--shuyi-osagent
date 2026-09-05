@@ -1,4 +1,4 @@
-"""手机端 H5 跨源放行（WANWEI_CORS_ORIGINS）的行为契约。
+"""跨源放行（WANWEI_CORS_ORIGINS）的行为契约。
 
 覆盖四条不变式：
 1. 未配置时**完全不挂载** CORS 中间件 —— 默认保持同源收敛姿态；
@@ -99,7 +99,7 @@ def test_preflight_succeeds_without_api_key(tmp_path):
     try:
         client = _client(tmp_path, cors=_ALLOWED)
         res = client.options(
-            "/platform/mobile/list",
+            "/platform/system/health",
             headers={
                 "Origin": _ALLOWED,
                 "Access-Control-Request-Method": "GET",
@@ -119,7 +119,7 @@ def test_real_request_still_requires_api_key(tmp_path):
     """跨源放行不等于免鉴权：真实请求缺 key 仍是 401。"""
     try:
         client = _client(tmp_path, cors=_ALLOWED)
-        res = client.get("/platform/mobile/list", headers={"Origin": _ALLOWED})
+        res = client.get("/platform/system/health", headers={"Origin": _ALLOWED})
         assert res.status_code == 401
     finally:
         _cleanup()

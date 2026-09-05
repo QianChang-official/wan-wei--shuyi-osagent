@@ -140,7 +140,6 @@ async function t(name, fn) {
     const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
     assert.ok(src.includes("will-navigate"), '应注册 will-navigate');
     assert.ok(src.includes('guardNavigation(mainWindow.webContents)'), '主窗口应加装导航守卫');
-    assert.ok(src.includes('guardNavigation(floatingWin.webContents)'), '浮动窗应加装导航守卫');
     assert.strictEqual(main.isConsoleUrl('http://127.0.0.1:8010/console/', 8010), true);
     assert.strictEqual(main.isConsoleUrl('http://127.0.0.1:8010/console/#/mobile?token=x', 8010), true);
     assert.strictEqual(main.isConsoleUrl('https://evil.example.com/', 8010), false);
@@ -175,45 +174,19 @@ async function t(name, fn) {
     assert.strictEqual(typeof preload.isConsoleOrigin, 'function');
   });
 
-  await t('10-#3 preload 桥暴露 lanEnable/lanDisable（LAN 端到端桌面半环）', () => {
+  await t('10-#3 preload 桥暴露桌面能力', () => {
     assert.ok(exposedApi, 'wanweiDesktop 应已暴露');
-    for (const k of ['lanEnable', 'lanDisable', 'notify', 'setPreventSleep', 'getPreventSleep',
-      'getAutostart', 'setAutostart', 'openFile', 'saveFile', 'showItemInFolder', 'info', 'floatingWorkspace']) {
+    for (const k of ['notify', 'setPreventSleep', 'getPreventSleep',
+      'getAutostart', 'setAutostart', 'openFile', 'saveFile', 'showItemInFolder', 'info']) {
       assert.strictEqual(typeof exposedApi[k], 'function', `${k} 应为函数`);
     }
-  });
-
-  await t('浮动工作区托盘状态跟随真实窗口生命周期', () => {
-    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
-    assert.match(src, /label: '显示浮动工作区'/, '托盘缺少浮动工作区入口');
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), false);
-
-    assert.strictEqual(main.setFloatingWorkspace(true), true);
-    const win = browserWindows.at(-1);
-    assert.ok(win, '应创建浮动窗口');
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), true);
-
-    win.minimize();
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), false, '最小化后托盘应显示未勾选');
-    assert.strictEqual(main.setFloatingWorkspace(true), true);
-    assert.strictEqual(win.restoreCalls, 1, '重新显示时应先恢复最小化窗口');
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), true);
-
-    win.hide();
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), false, '隐藏后托盘应显示未勾选');
-    main.setFloatingWorkspace(true);
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), true, '托盘应恢复既有隐藏窗口');
-
-    assert.strictEqual(main.setFloatingWorkspace(false), false);
-    assert.strictEqual(win.isDestroyed(), true);
-    assert.strictEqual(main.isFloatingWorkspaceVisible(), false);
   });
 
   await t('10-#6 sandbox=true 显式开启，密钥改经受信 IPC 同步通道', () => {
     const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
     assert.ok(!src.includes('读不到'), '乱码注释「以读不到」应已清除');
     const sandboxOn = (src.match(/sandbox: true/g) || []).length;
-    assert.ok(sandboxOn >= 2, '两个窗口应显式 sandbox: true');
+    assert.ok(sandboxOn >= 1, '窗口应显式 sandbox: true');
     assert.ok(!src.includes('sandbox: false'), '不应再保留 sandbox: false');
     assert.ok(src.includes("ipcMain.on('desktop:api-key-sync'"), '主进程应注册同步取钥通道');
     assert.ok(!src.includes('WANWEI_DESKTOP_API_KEY'), '不应再经 process.env 向 preload 传钥');
@@ -260,15 +233,6 @@ async function t(name, fn) {
     // 多显示器：第二块屏在右侧
     const dual = [displays[0], { workArea: { x: 1920, y: 0, width: 1920, height: 1080 } }];
     assert.strictEqual(main.isVisibleOnSomeDisplay({ x: 2000, y: 100, width: 1440, height: 900 }, dual), true);
-  });
-
-  await t('10-#10 LAN token 日志脱敏（只留前 4 位）', () => {
-    assert.strictEqual(main.maskToken('abcdef1234567890'), 'abcd…');
-    assert.strictEqual(main.maskToken('abc'), 'abc');
-    assert.strictEqual(main.maskToken(''), '');
-    assert.strictEqual(main.maskToken(undefined), '');
-    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
-    assert.ok(!src.includes("logLine('LAN enabled: ' + url)"), '完整配对 URL 不应再落日志');
   });
 
   await t('10-#11 IPC 来源校验 + 通知节流', () => {

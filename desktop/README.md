@@ -60,22 +60,6 @@ release/wanwei-shuyi-desktop_0.11.0_amd64.deb
 release/wanwei-shuyi-desktop-0.11.0.x86_64.rpm
 ```
 
-### 3.2 在 Windows 上开发/交叉准备
-
-Windows 可完成前端构建和脚本验证，但**无法直接生成 Linux 安装包**（缺少 `dpkg-deb`/`rpmbuild` 环境）。
-
-```powershell
-cd frontend/console-vue
-npm install
-npm run build              # 确保 Web 产物为最新
-
-cd ../desktop
-npm install                # 安装 Electron 与 electron-builder
-node --check src/main.js
-node --check src/preload.js
-```
-
-最终打包建议拷贝源码到麒麟虚拟机，或 CI 中使用 Linux 容器执行 `npm run pack:all`。
 
 ### 3.3 在 WSL2 Ubuntu 中验证（推荐无图形 Linux 验证）
 
@@ -162,8 +146,6 @@ http://127.0.0.1:<port>/console/
 | 自启动 | XDG autostart + `app.setLoginItemSettings` | 托盘菜单勾选即可 |
 | 单实例 | `app.requestSingleInstanceLock` | 重复点击仅唤醒已运行实例 |
 | 防睡眠（v0.11.0） | `powerSaveBlocker` | `app`（仅阻止系统挂起）/ `display`（连同屏幕常亮）两档，托盘可切，保证长时编排运行期间机器不睡 |
-| 局域网手机控制（v0.11.0） | 后端 `127.0.0.1 ↔ 0.0.0.0` 热重启切换 | 自动优选私有网段 IPv4 生成手机访问地址，配合 `/mobile` 页面与 LAN token 构成「手机伴侣」通道 |
-| 浮动工作区小窗（v0.11.0） | 无边框置顶 `BrowserWindow`（420×640） | 从托盘显示/隐藏；托盘勾选跟随真实可见/最小化状态并可恢复既有窗口。加载 `/console/#/mobile?floating=1`，顶部保留拖动区，按钮与输入框保持正常交互。首次使用需在手机伴侣面板完成配对；同一桌面会话会复用配对状态 |
 
 ## 七、环境变量
 
@@ -215,7 +197,7 @@ export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 9.4 麒麟 VNC 虚拟机中测试
 
-当前仓库已配套 `scripts/start_kylin_vm.ps1`，可在 Windows 上启动麒麟 V11 虚拟机。将项目源码复制到虚拟机后执行第 3 节构建步骤即可。
+在麒麟 V11 虚拟机中测试时，将项目源码复制到虚拟机后执行第 3 节构建步骤即可。
 
 **注意**：如果麒麟系统处于「只读/锁定模式」（运行 `apt` 或执行非系统预装二进制时报「不允许的操作」），则无法在此虚拟机中安装或运行第三方 Electron 应用。此时请在正常模式的麒麟设备、WSL2 Ubuntu 或标准 Debian 系容器中验证。
 

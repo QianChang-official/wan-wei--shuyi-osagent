@@ -1,7 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router'
 
 // 万枢协作平台路由（v0.12）：工作台 / 模型接入 / 智能体 / 空间 / 自动化 /
-// 知识库 / 记忆中枢 / 会话管理 / 通用设置 / 帮助，以及手机伴侣（/mobile）。
+// 知识库 / 记忆中枢 / 会话管理 / 通用设置 / 帮助。
 // 各视图均已实现，懒加载仅在实际访问时解析。
 export const platformRoutes: RouteRecordRaw[] = [
   { path: '/platform/workbench', name: 'platformWorkbench', component: () => import('@/views/platform/WorkbenchView.vue'), meta: { title: '万枢工作台', seal: '枢' } },
@@ -14,5 +14,4 @@ export const platformRoutes: RouteRecordRaw[] = [
   { path: '/platform/sessions', name: 'platformSessions', component: () => import('@/views/platform/SessionsView.vue'), meta: { title: '会话管理', seal: '笺' } },
   { path: '/platform/settings', name: 'platformSettings', component: () => import('@/views/platform/SettingsView.vue'), meta: { title: '通用设置', seal: '设' } },
   { path: '/platform/help', name: 'platformHelp', component: () => import('@/views/platform/HelpView.vue'), meta: { title: '帮助', seal: '助' } },
-  { path: '/mobile', name: 'mobile', component: () => import('@/views/platform/MobileView.vue'), meta: { title: '手机伴侣', seal: '伴' } },
 ]

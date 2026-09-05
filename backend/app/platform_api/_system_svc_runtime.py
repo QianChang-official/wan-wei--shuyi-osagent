@@ -12,7 +12,6 @@
 - 模拟器镜像下载（未配置 WANWEI_EMULATOR_IMAGE_URL 时后台线程模拟推进
   2%/0.5s；配置后 httpx 流式真实下载到 data/platform/downloads/，可选
   SHA256 校验，.part 临时名完成后原子改名）
-- 局域网手机控制（token + 局域网 URL，监听切换由桌面端执行）
 - 沙盒命令执行（白名单 + cwd 监禁 + 5s 超时 + 4KB 截断）
 - wanwei CLI 使用指南（静态文档）
 
@@ -26,14 +25,11 @@ import logging
 import math
 import os
 import re
-import secrets
 import shlex
-import socket
 import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -97,7 +93,6 @@ _BACKGROUND_DATA_MIMES = frozenset({'image/png', 'image/jpeg', 'image/webp', 'im
 _BACKGROUND_UNSAFE_CHARS = re.compile(r'["\'()\\<>\r\n]')
 _SANDBOX_TIMEOUT_S = 5
 _SANDBOX_TRUNCATE = 4096
-_LAN_DEFAULT_PORT = int(os.environ.get('WANWEI_PORT') or os.environ.get('PORT') or '8000')
 
 # 沙盒执行环境：仅保留运行白名单内系统命令所必需的最小环境变量，
 # 绝不继承任何 WANWEI_* 变量，避免通过 `env` 等命令泄露主 API Key。
@@ -236,16 +231,6 @@ class BrowserLaunchIn(BaseModel):
         if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
             raise ValueError('browser launch URL only allows http/https absolute URLs')
         return v.strip()
-
-
-class LanEnableIn(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    gear: str = Field(min_length=1, max_length=32)
-
-
-class LanVerifyIn(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    token: str = Field(min_length=1, max_length=128)
 
 
 class SandboxExecIn(BaseModel):
@@ -1202,153 +1187,6 @@ def emulator_download_cancel(did: str) -> dict:
             data[did] = rec
             _emu_store.set('downloads', data)
     return {**rec, 'ok': True}
-
-
-# ---------------------------------------------------------------------------
-# 局域网手机控制（token + 局域网 URL；监听 0.0.0.0 切换由桌面端执行）
-# ---------------------------------------------------------------------------
-
-_LAN_NOTE = '需桌面端切换监听 0.0.0.0 后生效'
-_LAN_TOKEN_TTL_S = 15 * 60  # 配对 token 有效期 15 分钟：短时用途凭证，超时需重新生成
-
-
-def _lan_state() -> dict:
-    lan = _sys_store.get('lan')
-    return lan if isinstance(lan, dict) else {}
-
-
-def _lan_token_state(lan: dict) -> str:
-    """返回配对 token 状态：'ok' | 'expired' | 'consumed' | 'unset'。
-
-    TTL 判定基准为 token_created_at（旧数据无该字段时退用 enabled_at，
-    相当于一次性迁移：旧 token 自启用时刻起同样适用 TTL）；
-    序列化格式与 datetime_utils 保持一致，fromisoformat 双向兼容。
-    """
-    if not (lan.get('token') or ''):
-        return 'unset'
-    if lan.get('token_consumed'):
-        return 'consumed'
-    created = lan.get('token_created_at') or lan.get('enabled_at') or ''
-    ttl = int(lan.get('token_ttl_s') or _LAN_TOKEN_TTL_S)
-    try:
-        created_dt = datetime.fromisoformat(created)
-        if created_dt.tzinfo is None:
-            created_dt = created_dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return 'expired'  # 无可用时间基准，fail-closed
-    if datetime.now(timezone.utc) > created_dt + timedelta(seconds=ttl):
-        return 'expired'
-    return 'ok'
-
-
-def _detect_lan_ip() -> str | None:
-    """UDP 伪连接探测本机出口 IP；失败返回 None。"""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(('8.8.8.8', 80))
-        ip = sock.getsockname()[0]
-    except OSError:
-        return None
-    finally:
-        sock.close()
-    if not ip or ip.startswith('127.'):
-        return None
-    return ip
-
-
-@router.get('/system/lan/status')
-def lan_status() -> dict:
-    lan = _lan_state()
-    enabled = bool(lan.get('enabled'))
-    token_state = _lan_token_state(lan) if enabled else None
-    # token 未消费时不出露完整 URL（防配对前泄露）
-    lan_url = None
-    if enabled and token_state == 'consumed':
-        lan_url = lan.get('lan_url')
-    return {
-        'enabled': enabled,
-        'bind': _lan_state().get('bind', '127.0.0.1'),
-        'lan_url': lan_url,
-        'token_set': bool(lan.get('token')),
-        'token_state': token_state,
-        'token_ttl_s': _LAN_TOKEN_TTL_S if enabled else None,
-    }
-
-
-@router.post('/system/lan/enable')
-def lan_enable(req: LanEnableIn) -> dict:
-    if req.gear != 'device':
-        audit_safe('gear_denied', {'gear': req.gear, 'action': 'lan_enable', 'reason': 'lan_enable_requires_device_gear'})
-        raise HTTPException(status_code=403, detail=f'局域网暴露面启用仅允许在「{WORK_GEARS["device"]}」档位下进行，当前档位：{req.gear}')
-    denied = require_gear(req.gear, action='lan_enable', context={'surface': 'lan'})
-    if denied:
-        raise HTTPException(status_code=403, detail='device 档默认禁用，设 WANWEI_DEVICE_GEAR_ENABLED=1 后才允许开启局域网暴露面')
-    token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
-    ip = _detect_lan_ip()
-    ip_placeholder = ip is None
-    if ip_placeholder:
-        ip = '192.168.1.100'
-    # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
-    base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
-    _sys_store.set('lan', {
-        'enabled': True,
-        'bind': '0.0.0.0',
-        'token': token,
-        'lan_url': base_lan_url,
-        'port': _LAN_DEFAULT_PORT,
-        'ip': ip,
-        'ip_placeholder': ip_placeholder,
-        'enabled_at': utc_now_iso(),
-        'token_created_at': utc_now_iso(),
-        'token_ttl_s': _LAN_TOKEN_TTL_S,
-        'token_consumed': False,
-    })
-    audit_safe('lan_enabled', {'ip': ip, 'port': _LAN_DEFAULT_PORT, 'ip_placeholder': ip_placeholder})
-    result = {
-        'enabled': True,
-        'lan_url': base_lan_url,
-        'qr_payload': base_lan_url,
-        'token': token,
-        'token_ttl_s': _LAN_TOKEN_TTL_S,
-        'note': _LAN_NOTE,
-    }
-    if ip_placeholder:
-        result['ip_placeholder'] = True
-        result['note'] = _LAN_NOTE + '；本机局域网 IP 探测失败，已使用 192.168.x.x 占位，请以实际网卡地址为准'
-    return result
-
-
-@router.post('/system/lan/disable')
-def lan_disable() -> dict:
-    lan = _lan_state()
-    lan['enabled'] = False
-    lan['bind'] = '127.0.0.1'
-    lan['lan_url'] = None
-    lan['token'] = None  # 关闭即作废，旧 token 立即失效
-    lan['token_created_at'] = None
-    lan['token_consumed'] = False
-    _sys_store.set('lan', lan)
-    return lan_status()
-
-
-@router.post('/system/lan/verify')
-def lan_verify(req: LanVerifyIn) -> dict:
-    lan = _lan_state()
-    stored = lan.get('token') or ''
-    if not lan.get('enabled'):
-        return {'ok': False, 'reason': '未启用'}
-    if not stored or not secrets.compare_digest(stored, req.token):
-        return {'ok': False, 'reason': 'token 不匹配'}
-    state = _lan_token_state(lan)
-    if state == 'consumed':
-        return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
-    if state == 'expired':
-        return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
-    # 一次性使用限制：首次验证通过即作废，配对成功以本次 ok:true 为准
-    lan['token_consumed'] = True
-    _sys_store.set('lan', lan)
-    audit_safe('lan_pairing_verified', {'ttl_s': _LAN_TOKEN_TTL_S})
-    return {'ok': True, 'paired': True, 'note': '配对成功；配对 token 为一次性凭证，已即时作废'}
 
 
 # ---------------------------------------------------------------------------

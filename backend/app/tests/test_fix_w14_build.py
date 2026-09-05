@@ -48,7 +48,6 @@ def test_node_build_minimum_is_consistent():
     frontend = json.loads(
         (ROOT / "frontend" / "console-vue" / "package.json").read_text(encoding="utf-8")
     )
-    setup_ps = (SCRIPTS / "setup.ps1").read_text(encoding="utf-8")
     setup_sh = (SCRIPTS / "setup.sh").read_text(encoding="utf-8")
     guest_setup = (SCRIPTS / "guest_setup.sh").read_text(encoding="utf-8")
     guest_setup2 = (SCRIPTS / "guest_setup2.sh").read_text(encoding="utf-8")
@@ -56,7 +55,6 @@ def test_node_build_minimum_is_consistent():
 
     assert desktop["engines"]["node"] == ">= 22.12.0"
     assert frontend["engines"]["node"] == ">= 22.12.0"
-    assert "[version]'22.12.0'" in setup_ps
     for script in (setup_sh, guest_setup):
         assert "major === 22 && minor >= 12" in script
     assert "node-v22.23.2-linux-x64.tar.xz" in guest_setup2

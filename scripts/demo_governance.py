@@ -6,7 +6,7 @@
 用法：
     python scripts/demo_governance.py --api-key <key> [--base-url http://127.0.0.1:8010]
 
-前置条件：服务已启动（scripts/run_dev.ps1 或 run_dev.sh）。
+前置条件：服务已启动（scripts/run_dev.sh）。
 """
 from __future__ import annotations
 

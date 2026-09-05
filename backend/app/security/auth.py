@@ -626,7 +626,7 @@ def _loopback_origin_allowlist() -> frozenset[str]:
     """回环部署下被接受的 Origin 白名单（协议 + 主机 + 端口）。
 
     端口来自 ``WANWEI_PORT``（默认 8010），与 ``scripts/run_dev`` 的启动端口一致；
-    手机伴侣 H5 等跨源前端不在此列——它们应通过 ``WANWEI_CORS_ORIGINS`` 显式放行，
+    独立托管的跨源前端不在此列——它们应通过 ``WANWEI_CORS_ORIGINS`` 显式放行，
     且走 API key 鉴权，与回环免密互不叠加。
     """
     port = os.getenv("WANWEI_PORT", "8010").strip() or "8010"

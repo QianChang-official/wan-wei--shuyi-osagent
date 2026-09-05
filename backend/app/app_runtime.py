@@ -329,8 +329,8 @@ app.add_middleware(APIKeyMiddleware)
 # Origin/Host 校验在 APIKeyMiddleware 之后注册（Starlette 后注册者更外层），
 # 因此在鉴权前拒绝恶意浏览器来源（CSRF / DNS-rebinding），403 区别于 401。
 app.add_middleware(OriginHostGuardMiddleware)
-# 手机端 H5 App（meoo-app）跨源访问：Taro H5 产物由独立静态服务器托管，
-# 与后端不同源，浏览器会先发 CORS 预检。默认 **不启用** 任何跨源放行，
+# 独立托管的跨源前端（如浏览器插件 / 独立 Web 控制台）访问后端时，
+# 浏览器会先发 CORS 预检。默认 **不启用** 任何跨源放行，
 # 保持与既有同源 /console 一致的收敛姿态；仅当运维显式设置
 # ``WANWEI_CORS_ORIGINS``（逗号分隔的来源白名单）时才挂载中间件。
 #

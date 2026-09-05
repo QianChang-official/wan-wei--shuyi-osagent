@@ -42,12 +42,8 @@ contextBridge.exposeInMainWorld('wanweiDesktop', {
   setPreventSleep: (enable, mode) => ipcRenderer.invoke('desktop:set-prevent-sleep', { enable, mode }),
   getPreventSleep: () => ipcRenderer.invoke('desktop:get-prevent-sleep'),
 
-  /** 局域网手机控制（配对流程显式触发；开启/关闭均会重启后端切换监听地址） */
-  lanEnable: (token) => ipcRenderer.invoke('desktop:lan-enable', { token }),
-  lanDisable: () => ipcRenderer.invoke('desktop:lan-disable'),
 
   /** 浮动工作区小窗：show=true 创建/聚焦，false 销毁 */
-  floatingWorkspace: (show) => ipcRenderer.invoke('desktop:floating-workspace', { show }),
 });
 
 // API Key 注入（键名与 Web 端约定一致：localStorage 'wanwei-desktop-api-key'，

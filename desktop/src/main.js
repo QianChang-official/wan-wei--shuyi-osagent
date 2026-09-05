@@ -60,11 +60,7 @@ let quitting = false;
 let powerSaveBlockerId = null;       // 当前 blocker id，null 表示未启用
 let preventSleepMode = 'app';        // 'app' 阻止系统挂起 | 'display' 连同屏幕常亮
 
-// 局域网手机控制状态
-let lanState = { enabled: false, url: '' };
 
-// 浮动工作区小窗
-let floatingWin = null;
 
 // ------------------------------------------------------------- small helpers
 
@@ -365,24 +361,6 @@ async function restartBackend(host) {
   }
 }
 
-/** 取本机局域网 IPv4（优先私有网段 10./192.168./172.16-31.） */
-function firstLanIPv4() {
-  const candidates = [];
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const it of list || []) {
-      if (it && it.family === 'IPv4' && !it.internal) candidates.push(it.address);
-    }
-  }
-  const priv = candidates.find((a) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a));
-  return priv || candidates[0] || '';
-}
-
-/** LAN token 日志脱敏：只保留前 4 位，其余以省略号代替 */
-function maskToken(token) {
-  const t = String(token || '');
-  return t.length <= 4 ? t : t.slice(0, 4) + '…';
-}
-
 /** 导航白名单：仅允许控制台自身（http://127.0.0.1:<port>/），其余一律视为外站 */
 function isConsoleUrl(url, port = backendPort) {
   return typeof url === 'string' && url.startsWith(`http://127.0.0.1:${port}/`);
@@ -403,7 +381,7 @@ function isTrustedFrame(frame) {
   try { return isConsoleUrl(frame && frame.url); } catch { return false; }
 }
 
-/** 为指定 session 的出站请求注入 X-API-Key；默认 session 一次注册即可覆盖主窗体和浮动窗 */
+/** 为指定 session 的出站请求注入 X-API-Key；默认 session 一次注册即可覆盖主窗体 */
 function injectApiKeyForSession(sess) {
   sess.webRequest.onBeforeSendHeaders(
     { urls: [`http://127.0.0.1:${backendPort}/*`] },
@@ -480,70 +458,6 @@ function setPreventSleep(enable, mode) {
   return getPreventSleep();
 }
 
-// ------------------------------------------------------ floating workspace
-function isFloatingWorkspaceVisible() {
-  return !!(
-    floatingWin
-    && !floatingWin.isDestroyed()
-    && floatingWin.isVisible()
-    && !floatingWin.isMinimized()
-  );
-}
-
-function setFloatingWorkspace(show) {
-  if (show) {
-    if (floatingWin && !floatingWin.isDestroyed()) {
-      if (floatingWin.isMinimized()) floatingWin.restore();
-      floatingWin.show();
-      floatingWin.focus();
-      refreshTray();
-      return true;
-    }
-    floatingWin = new BrowserWindow({
-      width: 420, height: 640,
-      alwaysOnTop: true,
-      frame: false,
-      skipTaskbar: true,
-      resizable: true,
-      title: APP_NAME + ' · 浮动工作区',
-      icon: path.join(__dirname, '..', 'build', 'icons', '256x256.png'),
-      backgroundColor: '#F6F1E7',
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        // preload 仅通过受信 IPC 获取桌面能力与 API Key，sandbox 可保持开启。
-        sandbox: true,
-        spellcheck: false,
-      },
-    });
-    floatingWin.setAlwaysOnTop(true, 'floating');
-    floatingWin.webContents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith('http')) shell.openExternal(url);
-      return { action: 'deny' };
-    });
-    guardNavigation(floatingWin.webContents);
-    const createdWindow = floatingWin;
-    for (const event of ['show', 'hide', 'minimize', 'restore']) {
-      createdWindow.on(event, refreshTray);
-    }
-    createdWindow.on('closed', () => {
-      if (floatingWin === createdWindow) floatingWin = null;
-      refreshTray();
-    });
-    floatingWin.loadURL(`http://127.0.0.1:${backendPort}/console/#/mobile?floating=1`);
-    logLine('floating workspace shown');
-    refreshTray();
-    return true;
-  }
-  const windowToClose = floatingWin;
-  floatingWin = null;
-  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.destroy();
-  logLine('floating workspace hidden');
-  refreshTray();
-  return false;
-}
 
 // --------------------------------------------------------- window state
 function loadWindowState() {
@@ -628,7 +542,7 @@ function createTray() {
   });
 }
 
-/** 重建托盘菜单（防睡眠、浮窗可见性与 LAN 状态变化后联动刷新） */
+/** 重建托盘菜单（防睡眠状态变化后联动刷新） */
 function refreshTray() {
   if (!tray || tray.isDestroyed()) return;
   const openInBrowser = `http://127.0.0.1:${backendPort}/console/`;
@@ -639,14 +553,7 @@ function refreshTray() {
     { label: '任务期间阻止睡眠', type: 'checkbox', checked: getPreventSleep().enabled,
       sublabel: preventSleepMode === 'display' ? '含屏幕常亮' : '仅阻止系统挂起',
       click: (item) => setPreventSleep(item.checked, preventSleepMode) },
-    { label: '显示浮动工作区', type: 'checkbox',
-      checked: isFloatingWorkspaceVisible(),
-      click: (item) => setFloatingWorkspace(item.checked) },
-    { label: lanState.enabled ? '局域网手机控制：已开启' : '局域网手机控制：已关闭', enabled: false },
   ];
-  if (lanState.enabled && lanState.url) {
-    items.push({ label: '复制手机端地址', click: () => { clipboard.writeText(lanState.url); notify('已复制', '手机端局域网地址已复制到剪贴板。'); } });
-  }
   items.push(
     { type: 'separator' },
     { label: '开机自启动', type: 'checkbox', checked: getAutostart(),
@@ -786,31 +693,6 @@ function registerIpc() {
     setPreventSleep(!!enable, mode));
   handle('desktop:get-prevent-sleep', () => getPreventSleep());
 
-  // 局域网手机控制：仅由前端配对流程显式触发；
-  // 开启 = 后端以 0.0.0.0 重启（保持端口），关闭 = 恢复 127.0.0.1 重启
-  handle('desktop:lan-enable', async (_e, { token } = {}) => {
-    const ip = firstLanIPv4();
-    if (!ip) throw new Error('未找到可用的局域网 IPv4 地址');
-    if (backendHost !== '0.0.0.0' || !backendProc) await restartBackend('0.0.0.0');
-    const url = `http://${ip}:${backendPort}/console/#/mobile?token=${String(token || '')}`;
-    lanState = { enabled: true, url };
-    refreshTray();
-    // token 脱敏：只打前 4 位，完整配对 URL 不落日志
-    logLine(`LAN enabled: http://${ip}:${backendPort}/console/#/mobile?token=${maskToken(token)}（已脱敏）`);
-    return { enabled: true, lan_url: url, host: backendHost, port: backendPort };
-  });
-
-  handle('desktop:lan-disable', async () => {
-    if (backendHost !== '127.0.0.1' || !backendProc) await restartBackend('127.0.0.1');
-    lanState = { enabled: false, url: '' };
-    refreshTray();
-    logLine('LAN disabled, backend back on 127.0.0.1');
-    return { enabled: false, lan_url: null, host: backendHost, port: backendPort };
-  });
-
-  // 浮动工作区小窗（420×640 置顶无边框，加载移动端视图）
-  handle('desktop:floating-workspace', (_e, { show } = {}) =>
-    setFloatingWorkspace(!!show));
 }
 
 // ------------------------------------------------------------------- boot
@@ -831,7 +713,7 @@ if (!gotLock) {
     }
     // 真实异步探测空闲端口（原 findFreePortSync 恒回退 8010，已删除，见上方说明）
     backendPort = await findFreePort();
-    // 主进程兜底注入：所有窗口（主窗体 / 浮动窗 / LAN 手机视图）共享默认 session
+    // 主进程兜底注入：所有窗口（主窗体）共享默认 session
     injectApiKeyForSession(session.defaultSession);
     registerIpc();
 
@@ -871,7 +753,6 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
   module.exports = {
     findFreePort,
     truncateLogIfNeeded,
-    maskToken,
     isConsoleUrl,
     isTrustedFrame,
     isVisibleOnSomeDisplay,
@@ -879,7 +760,5 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
     decodeFileBuffer,
     depsMarkerMatches,
     isBackendEnvHealthy,
-    isFloatingWorkspaceVisible,
-    setFloatingWorkspace,
   };
 }

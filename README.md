@@ -69,7 +69,7 @@ AI 行业正在打一场记忆军备竞赛：更长上下文、更大记忆库�
 
 **让记忆的每一次来去，都有据可查。**
 
-> 以上不是文档承诺：治理层完整落在 `backend/app/memoryos/`（约 3.6k 行代码、223 个测试函数），每项能力的代码位置与证据索引见 [docs/INNOVATIONS.md](docs/INNOVATIONS.md)。
+> 以上不是文档承诺：治理层完整落在 `backend/app/memoryos/`（约 3.6k 行代码、223 个测试函数），每项能力均有对应测试锁定。
 
 ---
 
@@ -119,13 +119,9 @@ python scripts/demo_governance.py --api-key <key>
 
 ### 路径 B：本地跑起来
 
-前置条件：Python 3.10+；Node.js 22.12+（仅 Electron 源码构建需要，终端用户安装 deb/rpm 包不需要）。
+前置条件：Linux / 麒麟 OS；Python 3.10+；Node.js 22.12+（仅 Electron 源码构建需要，终端用户安装 deb/rpm 包不需要）。
 
 ```bash
-# Windows
-powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1
-
 # Linux / 麒麟 OS
 bash scripts/setup.sh
 bash scripts/run_dev.sh
@@ -168,7 +164,7 @@ bash scripts/run_dev.sh
 | 实测项 | 结果 | 测试条件 |
 |---|---|---|
 | 本机 SQLite FTS5 检索 | **p95 = 0.8072 ms** | 100 次检索、50 个种子记忆胶囊、单机单进程 |
-| 银河麒麟 V11 原生 SDK | **p50 = 195.320 ms / p95 = 246.473 ms** | QEMU/WHPX 虚拟机端到端 30 次（预热 1 次剔除），原始样本与快照证据见 [`reports/kylin-native-sdk-evidence/`](reports/kylin-native-sdk-evidence/) |
+| 银河麒麟 V11 原生 SDK 检索（常驻 bridge） | **HTTP 全链路 p50 = 29 ms / p95 = 83 ms**；SDK 单次 15 ms；1k 条 hot p95 27.9 ms、10k 条 97.4 ms | 麒麟 V11 桌面版实机（6.6 内核 + KSAF），原生向量引擎 + 常驻 bridge（模型只加载一次） |
 | MemoryArena-Lite 生产记忆评测 | **5 cases / 16 assertions 全部通过** | `unsafe_autonomy_rate = 0.0`，报告见 [`reports/production_memory_eval_metrics.json`](reports/production_memory_eval_metrics.json) |
 
 治理层（账本、状态机、删除验证）全部是本地 SQLite 操作——性能瓶颈在模型推理，不在治理开销。
@@ -183,13 +179,13 @@ bash scripts/run_dev.sh
 | **信创 / 麒麟适配** | ✅ V11 验收 + deb/rpm | — | — | — |
 | **交付形态** | 单节点全本地，无云端形态 | Library / 自托管 / 云平台 | 云 API / 云插件 / 自托管 / 本地插件 | OSS 自托管（商业版 Zep 为托管云） |
 
-> 竞品信息取自各家 README（2026-09 快照）；"—"表示其 README 未宣称该能力，不代表产品绝对缺失，选型前请以各家官方文档为准。各家在自身主线（分数 / 调度 / 时序图谱）上都很强，只是「删除可证明」这条线，目前没有人在做。完整评测口径见 [docs/BENCHMARK.md](docs/BENCHMARK.md)。
+> 竞品信息取自各家 README（2026-09 快照）；"—"表示其 README 未宣称该能力，不代表产品绝对缺失，选型前请以各家官方文档为准。各家在自身主线（分数 / 调度 / 时序图谱）上都很强，只是「删除可证明」这条线，目前没有人在做。评测口径见 `reports/` 目录实测报告。
 
 ---
 
 ## 诚实边界
 
-- 系统当前为单节点 alpha 版（v0.11.0），功能矩阵以 [docs/INNOVATIONS.md](docs/INNOVATIONS.md) 实现清单为准。
+- 系统当前为单节点 alpha 版（v0.11.0），功能以仓库代码与测试为准。
 - MEB 成绩为本仓自建用例集成绩，非公开赛题成绩。
 - 成本金额为估算值（token 数按字符数 × 0.3 粗估），账目自带估算说明。
 
@@ -248,22 +244,12 @@ bash scripts/run_dev.sh
 
 </details>
 
-**深入阅读**：
-
-- 七项创新的技术细节、代码位置与证据：[docs/INNOVATIONS.md](docs/INNOVATIONS.md)
-- 治理层设计全文（含每处规范偏差及理由）：[docs/MemoryOS-记忆治理层.md](docs/MemoryOS-记忆治理层.md)
-- 平台架构与 M1–M3 路线：[docs/万枢平台-架构设计.md](docs/万枢平台-架构设计.md)
-- 评测口径与成绩：[docs/BENCHMARK.md](docs/BENCHMARK.md)
-- 竞赛交付材料：[competition/](competition/)
-- 变更历史与评审记录：[CHANGELOG.md](CHANGELOG.md) · [REVIEW.md](REVIEW.md)
+**深入阅读**：[使用说明书](使用说明书.md) · [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
 ## 竞赛与研究资源
 
-**竞赛交付**（挑战杯揭榜挂帅 · 银河麒麟赛题）：[赛题总览](competition/README.md) · [问题定义](competition/01-problem.md) · [记忆架构](competition/03-memory-architecture.md) · [基准评测](competition/04-benchmark.md) · [麒麟验收](competition/05-kylin-validation.md) · [答辩材料](competition/挑战杯答辩材料.md)
-
-**文档中心**：[七项创新与证据](docs/INNOVATIONS.md) · [MemoryOS 记忆治理层](docs/MemoryOS-记忆治理层.md) · [万枢平台架构设计](docs/万枢平台-架构设计.md) · [安全编码规范](docs/代码审查规范与安全编码标准.md)；另有 49 份设计与归档文档见 [文档中心合集](文档中心_DOCUMENTATION_HUB.md)。
 
 **研究复现库** [`backend/app/reproduction/`](backend/app/reproduction/)：9 个前沿记忆系统的轻量对照复现层——HippoRAG 图召回、MemoryBank 遗忘曲线、Reflexion 反思评估、MemoryArena 工作台、Agent 记忆工具 API 共 5 个已可运行（复现层共 14 个 REST 端点，黄金测试锁定行为），MemOS MemCube / MemGPT / LoCoMo / 生成式智能体为规划模板。已可运行的 5 个均跑在本项目真实记忆胶囊上（经安全脱敏），每个响应自带 `*_partial` 边界声明：**研究对照用，非官方完整复现**。
 
