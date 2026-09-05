@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 VECTOR_GENERATION_FENCING_MIGRATION = "vector_generation_fencing_v1"
 SOUL_OWNERSHIP_MIGRATION = "soul_owner_scope_v1"
 TIER_UNIFICATION_MIGRATION = "memory_tier_unify_v1"
+IDENTITY_KEY_HASH_UNIQUENESS_MIGRATION = "identity_key_hash_unique_v1"
 # Legacy migration name from the first #56 MVP iteration. It added a redundant
 # ``tier`` column next to the pre-existing ``memory_tier`` column; kept here so
 # the unification migration can detect and fold back databases that applied it.
@@ -135,6 +136,114 @@ def _preflight_foreign_db() -> None:
         )
 
 
+def _migrate_identity_key_hash_uniqueness(conn) -> bool:
+    """Make one API-key hash belong to exactly one identity.
+
+    The original v0.12 table used ``(identity_id, api_key_hash)`` as its
+    primary key, which allowed the same key hash to appear under multiple
+    identities. Rebuild that schema with ``api_key_hash`` as the primary key.
+    If a legacy database already contains duplicates, keep one deterministic
+    owner: an active row first, then the earliest-created row.
+
+    Schema inspection, rather than the migration marker alone, makes this safe
+    to rerun and repairs databases whose earlier migration was interrupted.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memory_schema_migrations("
+        "name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        table_info = conn.execute("PRAGMA table_info(identity)").fetchall()
+        primary_key = [
+            row[1]
+            for row in sorted(
+                (row for row in table_info if row[5]),
+                key=lambda row: row[5],
+            )
+        ]
+        migrated = primary_key != ["api_key_hash"]
+
+        if migrated:
+            duplicate_count = conn.execute(
+                "SELECT COUNT(*) - COUNT(DISTINCT api_key_hash) FROM identity"
+            ).fetchone()[0]
+            conn.execute("DROP TABLE IF EXISTS identity_key_hash_unique_new")
+            conn.execute(
+                """
+                CREATE TABLE identity_key_hash_unique_new(
+                    identity_id TEXT NOT NULL,
+                    api_key_hash TEXT NOT NULL PRIMARY KEY,
+                    display_name TEXT,
+                    created_at TEXT NOT NULL,
+                    rotated_from TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO identity_key_hash_unique_new(
+                    identity_id, api_key_hash, display_name, created_at,
+                    rotated_from, is_active
+                )
+                SELECT identity_id, api_key_hash, display_name, created_at,
+                       rotated_from, is_active
+                FROM identity AS candidate
+                WHERE candidate.rowid = (
+                    SELECT duplicate.rowid
+                    FROM identity AS duplicate
+                    WHERE duplicate.api_key_hash = candidate.api_key_hash
+                    ORDER BY CASE WHEN duplicate.is_active=1 THEN 0 ELSE 1 END,
+                             duplicate.created_at,
+                             duplicate.identity_id,
+                             duplicate.rowid
+                    LIMIT 1
+                )
+                """
+            )
+            conn.execute("DROP TABLE identity")
+            conn.execute(
+                "ALTER TABLE identity_key_hash_unique_new RENAME TO identity"
+            )
+            if duplicate_count:
+                logger.warning(
+                    "removed %s duplicate identity key record(s) while enforcing uniqueness",
+                    duplicate_count,
+                )
+
+        # Recreate the owned indexes after a table rebuild. The explicit unique
+        # index also documents and exposes the invariant to schema inspection.
+        conn.execute("DROP INDEX IF EXISTS idx_identity_key_hash")
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_identity_key_hash ON identity(api_key_hash)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_active ON identity(is_active)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_schema_migrations(name, applied_at) "
+            "VALUES (?,?)",
+            (IDENTITY_KEY_HASH_UNIQUENESS_MIGRATION, utc_now_iso_compact()),
+        )
+        conn.commit()
+        return migrated
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _migrate_audit_owner(conn) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
+    if "owner_id" not in columns:
+        conn.execute("ALTER TABLE audit_logs ADD COLUMN owner_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_owner_created "
+        "ON audit_logs(owner_id, created_at)"
+    )
+
+
 def main():
     _preflight_foreign_db()
     conn = get_conn(); cur = conn.cursor()
@@ -144,7 +253,13 @@ def main():
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(event_id, content);
     CREATE TABLE IF NOT EXISTS memory_capsules(capsule_id TEXT PRIMARY KEY, memory_type TEXT, payload TEXT, lifecycle TEXT, trust_score REAL, created_at TEXT);
     CREATE TABLE IF NOT EXISTS memory_event_capsules(event_id TEXT PRIMARY KEY, capsule_id TEXT NOT NULL UNIQUE);
-    CREATE TABLE IF NOT EXISTS audit_logs(audit_id TEXT PRIMARY KEY, event_type TEXT, payload TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS audit_logs(
+        audit_id TEXT PRIMARY KEY,
+        event_type TEXT,
+        payload TEXT,
+        created_at TEXT,
+        owner_id TEXT
+    );
     CREATE TABLE IF NOT EXISTS memory_forget_requests(
         forget_request_id TEXT PRIMARY KEY,
         scope TEXT NOT NULL,
@@ -344,19 +459,29 @@ def main():
 
     -- identity: 身份注册表。owner_id 不再由 API key 直接派生，
     -- 而是独立 UUID，API key 仅作认证凭证。支持 key 轮换不丢历史数据。
-    -- 联合主键 (identity_id, api_key_hash)：同一身份可有多条 key 记录
+    -- api_key_hash 全局唯一；同一身份仍可有多条不同 key 记录
     --（轮换后旧 key is_active=0，新 key 同 identity_id）。
     CREATE TABLE IF NOT EXISTS identity(
         identity_id TEXT NOT NULL,
-        api_key_hash TEXT NOT NULL,
+        api_key_hash TEXT NOT NULL PRIMARY KEY,
         display_name TEXT,
         created_at TEXT NOT NULL,
         rotated_from TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY(identity_id, api_key_hash)
+        is_active INTEGER NOT NULL DEFAULT 1
     );
-    CREATE INDEX IF NOT EXISTS idx_identity_key_hash ON identity(api_key_hash);
     CREATE INDEX IF NOT EXISTS idx_identity_active ON identity(is_active);
+
+    -- lan_sessions: 配对 token 兑换出的短期凭证。只存凭证哈希，并将其映射到
+    -- 已配置 identity；关闭或重新开启 LAN 时批量写 revoked_at 即时吊销。
+    CREATE TABLE IF NOT EXISTS lan_sessions(
+        credential_hash TEXT PRIMARY KEY,
+        identity_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_lan_sessions_identity
+        ON lan_sessions(identity_id, expires_at);
 
     -- memory_accounts: 逐条记忆的成本-收益-ROI 账户。
     -- roi 是派生列，由 accounting._recompute_roi_in_transaction 在每次计费后
@@ -414,6 +539,8 @@ def main():
     CREATE INDEX IF NOT EXISTS idx_health_snapshots_time
         ON memory_health_snapshots(owner_id, created_at);
     """)
+    _migrate_audit_owner(conn)
+    _migrate_identity_key_hash_uniqueness(conn)
     migrate_legacy_vector_refs(conn)
     _migrate_soul_awakening(conn)
     _migrate_soul_ownership(conn)

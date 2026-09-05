@@ -491,11 +491,11 @@ def model_gateway_providers():
     return list_providers()
 
 @platform_router.get('/model-gateway/configs')
-def model_gateway_configs():
-    return list_configs()
+def model_gateway_configs(request: Request):
+    return list_configs(owner_id=actor_id_for_request(request))
 
 @platform_router.post('/model-gateway/configs')
-def model_gateway_configs_upsert(req: ModelGatewayConfigIn):
+def model_gateway_configs_upsert(req: ModelGatewayConfigIn, request: Request):
     return upsert_config(
         req.provider,
         req.api_base,
@@ -503,15 +503,16 @@ def model_gateway_configs_upsert(req: ModelGatewayConfigIn):
         req.model,
         req.enabled,
         req.notes,
+        owner_id=actor_id_for_request(request),
     )
 
 @platform_router.delete('/model-gateway/configs/{provider}')
-def model_gateway_configs_delete(provider: str):
-    return {"deleted": delete_config(provider)}
+def model_gateway_configs_delete(provider: str, request: Request):
+    return {"deleted": delete_config(provider, owner_id=actor_id_for_request(request))}
 
 @platform_router.post('/model-gateway/test')
-async def model_gateway_test(req: ModelGatewayTestIn):
-    return await run_provider_test_async(req)
+async def model_gateway_test(req: ModelGatewayTestIn, request: Request):
+    return await run_provider_test_async(req, owner_id=actor_id_for_request(request))
 
 @platform_router.get('/tool-registry/tools')
 def tool_registry_tools():
@@ -555,42 +556,66 @@ def workflow_design_view():
 def workflow_competition_mapping_view():
     return workflow_competition_mapping()
 
+def _workflow_owned_result(result: dict):
+    if result.get('error') == 'not_found':
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    return result
+
+
 @workflow_router.post('/workflow/run-dry-run')
-def workflow_run_dry_run_view(req: WorkflowRunIn):
-    return workflow_run_dry_run(req)
+def workflow_run_dry_run_view(req: WorkflowRunIn, request: Request):
+    return workflow_run_dry_run(req, owner_id=actor_id_for_request(request))
 
 @workflow_router.post('/workflow/runs')
-def workflow_runs_create(req: WorkflowRunIn):
-    return workflow_create_run(req)
+def workflow_runs_create(req: WorkflowRunIn, request: Request):
+    return workflow_create_run(req, owner_id=actor_id_for_request(request))
 
 @workflow_router.get('/workflow/runs/{run_id}')
-def workflow_runs_get(run_id: str):
-    return workflow_get_run(run_id)
+def workflow_runs_get(run_id: str, request: Request):
+    return _workflow_owned_result(
+        workflow_get_run(run_id, owner_id=actor_id_for_request(request))
+    )
 
 @workflow_router.get('/workflow/runs/{run_id}/trace')
-def workflow_runs_trace(run_id: str):
-    return workflow_get_trace(run_id)
+def workflow_runs_trace(run_id: str, request: Request):
+    return _workflow_owned_result(
+        workflow_get_trace(run_id, owner_id=actor_id_for_request(request))
+    )
 
 @workflow_router.get('/workflow/runs/{run_id}/artifacts')
-def workflow_runs_artifacts(run_id: str):
-    return workflow_get_artifacts(run_id)
+def workflow_runs_artifacts(run_id: str, request: Request):
+    return _workflow_owned_result(
+        workflow_get_artifacts(run_id, owner_id=actor_id_for_request(request))
+    )
 
 # v0.9.5: New workflow persistence management endpoints
 @workflow_router.get('/workflow/runs')
 def workflow_runs_list(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     scenario: str | None = None,
 ):
-    return workflow_list_runs(limit=limit, offset=offset, scenario=scenario)
+    return workflow_list_runs(
+        limit=limit,
+        offset=offset,
+        scenario=scenario,
+        owner_id=actor_id_for_request(request),
+    )
 
 @workflow_router.post('/workflow/cleanup')
-def workflow_cleanup(ttl_days: int = Query(default=7, ge=1, le=3650)):
-    return workflow_cleanup_old_runs(ttl_days=ttl_days)
+def workflow_cleanup(
+    request: Request,
+    ttl_days: int = Query(default=7, ge=1, le=3650),
+):
+    return workflow_cleanup_old_runs(
+        ttl_days=ttl_days,
+        owner_id=actor_id_for_request(request),
+    )
 
 @workflow_router.get('/workflow/stats')
-def workflow_stats():
-    return workflow_get_storage_stats()
+def workflow_stats(request: Request):
+    return workflow_get_storage_stats(owner_id=actor_id_for_request(request))
 
 # v0.9 lightweight research system reproduction endpoints
 @research_router.get('/reproduction/systems')
@@ -1077,42 +1102,98 @@ def _legacy_capsule_links(
     }
 
 
-def _audit_legacy_capsule_links(conn, event_ids: list[str], known: set[str]) -> dict[str, str]:
-    """从 audit_logs 回捞缺失的 legacy event→capsule 链接（只读物化）。
-
-    03-#7: 原实现在 BEGIN IMMEDIATE 写事务内无 LIMIT 全表扫 audit_logs 并逐行
-    json.loads，事务窗口随审计表增长无限拉大。现改为：
-      - 调用方在进入写事务前物化（本函数只读，不占写锁）；
-      - json_extract 在 SQL 层预过滤候选行，仅对命中的少数行 json.loads；
-      - JSON1 不可用的旧 SQLite 构建回退原全表扫（兼容兜底，仍在事务外）。
-    语义保持：按 created_at DESC 遍历，每个 event 取最新一条有效链接。
-    """
-    missing = [e for e in event_ids if e not in known]
+def _audit_legacy_capsule_links(
+    conn,
+    event_ids: list[str],
+    known: set[str],
+    *,
+    owner_id: str | None = None,
+    soul_id: str | None = None,
+) -> dict[str, str]:
+    """从 audit_logs 回捞同属主、同 Soul 的 legacy event→capsule 链接。"""
+    missing = [event_id for event_id in event_ids if event_id not in known]
     if not missing:
         return {}
+
     placeholders = ','.join('?' for _ in missing)
+    audit_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
+    has_audit_owner = 'owner_id' in audit_columns
+    if owner_id is not None:
+        event_clauses = [
+            f"event_id IN ({placeholders})",
+            "owner_id=?",
+        ]
+        event_params: list[object] = [*missing, owner_id]
+        if soul_id is not None:
+            event_clauses.append("(soul_id=? OR soul_id IS NULL)")
+            event_params.append(soul_id)
+        scoped_events = conn.execute(
+            "SELECT event_id FROM memory_events WHERE "
+            + " AND ".join(event_clauses),
+            event_params,
+        ).fetchall()
+        missing = [row['event_id'] for row in scoped_events]
+        if not missing:
+            return {}
+        if not has_audit_owner and owner_id != configured_actor_id():
+            # A four-column legacy audit table cannot prove ownership. Only the
+            # configured compatibility actor may consume its ownerless rows.
+            return {}
+        placeholders = ','.join('?' for _ in missing)
+
+    clauses = [
+        "event_type='memory_write'",
+        f"json_extract(payload,'$.event_id') IN ({placeholders})",
+    ]
+    params: list[object] = list(missing)
+    if owner_id is not None and has_audit_owner:
+        if owner_id == configured_actor_id():
+            clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
+        else:
+            clauses.append("owner_id=?")
+        params.append(owner_id)
+    owner_column = ',owner_id' if has_audit_owner else ''
     try:
         rows = conn.execute(
-            "SELECT payload FROM audit_logs WHERE event_type='memory_write' "
-            f"AND json_extract(payload,'$.event_id') IN ({placeholders}) "
-            "ORDER BY created_at DESC",
-            missing,
+            f"SELECT payload{owner_column} FROM audit_logs "
+            f"WHERE {' AND '.join(clauses)} ORDER BY created_at DESC",
+            params,
         ).fetchall()
     except sqlite3.OperationalError:
+        fallback_clauses = ["event_type='memory_write'"]
+        fallback_params: list[object] = []
+        if owner_id is not None and has_audit_owner:
+            if owner_id == configured_actor_id():
+                fallback_clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
+            else:
+                fallback_clauses.append("owner_id=?")
+            fallback_params.append(owner_id)
         rows = conn.execute(
-            "SELECT payload FROM audit_logs WHERE event_type='memory_write' ORDER BY created_at DESC"
+            f"SELECT payload{owner_column} FROM audit_logs "
+            f"WHERE {' AND '.join(fallback_clauses)} ORDER BY created_at DESC",
+            fallback_params,
         ).fetchall()
+
     found: dict[str, str] = {}
     for row in rows:
         try:
             audit_payload = json.loads(row['payload'])
         except (TypeError, ValueError):
-            # 个别历史坏行不再拖垮整个 forget 流程
             continue
         event_id = audit_payload.get('event_id')
         capsule_id = audit_payload.get('capsule_id')
-        if event_id in missing and event_id not in found and capsule_id:
-            found[event_id] = capsule_id
+        if event_id not in missing or event_id in found or not capsule_id:
+            continue
+        linked_elsewhere = conn.execute(
+            "SELECT 1 FROM memory_event_capsules "
+            "WHERE capsule_id=? AND event_id<>? LIMIT 1",
+            (capsule_id, event_id),
+        ).fetchone()
+        if linked_elsewhere:
+            # Never repoint an existing capsule owned by another event while
+            # reconstructing a missing legacy event→capsule link.
+            continue
+        found[event_id] = capsule_id
     return found
 
 
@@ -1129,15 +1210,21 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
            WHERE ticket.forget_request_id=?""",
         (req.forget_request_id,),
     ).fetchone()
-    request_owner_id = actor_id_for_request(request) if request is not None else None
+    request_owner_id = actor_id_for_request(request)
     ticket_owner_id = ticket['ticket_owner_id'] if ticket else None
     ticket_soul_id = ticket['ticket_soul_id'] if ticket else None
-    if not ticket or (
-        request_owner_id is not None
-        and (not ticket_owner_id or ticket_owner_id != request_owner_id)
-    ):
+    ownerless_legacy_ticket = ticket is not None and not ticket_owner_id
+    ticket_denied = False
+    if ticket_owner_id:
+        ticket_denied = ticket_owner_id != request_owner_id
+    elif ticket is not None:
+        # Ownerless historical tickets remain compatible only with the
+        # configured actor; never let another API key claim their scope.
+        ticket_denied = request_owner_id != configured_actor_id()
+    if not ticket or ticket_denied:
         audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
+    scope_owner_id = ticket_owner_id or (request_owner_id if ownerless_legacy_ticket else None)
     if not req.confirm:
         if ticket['status'] == 'cancelled' and ticket['result']:
             return json.loads(ticket['result'])
@@ -1208,12 +1295,18 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
     legacy_capsule_ids = _legacy_capsule_links(
         conn,
         event_ids,
-        owner_id=ticket_owner_id if request is not None else None,
-        soul_id=ticket_soul_id if request is not None else None,
+        owner_id=scope_owner_id,
+        soul_id=ticket_soul_id,
     )
     audit_discovered_links: dict[str, str] = {}
     if len(legacy_capsule_ids) != len(event_ids):
-        audit_discovered_links = _audit_legacy_capsule_links(conn, event_ids, set(legacy_capsule_ids))
+        audit_discovered_links = _audit_legacy_capsule_links(
+            conn,
+            event_ids,
+            set(legacy_capsule_ids),
+            owner_id=scope_owner_id if request is not None else None,
+            soul_id=ticket_soul_id if request is not None else None,
+        )
         legacy_capsule_ids.update(audit_discovered_links)
     missing_legacy_links = sorted(set(event_ids) - set(legacy_capsule_ids))
     if missing_legacy_links:
@@ -1266,18 +1359,18 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                     conn.execute("UPDATE memory_capsules SET lifecycle='forgotten' WHERE capsule_id=?",(legacy_capsule_id,))
                 event_scope_sql = ""
                 event_scope_params: list[object] = []
-                if request is not None:
-                    event_scope_sql = (
-                        " AND owner_id=? AND (soul_id=? OR soul_id IS NULL)"
-                    )
-                    event_scope_params = [ticket_owner_id, ticket_soul_id]
+                event_scope_sql = " AND owner_id=?"
+                event_scope_params = [scope_owner_id]
+                if ticket_soul_id is not None:
+                    event_scope_sql += " AND (soul_id=? OR soul_id IS NULL)"
+                    event_scope_params.append(ticket_soul_id)
                 deleted_event = conn.execute(
                     f"DELETE FROM memory_events WHERE event_id=?{event_scope_sql}",
                     [event_id, *event_scope_params],
                 )
                 if deleted_event.rowcount:
                     conn.execute('DELETE FROM memory_fts WHERE event_id=?',(event_id,))
-            if request is not None and capsule_ids:
+            if capsule_ids:
                 placeholders = ','.join('?' for _ in capsule_ids)
                 scoped_rows = conn.execute(
                     f"""SELECT capsule_id FROM memory_capsules_v2
@@ -1285,7 +1378,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                           AND json_extract(provenance, '$.owner_id')=?
                           AND (json_extract(provenance, '$.soul_id')=?
                                OR json_extract(provenance, '$.soul_id') IS NULL)""",
-                    [*capsule_ids, ticket_owner_id, ticket_soul_id],
+                    [*capsule_ids, scope_owner_id, ticket_soul_id],
                 ).fetchall()
                 if {row['capsule_id'] for row in scoped_rows} != set(capsule_ids):
                     raise HTTPException(
@@ -1500,7 +1593,9 @@ def soul_dream(req: SoulDreamIn, request: Request = None):
 # ---------------------------------------------------------------------------
 
 
-def _chat_request_context(messages: list[dict], model: str):
+def _chat_request_context(
+    messages: list[dict], model: str, owner_id: str | None = None,
+):
     """Resolve the configured provider once and bound the prompt payload.
 
     选择优先级：
@@ -1540,7 +1635,7 @@ def _chat_request_context(messages: list[dict], model: str):
         non_system_text = ""
     prompt = system_text + ("\n" if system_text and non_system_text else "") + non_system_text
 
-    active = active_chat_provider()
+    active = active_chat_provider(owner_id=owner_id)
     if active is not None:
         api_model = str(active['model']) if model == 'default' else model
         return (
@@ -1579,7 +1674,9 @@ def _provider_error_completion(
     }
 
 
-def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
+def _chat_complete(
+    messages: list[dict], model: str = 'default', owner_id: str | None = None,
+) -> dict:
     """Lightweight chat completion via the configured model gateway.
 
     03-#14: env 解析、allowlist 解析与超时常量统一走 model_gateway.service
@@ -1590,7 +1687,7 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
     issue #45 (4.1): local_mock 回退已删除——未配置网关时如实
     provider_error，不产出任何模型口吻文本。
     """
-    context = _chat_request_context(messages, model)
+    context = _chat_request_context(messages, model, owner_id=owner_id)
     if context is None:
         return {
             'provider': 'none',
@@ -1619,9 +1716,11 @@ def _chat_complete(messages: list[dict], model: str = 'default') -> dict:
         return _provider_error_completion(api_model, exc, provider=provider_label)
 
 
-async def _chat_complete_async(messages: list[dict], model: str = 'default') -> dict:
+async def _chat_complete_async(
+    messages: list[dict], model: str = 'default', owner_id: str | None = None,
+) -> dict:
     """Async counterpart that leaves the Starlette worker pool available."""
-    context = _chat_request_context(messages, model)
+    context = _chat_request_context(messages, model, owner_id=owner_id)
     if context is None:
         # issue #45 (4.1): 未配置网关不再回退 local_mock，如实报错。
         return {
@@ -1683,7 +1782,9 @@ async def soul_chat(req: SoulChatIn, request: Request = None):
         )
 
     # 3. Call model gateway
-    completion = await _chat_complete_async(injected_messages, model=req.model)
+    completion = await _chat_complete_async(
+        injected_messages, model=req.model, owner_id=soul_scope.owner_id,
+    )
 
     # 4. Perception: intake assistant reply
     assistant_content = completion.get('content', '')
@@ -2461,11 +2562,8 @@ def memory_health_trend(
 
 @memory_router.get('/memory/identity')
 def memory_identity(request: Request = None):
-    """当前 API key 对应的身份信息（owner_id / 注册时间 / 是否活跃）。"""
-    from .security.auth import actor_id_from_api_key, get_api_key
-
-    key = get_api_key()
-    owner_id = actor_id_from_api_key(key)
+    """当前请求 API key 对应的身份信息（owner_id / 注册时间 / 是否活跃）。"""
+    owner_id = actor_id_for_request(request)
     return {
         "owner_id": owner_id,
         "api_key_prefix": "***",
@@ -2517,15 +2615,21 @@ def memory_identity_revoke(
 
     防护：不允许撤销当前请求正在使用的 key（防自杀）。
     """
-    from .security.auth import revoke_api_key
+    from .security.auth import actor_id_from_api_key, revoke_api_key
 
     target_key = (body.get("api_key") or "").strip()
     if not target_key:
         raise HTTPException(status_code=422, detail="api_key is required")
 
     current_key = (request.headers.get("x-api-key") or "").strip() if request else ""
+    if not current_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key")
     try:
-        result = revoke_api_key(target_key, current_key=current_key)
+        result = revoke_api_key(
+            target_key,
+            current_key=current_key,
+            current_identity_id=actor_id_from_api_key(current_key),
+        )
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid request") from None
     except RuntimeError:
@@ -2533,7 +2637,7 @@ def memory_identity_revoke(
 
     if not result.get("revoked"):
         reason = result.get("reason", "unknown")
-        status = 404 if reason == "key_not_registered" else 409
+        status = 404 if reason in {"key_not_registered", "key_not_owned"} else 409
         raise HTTPException(status_code=status, detail=reason)
     return result
 
@@ -2966,8 +3070,14 @@ def memoryos_mq():
 
 
 @audit_router.get('/audit/logs')
-def audit_logs(limit:int=50,trace_id:str|None=None):
-    return {'items':list_logs(limit,trace_id)}
+def audit_logs(request: Request, limit:int=50,trace_id:str|None=None):
+    return {
+        'items': list_logs(
+            limit,
+            trace_id,
+            owner_id=actor_id_for_request(request),
+        )
+    }
 
 
 @audit_router.get('/security/score')

@@ -37,6 +37,16 @@ def actor_id_for_request(request: Any | None) -> str:
     """Resolve the authenticated request actor without exposing the API key."""
     if request is None:
         return configured_actor_id()
+    state = getattr(request, "state", None)
+    if state is not None and hasattr(state, "authenticated_identity"):
+        authenticated = getattr(state, "authenticated_identity", None)
+        if authenticated:
+            return str(authenticated)
+        # The verify endpoint is the only route that can reach a handler with
+        # an unvalidated header. Never register an arbitrary header as a new
+        # identity while resolving its device-owner dependency.
+        if (request.headers.get("x-api-key") or "").strip():
+            return "anonymous"
     provided = (request.headers.get("x-api-key") or "").strip()
     if not provided:
         # Middleware rejects missing credentials before handlers run.  Keeping

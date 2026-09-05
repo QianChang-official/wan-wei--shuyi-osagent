@@ -1242,8 +1242,10 @@ def _pinned_http_target(url: str, pinned_ip: str) -> tuple[str, dict[str, str], 
     return pinned_url, headers, extensions
 
 
-def _prepare_pinned_transport(rec: dict) -> tuple[str, str, dict[str, str], dict[str, str] | None]:
-    """远程传输真实连接前的 SSRF 复核：返回 (transport, pinned url, Host 头, 扩展)。
+def _prepare_pinned_transport(
+    rec: dict,
+) -> tuple[str, str, str, dict[str, str], dict[str, str] | None]:
+    """远程传输真实连接前的 SSRF 复核：返回 (transport, 原始 url, pinned url, Host 头, 扩展)。
 
     写入时已经过 ``validate_external_url`` 拒内网/保留地址；这里每次连接前再走
     ``resolve_external_url``，把主机名重新解析并钉住，防 TOCTOU/DNS 重绑定。
@@ -1264,7 +1266,7 @@ def _prepare_pinned_transport(rec: dict) -> tuple[str, str, dict[str, str], dict
             rec.get('id'), type(exc).__name__,
         )
         raise _McpSsrfBlocked(_SSRF_BLOCKED_NOTE) from None
-    return transport, pinned_url, host_headers, extensions
+    return transport, validated_url, pinned_url, host_headers, extensions
 
 
 class _SseFrameParser:
@@ -1482,13 +1484,14 @@ class _SseRpc(_HttpJsonRpc):
     """sse 传输：GET 建立 text/event-stream 流拿 endpoint 事件，再 POST JSON-RPC。
 
     响应在流上异步送达（宽容兼容直接在 POST 响应体返回结果的实现）。POST 与
-    SSE 读流共用同一 pinned AsyncClient，endpoint 相对地址按 pinned SSE url
-    解析，保证上报目标同样钉在已校验 IP 上。
+    SSE 读流共用同一 pinned AsyncClient，endpoint 相对地址按原始 SSE url
+    解析，并单独执行 SSRF 复核与 IP 钉住，保证上报目标不会绕过校验。
     """
 
     def __init__(
         self,
         client: httpx.AsyncClient,
+        sse_url: str,
         pinned_sse_url: str,
         host_headers: dict[str, str],
         extensions: dict[str, str] | None,
@@ -1496,10 +1499,13 @@ class _SseRpc(_HttpJsonRpc):
     ):
         super().__init__(request_timeout)
         self._client = client
+        self._sse_origin_url = sse_url
         self._sse_url = pinned_sse_url
         self._host_headers = host_headers
         self._extensions = extensions or {}
         self.endpoint_url: str | None = None
+        self._endpoint_headers: dict[str, str] | None = None
+        self._endpoint_extensions: dict[str, str] = {}
         self._parser = _SseFrameParser()
         self._stream_cm: httpx.AsyncResponse | None = None
         self._response: httpx.Response | None = None
@@ -1508,6 +1514,16 @@ class _SseRpc(_HttpJsonRpc):
     async def connect(self) -> None:
         """建立 SSE 流并等待 endpoint 事件；属连接建立阶段，用握手预算。"""
         deadline = time.monotonic() + _HANDSHAKE_BUDGET
+        try:
+            sse_origin, sse_ip = resolve_external_url(
+                self._sse_origin_url, allowlist=_http_host_allowlist(),
+            )
+            self._sse_url, self._host_headers, extensions = _pinned_http_target(
+                sse_origin, sse_ip,
+            )
+            self._extensions = extensions or {}
+        except (ValueError, OSError, UnicodeError):
+            raise _McpSsrfBlocked(_SSRF_BLOCKED_NOTE) from None
         self._stream_cm = self._client.stream(
             'GET',
             self._sse_url,
@@ -1544,11 +1560,27 @@ class _SseRpc(_HttpJsonRpc):
             name, data = event
             if name != 'endpoint':
                 continue  # 其它先导事件忽略
-            resolved = urljoin(self._sse_url, data.strip())
             if not data.strip():
                 await self.aclose()
                 raise RuntimeError('MCP endpoint 事件缺少地址')
-            self.endpoint_url = resolved
+            endpoint_candidate = urljoin(self._sse_origin_url, data.strip())
+            try:
+                endpoint_origin, endpoint_ip = resolve_external_url(
+                    endpoint_candidate, allowlist=_http_host_allowlist(),
+                )
+                endpoint_url, endpoint_headers, endpoint_extensions = _pinned_http_target(
+                    endpoint_origin, endpoint_ip,
+                )
+            except (ValueError, OSError, UnicodeError) as exc:
+                logger.warning(
+                    'MCP SSE endpoint rejected by SSRF policy: error_type=%s',
+                    type(exc).__name__,
+                )
+                await self.aclose()
+                raise _McpSsrfBlocked(_SSRF_BLOCKED_NOTE) from None
+            self.endpoint_url = endpoint_url
+            self._endpoint_headers = endpoint_headers
+            self._endpoint_extensions = endpoint_extensions or {}
             return
 
     async def _read_event(self, deadline: float, budget: float) -> tuple[str, str] | None:
@@ -1571,19 +1603,25 @@ class _SseRpc(_HttpJsonRpc):
                 return event
 
     async def request(self, method: str, params: dict | None = None, *, timeout: float | None = None) -> dict:
-        if self._response is None or not self.endpoint_url:
+        if (
+            self._response is None
+            or not self.endpoint_url
+            or self._endpoint_headers is None
+        ):
             raise RuntimeError('MCP SSE 会话尚未建立（内部错误）')
         budget = timeout if timeout is not None else self._request_timeout
         deadline = time.monotonic() + budget
         rid = self._next_id()
         payload = {'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params or {}}
         remaining = self._remaining(deadline, budget)
+        endpoint_headers = self._endpoint_headers
         try:
             post_response = await asyncio.wait_for(
                 self._client.post(
                     self.endpoint_url,
                     json=payload,
-                    headers={**self._host_headers, 'Accept': 'application/json'},
+                    headers={**endpoint_headers, 'Accept': 'application/json'},
+                    extensions=self._endpoint_extensions,
                 ),
                 remaining,
             )
@@ -1616,15 +1654,21 @@ class _SseRpc(_HttpJsonRpc):
             # 其它 id 的响应/通知跳过
 
     async def notify(self, method: str, params: dict | None = None) -> None:
-        if not self.endpoint_url:
+        if not self.endpoint_url or self._endpoint_headers is None:
             raise RuntimeError('MCP SSE 会话尚未建立（内部错误）')
         budget = self._request_timeout
         deadline = time.monotonic() + budget
         payload = {'jsonrpc': '2.0', 'method': method, 'params': params or {}}
         remaining = self._remaining(deadline, budget)
+        endpoint_headers = self._endpoint_headers
         try:
             response = await asyncio.wait_for(
-                self._client.post(self.endpoint_url, json=payload, headers=self._host_headers),
+                self._client.post(
+                    self.endpoint_url,
+                    json=payload,
+                    headers={**endpoint_headers, 'Accept': 'application/json'},
+                    extensions=self._endpoint_extensions,
+                ),
                 remaining,
             )
         except _TIMEOUT_ERRORS as exc:
@@ -1641,6 +1685,9 @@ class _SseRpc(_HttpJsonRpc):
         self._stream_cm = None
         self._response = None
         self._line_iterator = None
+        self.endpoint_url = None
+        self._endpoint_headers = None
+        self._endpoint_extensions = {}
         if cm is None:
             return
         try:
@@ -1650,13 +1697,15 @@ class _SseRpc(_HttpJsonRpc):
 
 
 def _open_remote_rpc(
-    prepared: tuple[str, str, dict[str, str], dict[str, str] | None],
+    prepared: tuple[str, str, str, dict[str, str], dict[str, str] | None],
     client: httpx.AsyncClient,
     budget: float,
 ) -> _HttpJsonRpc:
-    transport, pinned_url, host_headers, extensions = prepared
+    transport, original_url, pinned_url, host_headers, extensions = prepared
     if transport == 'sse':
-        rpc: _HttpJsonRpc = _SseRpc(client, pinned_url, host_headers, extensions, budget)
+        rpc: _HttpJsonRpc = _SseRpc(
+            client, original_url, pinned_url, host_headers, extensions, budget,
+        )
     else:
         rpc = _StreamableHttpRpc(client, pinned_url, host_headers, extensions, budget)
     return rpc

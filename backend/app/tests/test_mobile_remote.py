@@ -1,9 +1,11 @@
 """mobile_remote（手机端远程控制）API 测试：SSE 事件流 / 文件上传 / 工具调用查询。"""
+import asyncio
 import io
 import importlib
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,6 +76,57 @@ def test_upload_and_list(tmp_path):
 
     listed = client.get('/platform/mobile/list', headers=HEADERS).json()
     assert any(it['file_id'] == body['file_id'] for it in listed['items'])
+
+
+@pytest.mark.parametrize('size', [6 * 1024 * 1024, 50 * 1024 * 1024, 50 * 1024 * 1024 + 1])
+def test_mobile_upload_file_size_boundary(tmp_path, monkeypatch, size):
+    client = _client(tmp_path)
+    from backend.app.platform_api import mobile_remote
+
+    monkeypatch.setattr(mobile_remote, '_UPLOAD_DIR', tmp_path / 'uploads')
+    response = client.post(
+        '/platform/mobile/upload', headers=HEADERS,
+        files={'file': ('mobile_test_boundary.bin', io.BytesIO(b'x' * size), 'application/octet-stream')},
+    )
+    if size > 50 * 1024 * 1024:
+        assert response.status_code == 413, response.text
+        assert '50MB' in response.json()['detail']
+        assert not list((tmp_path / 'uploads').glob('*'))
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json()['size_bytes'] == size
+
+
+def test_missing_disk_file_can_be_deleted_only_by_owner(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    from backend.app.platform_api import mobile_remote
+    from backend.app.security.auth import actor_id_from_api_key
+    from backend.app.db import get_conn
+
+    monkeypatch.setattr(mobile_remote, '_UPLOAD_DIR', tmp_path / 'uploads')
+    monkeypatch.setattr(mobile_remote, 'MAX_FILES', 1)
+    response = client.post(
+        '/platform/mobile/upload', headers=HEADERS,
+        files={'file': ('mobile_test_missing.txt', io.BytesIO(b'private'), 'text/plain')},
+    )
+    assert response.status_code == 200, response.text
+    fid = response.json()['file_id']
+    (mobile_remote._UPLOAD_DIR / fid).unlink()
+    actor_id_from_api_key('mobile-missing-other')
+    foreign = client.delete(f'/platform/mobile/{fid}', headers={'x-api-key': 'mobile-missing-other'})
+    assert foreign.status_code == 404
+    assert get_conn().execute('SELECT file_id FROM mobile_files WHERE file_id=?', (fid,)).fetchone()
+    own = client.delete(f'/platform/mobile/{fid}', headers=HEADERS)
+    assert own.status_code == 200, own.text
+    assert own.json()['deleted'] == fid
+    assert get_conn().execute('SELECT file_id FROM mobile_files WHERE file_id=?', (fid,)).fetchone() is None
+    assert client.get('/platform/mobile/list', headers=HEADERS).json()['items'] == []
+    assert client.delete(f'/platform/mobile/{fid}', headers=HEADERS).status_code == 404
+    replacement = client.post(
+        '/platform/mobile/upload', headers=HEADERS,
+        files={'file': ('mobile_test_replacement.txt', io.BytesIO(b'new'), 'text/plain')},
+    )
+    assert replacement.status_code == 200, replacement.text
 
 
 def test_read_content_utf8(tmp_path):
@@ -219,3 +272,88 @@ def test_sse_stream_emits_upload_event(tmp_path):
                 break
 
     assert any('file_upload' in e for e in received)
+
+
+def test_mobile_files_are_isolated_by_actor(tmp_path):
+    """上传、列表、读取、删除均不能跨 API actor 访问。"""
+    client = _client(tmp_path)
+    from backend.app.security.auth import actor_id_from_api_key
+
+    actor_id_from_api_key('mobile-owner-b')
+    headers_b = {'x-api-key': 'mobile-owner-b'}
+    uploaded = client.post(
+        '/platform/mobile/upload',
+        headers=HEADERS,
+        files={'file': ('mobile_test_isolated.txt', io.BytesIO(b'private'), 'text/plain')},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    fid = body['file_id']
+    assert body['url'] == f'/platform/mobile/{fid}/content'
+
+    assert client.get('/platform/mobile/list', headers=headers_b).json()['items'] == []
+    assert client.get(f'/platform/mobile/{fid}/content', headers=headers_b).status_code == 404
+    assert client.delete(f'/platform/mobile/{fid}', headers=headers_b).status_code == 404
+    assert any(item['file_id'] == fid for item in client.get(
+        '/platform/mobile/list', headers=HEADERS
+    ).json()['items'])
+
+
+def test_legacy_mobile_files_migrate_and_only_configured_actor_can_claim(tmp_path):
+    """旧五列 mobile_files 表迁移后，仅配置 actor 能认领 ownerless 文件。"""
+    client = _client(tmp_path)
+    from backend.app.db import get_conn
+    from backend.app.platform_api import mobile_remote
+    from backend.app.security.auth import actor_id_from_api_key
+
+    actor_id_from_api_key('mobile-legacy-other')
+    conn = get_conn()
+    conn.execute('DROP TABLE IF EXISTS mobile_files')
+    conn.execute(
+        'CREATE TABLE mobile_files('
+        ' file_id TEXT PRIMARY KEY, filename TEXT, size_bytes INTEGER,'
+        ' content_type TEXT, created_at TEXT)'
+    )
+    fid = 'file_abcdefabcdef'
+    conn.execute(
+        'INSERT INTO mobile_files VALUES (?,?,?,?,?)',
+        (fid, 'mobile_test_legacy.txt', 6, 'text/plain', '2026-01-01T00:00:00+00:00'),
+    )
+    conn.commit()
+    mobile_remote._UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    (mobile_remote._UPLOAD_DIR / fid).write_bytes(b'legacy')
+
+    assert client.get('/platform/mobile/list', headers={'x-api-key': 'mobile-legacy-other'}).json()['items'] == []
+    row = conn.execute('SELECT owner_id FROM mobile_files WHERE file_id=?', (fid,)).fetchone()
+    assert row['owner_id'] is None
+
+    own = client.get('/platform/mobile/list', headers=HEADERS)
+    assert own.status_code == 200
+    assert any(item['file_id'] == fid for item in own.json()['items'])
+    row = conn.execute('SELECT owner_id FROM mobile_files WHERE file_id=?', (fid,)).fetchone()
+    assert row['owner_id']
+
+
+def test_sse_backlog_is_owner_filtered_and_owner_id_is_redacted(tmp_path):
+    """SSE backlog 仅返回当前 actor 的事件，且事件数据不暴露 owner_id。"""
+    _client(tmp_path)
+    from backend.app.platform_api import mobile_remote
+
+    async def exercise():
+        mobile_remote._EVENT_BUFFER.clear()
+        await mobile_remote._append_event({
+            'ts': 1.0, 'event_type': 'owned-a', 'owner_id': mobile_remote.actor_id_for_request(
+                SimpleNamespace(headers={'x-api-key': API_KEY})
+            ),
+        })
+        await mobile_remote._append_event({'ts': 2.0, 'event_type': 'owned-b', 'owner_id': 'other-owner'})
+        request = SimpleNamespace(headers={'x-api-key': API_KEY})
+        response = await mobile_remote.realtime_events(request=request, since=0, max_idle=1)
+        chunk = await anext(response.body_iterator)
+        await response.body_iterator.aclose()
+        return chunk.decode() if isinstance(chunk, bytes) else chunk
+
+    frame = asyncio.run(exercise())
+    assert 'owned-a' in frame
+    assert 'owned-b' not in frame
+    assert 'owner_id' not in frame

@@ -149,12 +149,11 @@ def test_agent_crud_is_scoped_to_api_key_owner(client, monkeypatch):
     assert client.get(f"/platform/agents/{aid}", headers=H).status_code == 200
 
 
-def test_legacy_agent_without_owner_id_remains_visible(client, monkeypatch):
-    """owner 隔离引入前的存量 agent（无 owner_id 字段）升级后不得集体 404：
-    对已鉴权调用方保持可见，新建带 owner 的记录仍按 owner 隔离。"""
+def test_legacy_agent_without_owner_id_remains_visible_to_configured_actor(client, monkeypatch):
+    """Legacy agents remain accessible only to the configured actor."""
     from backend.app.platform_api import agents as agents_mod
 
-    async def fake_gateway(prompt, run=None):
+    async def fake_gateway(prompt, run=None, owner_id=None):
         return "fake gateway reply", "test-provider"
 
     monkeypatch.setattr(agents_mod, "_try_gateway", fake_gateway)
@@ -168,10 +167,20 @@ def test_legacy_agent_without_owner_id_remains_visible(client, monkeypatch):
     listed = client.get("/platform/agents", headers=H).json()["items"]
     assert aid in {item["id"] for item in listed}
     r = client.post("/platform/agents/chat", json={"agent_id": aid, "message": "hi"}, headers=H)
-    # legacy agent 对已鉴权调用方可见：不 404（无网关时 chat 如实 502，P0-3）。
-    assert r.status_code != 404, r.text
+    assert r.status_code == 200, r.text
     # 响应不得泄露 owner_id 字段
     assert "owner_id" not in client.get(f"/platform/agents/{aid}", headers=H).json()
+
+    import backend.app.security.auth as auth
+
+    monkeypatch.setattr(auth, "_verify_api_key", lambda provided: provided in {"test-key", "other-key"})
+    other_h = {"x-api-key": "other-key"}
+    assert client.get(f"/platform/agents/{aid}", headers=other_h).status_code == 404
+    listed = client.get("/platform/agents", headers=other_h)
+    assert listed.status_code == 200, listed.text
+    assert aid not in {item["id"] for item in listed.json()["items"]}
+    denied = client.post("/platform/agents/chat", json={"agent_id": aid, "message": "hi"}, headers=other_h)
+    assert denied.status_code == 404, denied.text
 
 
 def test_team_crud_is_scoped_to_api_key_owner(client, monkeypatch):

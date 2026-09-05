@@ -262,7 +262,10 @@ def _build_stage_trace(req: WorkflowRunIn, run_id: str, trace_id: str) -> list[d
     return trace
 
 
-def create_run(req: WorkflowRunIn) -> dict[str, Any]:
+def create_run(
+    req: WorkflowRunIn,
+    owner_id: str | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     run_id = "wfr_" + uuid.uuid4().hex[:12]
     trace_id = "trace_" + uuid.uuid4().hex[:12]
@@ -300,48 +303,70 @@ def create_run(req: WorkflowRunIn) -> dict[str, Any]:
             ],
         },
     }
-    audit_id = record("workflow_run", {"run_id": run_id, "trace_id": trace_id, "scenario": req.scenario, "summary": run["summary"]})
+    audit_id = record(
+        "workflow_run",
+        {
+            "run_id": run_id,
+            "trace_id": trace_id,
+            "scenario": req.scenario,
+            "summary": run["summary"],
+        },
+        owner_id=owner_id,
+    )
     run["audit_id"] = audit_id
 
     # v0.9.6: Persist to database (single source of truth; in-memory fallback removed)
-    persistence.save_run(run_id, run)
+    persistence.save_run(run_id, run, owner_id=owner_id)
 
     return run
 
 
-def get_run(run_id: str) -> dict[str, Any]:
+def get_run(run_id: str, owner_id: str | None = None) -> dict[str, Any]:
     # v0.9.6: DB is the single source of truth for workflow runs.
-    run = persistence.get_run(run_id)
+    run = persistence.get_run(run_id, owner_id=owner_id)
     if run:
         return run
     return {"error": "not_found", "run_id": run_id}
 
 
-def get_trace(run_id: str) -> dict[str, Any]:
-    run = get_run(run_id)
+def get_trace(run_id: str, owner_id: str | None = None) -> dict[str, Any]:
+    run = get_run(run_id, owner_id=owner_id)
     if "error" in run:
         return run
     return {"run_id": run_id, "trace_id": run["trace_id"], "items": run["trace"]}
 
 
-def get_artifacts(run_id: str) -> dict[str, Any]:
-    run = get_run(run_id)
+def get_artifacts(run_id: str, owner_id: str | None = None) -> dict[str, Any]:
+    run = get_run(run_id, owner_id=owner_id)
     if "error" in run:
         return run
     return {"run_id": run_id, "trace_id": run["trace_id"], "items": run["artifacts"]}
 
 
-def run_dry_run(req: WorkflowRunIn) -> dict[str, Any]:
-    return create_run(req)
+def run_dry_run(
+    req: WorkflowRunIn,
+    owner_id: str | None = None,
+) -> dict[str, Any]:
+    return create_run(req, owner_id=owner_id)
 
 
-def list_runs(limit: int = 100, offset: int = 0, scenario: str | None = None) -> dict[str, Any]:
+def list_runs(
+    limit: int = 100,
+    offset: int = 0,
+    scenario: str | None = None,
+    owner_id: str | None = None,
+) -> dict[str, Any]:
     """
     列出 workflow runs（支持分页和过滤）。
 
     v0.9.5 新增: 支持从数据库读取持久化的 runs
     """
-    runs = persistence.list_runs(limit=limit, offset=offset, scenario=scenario)
+    runs = persistence.list_runs(
+        limit=limit,
+        offset=offset,
+        scenario=scenario,
+        owner_id=owner_id,
+    )
     return {
         "runs": runs,
         "limit": limit,
@@ -350,7 +375,10 @@ def list_runs(limit: int = 100, offset: int = 0, scenario: str | None = None) ->
     }
 
 
-def cleanup_old_runs(ttl_days: int = 7) -> dict[str, Any]:
+def cleanup_old_runs(
+    ttl_days: int = 7,
+    owner_id: str | None = None,
+) -> dict[str, Any]:
     """
     清理过期的 workflow runs。
 
@@ -362,7 +390,10 @@ def cleanup_old_runs(ttl_days: int = 7) -> dict[str, Any]:
     返回:
         清理结果统计
     """
-    deleted_count = persistence.cleanup_old_runs(ttl_days=ttl_days)
+    deleted_count = persistence.cleanup_old_runs(
+        ttl_days=ttl_days,
+        owner_id=owner_id,
+    )
     return {
         "deleted_count": deleted_count,
         "ttl_days": ttl_days,
@@ -370,10 +401,10 @@ def cleanup_old_runs(ttl_days: int = 7) -> dict[str, Any]:
     }
 
 
-def get_storage_stats() -> dict[str, Any]:
+def get_storage_stats(owner_id: str | None = None) -> dict[str, Any]:
     """
     获取 workflow runs 存储统计。
 
     v0.9.5 新增: 持久化存储统计
     """
-    return persistence.get_storage_stats()
+    return persistence.get_storage_stats(owner_id=owner_id)

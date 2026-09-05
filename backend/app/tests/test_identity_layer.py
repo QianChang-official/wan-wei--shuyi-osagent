@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,6 +53,22 @@ class TestIdentityRegistration:
         r1 = client.get("/memory/identity", headers={"x-api-key": "test-owner-key-0123456789abcdef"})
         r2 = client.get("/memory/identity", headers={"x-api-key": "test-owner-key-0123456789abcdef"})
         assert r1.json()["owner_id"] == r2.json()["owner_id"]
+
+    def test_concurrent_first_use_registers_one_identity(self, isolated_db):
+        from backend.app.db import get_conn
+        from backend.app.security.auth import _api_key_hash, actor_id_from_api_key
+
+        key = "same-first-use-key"
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            identity_ids = list(executor.map(actor_id_from_api_key, [key] * 16))
+
+        assert len(set(identity_ids)) == 1
+        rows = get_conn().execute(
+            "SELECT identity_id FROM identity WHERE api_key_hash=?",
+            (_api_key_hash(key),),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["identity_id"] == identity_ids[0]
 
 
 class TestKeyRotation:
@@ -111,6 +128,66 @@ class TestKeyRotation:
             json={"new_key": "short"},
         )
         assert r.status_code == 422
+
+    @pytest.mark.parametrize("other_key_active", [True, False])
+    def test_rotate_rejects_key_owned_by_other_identity(
+        self, isolated_db, other_key_active
+    ):
+        from backend.app.security.auth import (
+            _verify_api_key,
+            actor_id_from_api_key,
+            rotate_api_key,
+        )
+
+        first_key = "first-identity-key"
+        other_key = "other-identity-key"
+        other_replacement = "other-replacement-key"
+        first_identity = actor_id_from_api_key(first_key)
+        other_identity = actor_id_from_api_key(other_key)
+        if not other_key_active:
+            assert rotate_api_key(other_key, other_replacement) == other_identity
+
+        with pytest.raises(sqlite3.IntegrityError, match="unavailable"):
+            rotate_api_key(first_key, other_key)
+
+        assert _verify_api_key(first_key)
+        assert actor_id_from_api_key(first_key) == first_identity
+        assert actor_id_from_api_key(other_key) == other_identity
+
+    def test_concurrent_rotations_cannot_claim_same_new_key(self, isolated_db):
+        from backend.app.db import get_conn
+        from backend.app.security.auth import (
+            _api_key_hash,
+            _verify_api_key,
+            actor_id_from_api_key,
+            rotate_api_key,
+        )
+
+        old_keys = ["rotation-source-a", "rotation-source-b"]
+        identities = {key: actor_id_from_api_key(key) for key in old_keys}
+        new_key = "contended-new-key"
+
+        def rotate(old_key):
+            try:
+                return old_key, "rotated", rotate_api_key(old_key, new_key)
+            except sqlite3.IntegrityError as exc:
+                return old_key, "collision", str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(rotate, old_keys))
+
+        assert sorted(result[1] for result in results) == ["collision", "rotated"]
+        winner = next(result for result in results if result[1] == "rotated")
+        loser = next(result for result in results if result[1] == "collision")
+        assert winner[2] == identities[winner[0]]
+        assert loser[2] == "new key is unavailable"
+        assert actor_id_from_api_key(new_key) == identities[winner[0]]
+        assert not _verify_api_key(winner[0])
+        assert _verify_api_key(loser[0])
+        assert get_conn().execute(
+            "SELECT COUNT(*) FROM identity WHERE api_key_hash=?",
+            (_api_key_hash(new_key),),
+        ).fetchone()[0] == 1
 
 
 class TestKeyRevocation:
@@ -192,6 +269,76 @@ class TestKeyRevocation:
             json={"api_key": "never-registered-key-0123456789ab"},
         )
         assert r.status_code == 404
+
+
+class TestIdentitySchemaMigration:
+    def test_legacy_composite_primary_key_migrates_idempotently(
+        self, tmp_path, monkeypatch
+    ):
+        db = str(tmp_path / "legacy-identity.db")
+        monkeypatch.setenv("WANWEI_MEMORY_DB", db)
+        monkeypatch.setenv("WANWEI_API_KEY", "configured-migration-key")
+        from backend.app import init_db
+        from backend.app.db import close_all, get_conn
+
+        close_all()
+        legacy = sqlite3.connect(db)
+        legacy.executescript(
+            """
+            CREATE TABLE identity(
+                identity_id TEXT NOT NULL,
+                api_key_hash TEXT NOT NULL,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                rotated_from TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY(identity_id, api_key_hash)
+            );
+            CREATE INDEX idx_identity_key_hash ON identity(api_key_hash);
+            """
+        )
+        duplicate_hash = "legacy-duplicate-hash"
+        legacy.executemany(
+            "INSERT INTO identity(identity_id, api_key_hash, created_at, is_active) "
+            "VALUES (?,?,?,?)",
+            [
+                ("id_inactive", duplicate_hash, "20200101T000000Z", 0),
+                ("id_active", duplicate_hash, "20210101T000000Z", 1),
+                ("id_other", "other-hash", "20220101T000000Z", 1),
+            ],
+        )
+        legacy.commit()
+        legacy.close()
+
+        init_db.main()
+        init_db.main()
+
+        conn = get_conn()
+        primary_key = [
+            row["name"]
+            for row in sorted(
+                (row for row in conn.execute("PRAGMA table_info(identity)") if row["pk"]),
+                key=lambda row: row["pk"],
+            )
+        ]
+        assert primary_key == ["api_key_hash"]
+        indexes = {
+            row["name"]: row["unique"]
+            for row in conn.execute("PRAGMA index_list(identity)")
+        }
+        assert indexes["idx_identity_key_hash"] == 1
+        duplicate_rows = conn.execute(
+            "SELECT identity_id FROM identity WHERE api_key_hash=?",
+            (duplicate_hash,),
+        ).fetchall()
+        assert [row["identity_id"] for row in duplicate_rows] == ["id_active"]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO identity(identity_id, api_key_hash, created_at) "
+                "VALUES (?,?,?)",
+                ("id_conflict", duplicate_hash, "20230101T000000Z"),
+            )
+        conn.rollback()
 
 
 class TestBackwardCompatibility:

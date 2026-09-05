@@ -283,6 +283,58 @@ def test_upsert_blank_api_key_preserves_unreadable_ciphertext(tmp_path, monkeypa
         monkeypatch.delenv("WANWEI_ENCRYPTION_KEY", raising=False)
 
 
+def test_owner_scoped_configs_coexist_and_delete_isolated(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service.upsert_config(
+            provider="custom", api_base="https://a.example/v1", api_key="a-key",
+            model="a-model", enabled=True, notes="a", owner_id="owner-a",
+        )
+        gateway_service.upsert_config(
+            provider="custom", api_base="https://b.example/v1", api_key="b-key",
+            model="b-model", enabled=True, notes="b", owner_id="owner-b",
+        )
+        assert gateway_service.list_configs("owner-a")["items"][0]["model"] == "a-model"
+        assert gateway_service.list_configs("owner-b")["items"][0]["model"] == "b-model"
+        assert gateway_service.delete_config("custom", owner_id="owner-a") is True
+        assert gateway_service.delete_config("custom", owner_id="owner-a") is False
+        assert gateway_service.list_configs("owner-b")["items"][0]["model"] == "b-model"
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
+
+
+def test_ownerless_legacy_config_can_coexist_with_owned_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
+    monkeypatch.setenv("WANWEI_API_KEY", "legacy-owner")
+    try:
+        from backend.app.init_db import main as init_db
+
+        init_db()
+        gateway_service._ensure_config_table()
+        conn = sqlite3.connect(str(tmp_path / "gateway-config.db"))
+        conn.execute(
+            "INSERT INTO model_gateway_configs(provider,owner_id,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("custom", None, "https://legacy.example/v1", None, "legacy-model", 1, "", "now", "now"),
+        )
+        conn.commit()
+        gateway_service.upsert_config(
+            provider="custom", api_base="https://owned.example/v1", api_key="owned-key",
+            model="owned-model", enabled=True, notes="", owner_id="owner-b",
+        )
+        assert gateway_service._get_config("custom")["model"] == "legacy-model"
+        assert gateway_service._get_config("custom", "owner-b")["model"] == "owned-model"
+        rows = conn.execute(
+            "SELECT owner_id FROM model_gateway_configs WHERE provider='custom' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 2
+    finally:
+        monkeypatch.delenv("WANWEI_MEMORY_DB", raising=False)
+        monkeypatch.delenv("WANWEI_API_KEY", raising=False)
+
+
 def test_delete_config_removes_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("WANWEI_MEMORY_DB", str(tmp_path / "gateway-config.db"))
     try:

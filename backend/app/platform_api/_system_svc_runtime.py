@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .deps import WORK_GEARS
 from .guards import audit_safe, require_gear
 from .store import JsonStore
+from ..security.auth import LAN_VERIFY_PATH, issue_lan_session, revoke_lan_sessions
 from ..security.ssrf import SSRFError, resolve_external_url
 from ..soul.ownership import actor_id_for_request, configured_actor_id
 from ..utils.datetime_utils import utc_now_iso
@@ -56,8 +57,11 @@ def _require_device_owner(request: Request) -> None:
     The system service controls one physical desktop (voice history, browser
     rules, emulator jobs and LAN pairing), rather than a tenant-owned object.
     Until a separate device-admin role exists, alternate API principals must
-    not be able to read or mutate that shared state.
+    not be able to read or mutate that shared state. The exact pairing verify
+    route is intentionally token-only and validates its token in the handler.
     """
+    if request.method == 'POST' and request.url.path == LAN_VERIFY_PATH:
+        return
     owner_id = actor_id_for_request(request)
     if owner_id not in {'anonymous', configured_actor_id()}:
         raise HTTPException(status_code=404, detail={'error': 'not_found'})
@@ -1210,6 +1214,7 @@ def emulator_download_cancel(did: str) -> dict:
 
 _LAN_NOTE = '需桌面端切换监听 0.0.0.0 后生效'
 _LAN_TOKEN_TTL_S = 15 * 60  # 配对 token 有效期 15 分钟：短时用途凭证，超时需重新生成
+_LAN_SESSION_TTL_S = 15 * 60  # 配对成功后的 LAN 会话凭证同样短期有效
 
 
 def _lan_state() -> dict:
@@ -1283,26 +1288,30 @@ def lan_enable(req: LanEnableIn) -> dict:
     denied = require_gear(req.gear, action='lan_enable', context={'surface': 'lan'})
     if denied:
         raise HTTPException(status_code=403, detail='device 档默认禁用，设 WANWEI_DEVICE_GEAR_ENABLED=1 后才允许开启局域网暴露面')
-    token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
-    ip = _detect_lan_ip()
-    ip_placeholder = ip is None
-    if ip_placeholder:
-        ip = '192.168.1.100'
-    # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
-    base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
-    _sys_store.set('lan', {
-        'enabled': True,
-        'bind': '0.0.0.0',
-        'token': token,
-        'lan_url': base_lan_url,
-        'port': _LAN_DEFAULT_PORT,
-        'ip': ip,
-        'ip_placeholder': ip_placeholder,
-        'enabled_at': utc_now_iso(),
-        'token_created_at': utc_now_iso(),
-        'token_ttl_s': _LAN_TOKEN_TTL_S,
-        'token_consumed': False,
-    })
+    # Re-enabling starts a new pairing epoch and invalidates every older LAN
+    # session, including sessions issued by a previous enable operation.
+    with _sys_store._lock:
+        revoke_lan_sessions()
+        token = secrets.token_urlsafe(24)  # 约 192-bit 熵的 URL-safe 一次性配对 token
+        ip = _detect_lan_ip()
+        ip_placeholder = ip is None
+        if ip_placeholder:
+            ip = '192.168.1.100'
+        # Issue #130: URL 不再携带明文 token，token 作为独立字段返回
+        base_lan_url = f'http://{ip}:{_LAN_DEFAULT_PORT}/console/#/mobile'
+        _sys_store.set('lan', {
+            'enabled': True,
+            'bind': '0.0.0.0',
+            'token': token,
+            'lan_url': base_lan_url,
+            'port': _LAN_DEFAULT_PORT,
+            'ip': ip,
+            'ip_placeholder': ip_placeholder,
+            'enabled_at': utc_now_iso(),
+            'token_created_at': utc_now_iso(),
+            'token_ttl_s': _LAN_TOKEN_TTL_S,
+            'token_consumed': False,
+        })
     audit_safe('lan_enabled', {'ip': ip, 'port': _LAN_DEFAULT_PORT, 'ip_placeholder': ip_placeholder})
     result = {
         'enabled': True,
@@ -1320,35 +1329,65 @@ def lan_enable(req: LanEnableIn) -> dict:
 
 @router.post('/system/lan/disable')
 def lan_disable() -> dict:
-    lan = _lan_state()
-    lan['enabled'] = False
-    lan['bind'] = '127.0.0.1'
-    lan['lan_url'] = None
-    lan['token'] = None  # 关闭即作废，旧 token 立即失效
-    lan['token_created_at'] = None
-    lan['token_consumed'] = False
-    _sys_store.set('lan', lan)
-    return lan_status()
+    with _sys_store._lock:
+        revoked_sessions = revoke_lan_sessions()
+        lan = _lan_state()
+        lan['enabled'] = False
+        lan['bind'] = '127.0.0.1'
+        lan['lan_url'] = None
+        lan['token'] = None  # 关闭即作废，旧 token 立即失效
+        lan['token_created_at'] = None
+        lan['token_consumed'] = False
+        _sys_store.set('lan', lan)
+        result = lan_status()
+        result['revoked_sessions'] = revoked_sessions
+        return result
 
 
 @router.post('/system/lan/verify')
 def lan_verify(req: LanVerifyIn) -> dict:
-    lan = _lan_state()
-    stored = lan.get('token') or ''
-    if not lan.get('enabled'):
-        return {'ok': False, 'reason': '未启用'}
-    if not stored or not secrets.compare_digest(stored, req.token):
-        return {'ok': False, 'reason': 'token 不匹配'}
-    state = _lan_token_state(lan)
-    if state == 'consumed':
-        return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
-    if state == 'expired':
-        return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
-    # 一次性使用限制：首次验证通过即作废，配对成功以本次 ok:true 为准
-    lan['token_consumed'] = True
-    _sys_store.set('lan', lan)
-    audit_safe('lan_pairing_verified', {'ttl_s': _LAN_TOKEN_TTL_S})
-    return {'ok': True, 'paired': True, 'note': '配对成功；配对 token 为一次性凭证，已即时作废'}
+    def consume(data: dict) -> dict:
+        lan = data.get('lan')
+        if not isinstance(lan, dict) or not lan.get('enabled'):
+            return {'ok': False, 'reason': '未启用'}
+        stored = lan.get('token') or ''
+        if not stored or not secrets.compare_digest(stored, req.token):
+            return {'ok': False, 'reason': 'token 不匹配'}
+        state = _lan_token_state(lan)
+        if state == 'consumed':
+            return {'ok': False, 'reason': 'token 已使用，请重新生成配对'}
+        if state == 'expired':
+            return {'ok': False, 'reason': 'token 已过期，请重新生成配对'}
+
+        # JsonStore.mutate serializes validation and consumption in one process,
+        # so two concurrent requests cannot redeem the same pairing token.
+        lan['token_consumed'] = True
+        data['lan'] = lan
+        return {'ok': True}
+
+    with _sys_store._lock:
+        result = _sys_store.mutate(consume)
+        if not result.get('ok'):
+            return result
+
+        # Burn the one-time token before creating a credential. If session
+        # issuance fails, the token stays consumed instead of leaving an
+        # untracked credential. The lock also serializes disable/re-enable.
+        session_credential, expires_at = issue_lan_session(
+            configured_actor_id(), ttl_seconds=_LAN_SESSION_TTL_S,
+        )
+        audit_safe('lan_pairing_verified', {
+            'token_ttl_s': _LAN_TOKEN_TTL_S,
+            'session_ttl_s': _LAN_SESSION_TTL_S,
+        })
+        return {
+            'ok': True,
+            'paired': True,
+            'session_credential': session_credential,
+            'expires_at': expires_at,
+            'expires_in': _LAN_SESSION_TTL_S,
+            'note': '配对成功；配对 token 已即时作废，会话凭证将在短期内失效',
+        }
 
 
 # ---------------------------------------------------------------------------

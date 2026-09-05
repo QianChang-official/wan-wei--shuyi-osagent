@@ -397,6 +397,65 @@ def test_forget_confirm_uses_materialized_legacy_links(tmp_path):
     )
 
 
+def test_ownerless_forget_ticket_only_configured_actor_can_claim(tmp_path, monkeypatch):
+    client = _client(tmp_path, api_key="owner-a")
+
+    from backend.app import app_runtime as runtime
+    from backend.app.audit.service import record
+    from backend.app.db import get_conn, transaction
+    from backend.app.soul.ownership import actor_id_from_api_key
+
+    owner_a = actor_id_from_api_key("owner-a")
+    owner_b = actor_id_from_api_key("owner-b")
+    # Freeze the compatibility actor while exercising a second authenticated key.
+    monkeypatch.setattr(runtime, "configured_actor_id", lambda: owner_a)
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO memory_capsules(capsule_id,memory_type,payload,lifecycle,trust_score,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("cap_ownerless_ticket", "note", "{}", "active", 0.5, "2024-01-01T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO memory_events(event_id,source_type,scene,content,quality_score,"
+            "sensitivity_level,trust_score,created_at,owner_id,soul_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("event_ownerless_ticket", "user_input", "chat", "legacy ticket", 0.5, "S0", 0.9,
+             "2024-01-01T00:00:00Z", owner_a, "soul_default"),
+        )
+        conn.execute(
+            "INSERT INTO memory_forget_requests(forget_request_id,scope,candidates,status,result,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("fr_ownerless", "assistant", json.dumps([{"event_id": "event_ownerless_ticket"}]),
+             "pending", None, "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO audit_logs(audit_id,event_type,payload,created_at,owner_id) VALUES (?,?,?,?,NULL)",
+            ("audit_ownerless_ticket", "memory_write",
+             json.dumps({"event_id": "event_ownerless_ticket", "capsule_id": "cap_ownerless_ticket"}),
+             "2024-01-02T00:00:00Z"),
+        )
+
+    payload = {
+        "forget_request_id": "fr_ownerless",
+        "confirm": True,
+        "mode": "soft_delete",
+        "event_ids": ["event_ownerless_ticket"],
+        "capsule_ids": [],
+    }
+    denied = client.post("/memory/forget/confirm", json=payload, headers={"x-api-key": "owner-b"})
+    assert denied.status_code == 200
+    assert denied.json()["status"] == "not_found"
+    assert get_conn().execute(
+        "SELECT 1 FROM memory_events WHERE event_id='event_ownerless_ticket'"
+    ).fetchone() is not None
+
+    accepted = client.post("/memory/forget/confirm", json=payload, headers={"x-api-key": "owner-a"})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "forgotten"
+    assert get_conn().execute(
+        "SELECT 1 FROM memory_events WHERE event_id='event_ownerless_ticket'"
+    ).fetchone() is None
+
+
 def test_forget_confirm_missing_legacy_link_still_409(tmp_path):
     """回捞不到的 event 仍在事务外前置 409（语义保持）。"""
     client = _client(tmp_path)
@@ -464,6 +523,74 @@ def test_audit_trace_id_exact_match_no_wildcard_no_nested(isolated_db):
     assert '"trace_id": "t_1"' in rows[0]["payload"]
     # 嵌套同名字段不再被命中
     assert list_logs(50, trace_id="nested_1") == []
+
+
+def test_audit_logs_endpoint_is_owner_scoped_and_keeps_configured_legacy_rows(tmp_path):
+    client = _client(tmp_path, api_key="owner-a")
+
+    from backend.app.audit.service import record
+    from backend.app.db import transaction
+    from backend.app.soul.ownership import actor_id_from_api_key
+
+    owner_a = actor_id_from_api_key("owner-a")
+    owner_b = actor_id_from_api_key("owner-b")
+    record("audit_owner_a", {"trace_id": "owner-scope"}, owner_id=owner_a)
+    record("audit_owner_b", {"trace_id": "owner-scope"}, owner_id=owner_b)
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO audit_logs(audit_id,event_type,payload,created_at,owner_id) "
+            "VALUES (?,?,?,?,NULL)",
+            ("audit_legacy_ownerless", "audit_legacy", json.dumps({"trace_id": "owner-scope"}), "2024-01-01T00:00:00Z"),
+        )
+
+    rows_a = client.get("/audit/logs", headers={"x-api-key": "owner-a"}).json()["items"]
+    assert {row["event_type"] for row in rows_a} == {"audit_owner_a", "audit_legacy"}
+    assert all("owner_id" not in row for row in rows_a)
+
+    rows_b = client.get("/audit/logs", headers={"x-api-key": "owner-b"}).json()["items"]
+    assert {row["event_type"] for row in rows_b} == {"audit_owner_b"}
+
+
+def test_audit_legacy_link_recovery_rejects_foreign_owner_and_soul(isolated_db):
+    from backend.app.app_runtime import _audit_legacy_capsule_links
+    from backend.app.audit.service import record
+    from backend.app.db import get_conn, transaction
+
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO memory_events(event_id,source_type,scene,content,quality_score,"
+            "sensitivity_level,trust_score,created_at,owner_id,soul_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "event_owner_a",
+                "user_input",
+                "chat",
+                "owner-a",
+                0.5,
+                "S0",
+                0.9,
+                "2024-01-01T00:00:00Z",
+                "owner-a",
+                "soul-a",
+            ),
+        )
+    record(
+        "memory_write",
+        {"event_id": "event_owner_a", "capsule_id": "cap-foreign"},
+        owner_id="owner-b",
+    )
+    record(
+        "memory_write",
+        {"event_id": "event_owner_a", "capsule_id": "cap-owner-a"},
+        owner_id="owner-a",
+    )
+
+    assert _audit_legacy_capsule_links(
+        get_conn(), ["event_owner_a"], set(), owner_id="owner-a", soul_id="soul-b"
+    ) == {}
+    assert _audit_legacy_capsule_links(
+        get_conn(), ["event_owner_a"], set(), owner_id="owner-a", soul_id="soul-a"
+    ) == {"event_owner_a": "cap-owner-a"}
 
 
 def test_audit_trace_id_like_fallback_sql_valid_and_escaped(isolated_db, monkeypatch):

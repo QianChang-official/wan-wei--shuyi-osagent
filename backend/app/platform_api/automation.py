@@ -1161,7 +1161,7 @@ def _memory_content_text(cap: dict) -> str:
     return str(content or '')
 
 
-def _fill_memory_result(st: dict, cfg: dict) -> None:
+def _fill_memory_result(st: dict, cfg: dict, owner_id: str) -> None:
     """通过 memory_runtime 真实读写记忆胶囊。
 
     写入前先过 policy_gate.evaluate_policy：reject/quarantine → 步骤失败
@@ -1215,6 +1215,7 @@ def _fill_memory_result(st: dict, cfg: dict) -> None:
                 'verified': False,
                 'verification_method': 'unknown',
             },
+            owner_id=owner_id,
         )
         governance = res.get('governance') or {}
         state = res.get('state') or {}
@@ -1238,7 +1239,7 @@ def _fill_memory_result(st: dict, cfg: dict) -> None:
             st['status'] = 'failed'
             st['detail'] = 'memory.read 需要在 config.key 提供胶囊 id（cap_…）；留空不支持'
             return
-        cap = capsule_store.get_capsule(key)
+        cap = capsule_store.get_capsule(key, owner_id=owner_id)
         if cap is None:
             st['status'] = 'failed'
             st['detail'] = f'记忆不存在或当前作用域不可读：{key}'
@@ -1320,12 +1321,14 @@ def _fill_condition_result(st: dict, cfg: dict) -> None:
     )
 
 
-async def _agent_complete(task: str) -> tuple[str, str]:
+async def _agent_complete(
+    task: str, owner_id: str | None = None,
+) -> tuple[str, str]:
     """调用模型网关真实补全（复用 agents._try_gateway 回退链，含
     get_active_provider 兜底）。网关不可用/未配置/调用失败 → 抛
     RuntimeError 由步骤统一标 failed，绝不回退假文本。"""
     from .agents import _try_gateway  # noqa: SLF001 —— 复用既有回退链
-    text, provider_used = await _try_gateway(task[:800])
+    text, provider_used = await _try_gateway(task[:800], owner_id=owner_id)
     if not text:
         raise RuntimeError(
             '模型网关不可用（未配置可用 provider 或本次调用失败），agent 步骤不回退模拟文本'
@@ -1333,7 +1336,9 @@ async def _agent_complete(task: str) -> tuple[str, str]:
     return text, (provider_used or 'unknown')
 
 
-async def _exec_step_real(step: dict, index: int, gear: Optional[str]) -> dict:
+async def _exec_step_real(
+    step: dict, index: int, gear: Optional[str], owner_id: str,
+) -> dict:
     """单个步骤的真实执行器。门禁前置（PermissionError → failed）；
     其余任何异常都终结为 failed + 原因，绝不静默成功。"""
     stype = step.get('type') if step.get('type') in STEP_TYPES else 'agent'
@@ -1355,13 +1360,13 @@ async def _exec_step_real(step: dict, index: int, gear: Optional[str]) -> dict:
         elif stype == 'http':
             await asyncio.to_thread(_fill_http_result, st, cfg)
         elif stype == 'memory':
-            await asyncio.to_thread(_fill_memory_result, st, cfg)
+            await asyncio.to_thread(_fill_memory_result, st, cfg, owner_id)
         elif stype == 'condition':
             _fill_condition_result(st, cfg)
         else:  # agent
             task = str(cfg.get('task') or cfg.get('prompt') or st['name'])
             st['would_run'] = task
-            text, provider_used = await _agent_complete(task)
+            text, provider_used = await _agent_complete(task, owner_id=owner_id)
             st['output'] = text
             st['provider'] = provider_used
             st['detail'] = f'真实调用模型网关完成（provider={provider_used}）'
@@ -1383,6 +1388,7 @@ async def _execute_run_real(run_id: str, flow: dict) -> None:
     if run is None:
         return
     fid = str(flow.get('id') or '')
+    owner_id = str(run.get('owner_id') or configured_actor_id())
     gear = flow.get('gear')
     steps = flow.get('steps') or []
     results: list[dict] = []
@@ -1390,7 +1396,7 @@ async def _execute_run_real(run_id: str, flow: dict) -> None:
     stopped_at: Optional[int] = None
     try:
         for i, step in enumerate(steps):
-            st = await _exec_step_real(step, i, gear)
+            st = await _exec_step_real(step, i, gear, owner_id)
             st['finished_at'] = _now_iso()
             results.append(st)
             run['step_results'] = results

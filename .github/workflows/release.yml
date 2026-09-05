@@ -22,13 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - name: Resolve release metadata
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          if [[ "$TAG" != v* ]]; then
-            echo "Release tag must start with v" >&2
+          TAG="$REQUESTED_TAG"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release tag must be a v-prefixed semantic version" >&2
             exit 1
           fi
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
@@ -41,12 +43,12 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
       - name: Validate version and release prerequisites
-        run: python scripts/release_preflight.py --tag "${{ env.RELEASE_TAG }}"
+        run: python scripts/release_preflight.py --tag "$RELEASE_TAG"
       - uses: actions/setup-node@v4
         with:
           node-version: "22.23.2"
           cache: npm
-          cache-dependency-path: |+
+          cache-dependency-path: |
             frontend/console-vue/package-lock.json
             desktop/package-lock.json
       - run: python -m pip install -r backend/requirements-dev.txt
@@ -126,13 +128,12 @@ jobs:
       - name: Build desktop RPM / DEB (online-deps installer)
         working-directory: desktop
         run: |
-          npm ci
           bash scripts/build-linux.sh all
           ls -la release/
       - name: Collect desktop package artifacts
         run: |
           mkdir -p desktop-artifacts
-          cp desktop/release/*.rpm desktop/release/*.deb desktop-artifacts/ 2>/dev/null || true
+          cp desktop/release/*.rpm desktop/release/*.deb desktop-artifacts/
           ls -la desktop-artifacts/
       - name: Build source artifacts
         shell: bash

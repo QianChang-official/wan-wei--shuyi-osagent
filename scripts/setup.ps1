@@ -8,7 +8,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root 'backend'
 $frontend = Join-Path $root 'frontend\console-vue'
+$frontendIndex = Join-Path $frontend 'dist\index.html'
 $venvPython = Join-Path $backend '.venv\Scripts\python.exe'
+
+if ($SkipFrontendBuild -and -not (Test-Path -LiteralPath $frontendIndex -PathType Leaf)) {
+    throw 'SkipFrontendBuild requires an existing frontend\console-vue\dist\index.html. Run setup.ps1 without -SkipFrontendBuild to create it.'
+}
 
 $python = (Get-Command python -ErrorAction Stop).Source
 Get-Command node -ErrorAction Stop | Out-Null

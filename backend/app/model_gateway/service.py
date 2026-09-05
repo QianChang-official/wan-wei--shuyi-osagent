@@ -62,19 +62,18 @@ def local_llama_allowlist() -> list[str] | None:
     return extra_allowed_hosts() or None
 
 
-def active_chat_provider() -> dict | None:
-    """解析模型接入舱中用户显式启用的云端 provider（供 /soul/chat 消费）。
+def active_chat_provider(owner_id: str | None = None) -> dict | None:
+    """解析指定主体显式启用的云端 provider（供 /soul/chat 消费）。
 
-    返回 {pid, base_url, model, api_key} 或 None。平台舱不可用时如实返回
-    None，由调用方回退 WANWEI_OPENAI_COMPATIBLE_* 本地端点；绝不在本函数内
-    伪造可用配置。惰性导入避免模块加载期循环依赖。
+    ``owner_id`` 可省略以兼容内部调用，此时使用配置主体；HTTP 调用方应始终
+    传入当前请求主体，避免跨主体选择凭据。
     """
     try:
         from ..platform_api.providers import get_active_provider
     except ImportError:  # pragma: no cover - 平台舱缺失的部署形态
         logger.warning("platform providers module unavailable; no active chat provider")
         return None
-    return get_active_provider()
+    return get_active_provider(owner_id=owner_id)
 
 
 OPENAI_COMPATIBLE_TIMEOUT_S = 20
@@ -268,12 +267,14 @@ PROVIDERS: list[ModelProvider] = _build_providers()
 
 
 def _ensure_config_table() -> None:
+    """Create/migrate the legacy model gateway table to owner-scoped rows."""
     conn = get_conn()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS model_gateway_configs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider TEXT NOT NULL UNIQUE,
+            provider TEXT NOT NULL,
+            owner_id TEXT,
             api_base TEXT NOT NULL,
             api_key_encrypted TEXT,
             model TEXT NOT NULL,
@@ -284,7 +285,91 @@ def _ensure_config_table() -> None:
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(model_gateway_configs)")}
+    # ALTER TABLE is insufficient for the original provider UNIQUE constraint:
+    # it would still prevent two owners from configuring the same provider.
+    unique_provider = False
+    for index in conn.execute("PRAGMA index_list(model_gateway_configs)").fetchall():
+        # PRAGMA index_list: seq, name, unique, origin, partial.  The
+        # ownerless partial index created below must not trigger migration on
+        # every subsequent request.
+        if not index[2] or (len(index) > 4 and index[4]):
+            continue
+        index_columns = [row[2] for row in conn.execute(f"PRAGMA index_info({index[1]!r})")]
+        if index_columns == ["provider"]:
+            unique_provider = True
+            break
+    if "owner_id" not in columns or unique_provider:
+        conn.execute("ALTER TABLE model_gateway_configs RENAME TO model_gateway_configs_legacy")
+        conn.execute(
+            """
+            CREATE TABLE model_gateway_configs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                owner_id TEXT,
+                api_base TEXT NOT NULL,
+                api_key_encrypted TEXT,
+                model TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        legacy_columns = {row[1] for row in conn.execute("PRAGMA table_info(model_gateway_configs_legacy)")}
+        owner_expr = "owner_id" if "owner_id" in legacy_columns else "NULL"
+        conn.execute(
+            f"""
+            INSERT INTO model_gateway_configs(
+                id,provider,owner_id,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
+            )
+            SELECT id,provider,{owner_expr},api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
+            FROM model_gateway_configs_legacy
+            """
+        )
+        conn.execute("DROP TABLE model_gateway_configs_legacy")
+    # A normal composite UNIQUE index treats NULL as distinct.  Partial
+    # indexes enforce uniqueness for both scoped rows and the single legacy
+    # ownerless row, while allowing an ownerless row beside an owned row.
+    conn.execute("DROP INDEX IF EXISTS uq_model_gateway_owner_provider")
+    conn.execute(
+        "DELETE FROM model_gateway_configs WHERE owner_id IS NULL AND id NOT IN "
+        "(SELECT MIN(id) FROM model_gateway_configs WHERE owner_id IS NULL GROUP BY provider)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_gateway_owner_provider "
+        "ON model_gateway_configs(owner_id, provider) WHERE owner_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_gateway_legacy_provider "
+        "ON model_gateway_configs(provider) WHERE owner_id IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_model_gateway_owner "
+        "ON model_gateway_configs(owner_id, updated_at)"
+    )
     conn.commit()
+
+
+def _legacy_owner_allowed(owner_id: str) -> bool:
+    try:
+        from ..soul.ownership import configured_actor_id
+
+        return owner_id == configured_actor_id()
+    except Exception:
+        return False
+
+
+def _effective_owner(owner_id: str | None) -> str | None:
+    if owner_id is not None:
+        return owner_id
+    try:
+        from ..soul.ownership import configured_actor_id
+
+        return configured_actor_id()
+    except Exception:
+        return None
 
 
 def list_providers() -> dict:
@@ -311,52 +396,95 @@ def _decode_api_key(api_key_encrypted: str | None) -> str:
         return ""
 
 
-def _get_config(provider: str) -> dict | None:
-    try:
-        row = get_conn().execute(
+def _get_config(provider: str, owner_id: str | None = None) -> dict | None:
+    owner = _effective_owner(owner_id)
+    _ensure_config_table()
+    with transaction(immediate=True) as tx:
+        if owner is not None and _legacy_owner_allowed(owner):
+            row = tx.execute(
+                """
+                SELECT provider,api_base,api_key_encrypted,model,enabled,notes,owner_id
+                FROM model_gateway_configs
+                WHERE provider=? AND (owner_id=? OR owner_id IS NULL)
+                ORDER BY CASE WHEN owner_id=? THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                (provider, owner, owner),
+            ).fetchone()
+        else:
+            row = tx.execute(
+                """
+                SELECT provider,api_base,api_key_encrypted,model,enabled,notes,owner_id
+                FROM model_gateway_configs
+                WHERE provider=? AND owner_id=?
+                LIMIT 1
+                """,
+                (provider, owner),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["owner_id"] is None and owner is not None and _legacy_owner_allowed(owner):
+            # Atomically claim the legacy row only when this owner has no
+            # scoped row.  A different owner may already have its own row.
+            tx.execute(
+                """
+                UPDATE model_gateway_configs SET owner_id=?
+                WHERE provider=? AND owner_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM model_gateway_configs
+                      WHERE provider=? AND owner_id=?
+                  )
+                """,
+                (owner, provider, provider, owner),
+            )
+            row = tx.execute(
+                """
+                SELECT provider,api_base,api_key_encrypted,model,enabled,notes,owner_id
+                FROM model_gateway_configs WHERE provider=? AND owner_id=?
+                LIMIT 1
+                """,
+                (provider, owner),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "provider": row["provider"],
+            "api_base": row["api_base"],
+            "api_key": _decode_api_key(row["api_key_encrypted"]),
+            "api_key_encrypted": row["api_key_encrypted"],
+            "model": row["model"],
+            "enabled": bool(row["enabled"]),
+            "notes": row["notes"] or "",
+        }
+
+
+def list_configs(owner_id: str | None = None) -> dict:
+    owner = _effective_owner(owner_id)
+    _ensure_config_table()
+    with transaction(immediate=True) as tx:
+        # Bind each ownerless legacy row to the configured migration actor only
+        # when that actor has no scoped row.  This is atomic and leaves an
+        # ownerless row beside other owners' scoped rows when they already
+        # coexist.
+        if owner is not None and _legacy_owner_allowed(owner):
+            tx.execute(
+                """
+                UPDATE model_gateway_configs SET owner_id=?
+                WHERE owner_id IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM model_gateway_configs existing
+                    WHERE existing.provider=model_gateway_configs.provider
+                      AND existing.owner_id=?
+                )
+                """,
+                (owner, owner),
+            )
+        rows = tx.execute(
             """
-            SELECT provider,api_base,api_key_encrypted,model,enabled,notes
-            FROM model_gateway_configs
-            WHERE provider=?
+            SELECT provider,api_base,model,enabled,notes,owner_id
+            FROM model_gateway_configs WHERE owner_id=?
+            ORDER BY provider ASC
             """,
-            (provider,),
-        ).fetchone()
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc):
-            raise
-        return None
-    if row is None:
-        return None
-    return {
-        "provider": row["provider"],
-        "api_base": row["api_base"],
-        "api_key": _decode_api_key(row["api_key_encrypted"]),
-        "api_key_encrypted": row["api_key_encrypted"],
-        "model": row["model"],
-        "enabled": bool(row["enabled"]),
-        "notes": row["notes"] or "",
-    }
-
-
-def list_configs() -> dict:
-    try:
-        rows = get_conn().execute(
-            """
-            SELECT provider,api_base,model,enabled,notes
-            FROM model_gateway_configs
-            ORDER BY provider ASC
-            """
-        ).fetchall()
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc):
-            raise
-        _ensure_config_table()
-        rows = get_conn().execute(
-            """
-            SELECT provider,api_base,model,enabled,notes
-            FROM model_gateway_configs
-            ORDER BY provider ASC
-            """
+            (owner,),
         ).fetchall()
     return {
         "items": [
@@ -379,6 +507,7 @@ def upsert_config(
     model: str,
     enabled: bool,
     notes: str,
+    owner_id: str | None = None,
 ) -> dict:
     # Reject invalid/SSRF-prone endpoints before persisting configuration.
     # 写入时校验只做「语法 + 主机黑名单」的静态检查（validate_external_url
@@ -396,27 +525,30 @@ def upsert_config(
     if _hostname_is_blocked(_host):
         raise SSRFError(f"Host '{_host}' is in SSRF block list")
     _ensure_config_table()
+    owner = _effective_owner(owner_id)
     now = utc_now_iso()
-    existing = _get_config(provider)
+    existing = _get_config(provider, owner)
     encoded_key = _encode_api_key(api_key) if api_key else (
         existing["api_key_encrypted"] if existing else None
     )
-    with transaction() as conn:
-        conn.execute(
+    with transaction(immediate=True) as conn:
+        updated = conn.execute(
             """
-            INSERT INTO model_gateway_configs(
-                provider,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
-            ) VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(provider) DO UPDATE SET
-                api_base=excluded.api_base,
-                api_key_encrypted=excluded.api_key_encrypted,
-                model=excluded.model,
-                enabled=excluded.enabled,
-                notes=excluded.notes,
-                updated_at=excluded.updated_at
+            UPDATE model_gateway_configs
+            SET api_base=?, api_key_encrypted=?, model=?, enabled=?, notes=?, updated_at=?
+            WHERE provider=? AND owner_id IS ?
             """,
-            (provider, api_base, encoded_key, model, int(enabled), notes, now, now),
-        )
+            (api_base, encoded_key, model, int(enabled), notes, now, provider, owner),
+        ).rowcount
+        if not updated:
+            conn.execute(
+                """
+                INSERT INTO model_gateway_configs(
+                    provider,owner_id,api_base,api_key_encrypted,model,enabled,notes,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (provider, owner, api_base, encoded_key, model, int(enabled), notes, now, now),
+            )
     return ModelGatewayConfigOut(
         provider=provider,
         api_base=api_base,
@@ -426,17 +558,25 @@ def upsert_config(
     ).model_dump()
 
 
-def delete_config(provider: str) -> bool:
+def delete_config(provider: str, owner_id: str | None = None) -> bool:
     _ensure_config_table()
-    with transaction() as conn:
+    owner = _effective_owner(owner_id)
+    with transaction(immediate=True) as conn:
         deleted = conn.execute(
-            "DELETE FROM model_gateway_configs WHERE provider=?", (provider,)
+            "DELETE FROM model_gateway_configs WHERE provider=? AND owner_id=?",
+            (provider, owner),
         ).rowcount
+        if not deleted and owner is not None and _legacy_owner_allowed(owner):
+            deleted = conn.execute(
+                "DELETE FROM model_gateway_configs WHERE provider=? AND owner_id IS NULL "
+                "AND NOT EXISTS(SELECT 1 FROM model_gateway_configs WHERE provider=? AND owner_id=?)",
+                (provider, provider, owner),
+            ).rowcount
     return bool(deleted)
 
 
-def _provider_config(provider_name: str) -> dict | None:
-    configured = _get_config(provider_name)
+def _provider_config(provider_name: str, owner_id: str | None = None) -> dict | None:
+    configured = _get_config(provider_name, owner_id)
     if configured is not None:
         return configured
     provider = next((item for item in _build_providers() if item.provider == provider_name), None)
@@ -910,9 +1050,18 @@ class _ProviderTestContext:
 
 def _prepare_provider_test(
     req: ModelGatewayTestIn,
+    owner_id: str | None = None,
 ) -> ModelGatewayTestOut | _ProviderTestContext:
-    db_config = _get_config(req.provider)
-    provider = db_config or _provider_config(req.provider)
+    db_config = (
+        _get_config(req.provider, owner_id)
+        if owner_id is not None
+        else _get_config(req.provider)
+    )
+    provider = (
+        db_config
+        or (_provider_config(req.provider, owner_id) if owner_id is not None
+            else _provider_config(req.provider))
+    )
     model = req.model or (provider["model"] if provider else "unknown")
     request_id = "mgw_" + uuid.uuid4().hex[:12]
     if provider is None:
@@ -1054,9 +1203,11 @@ def probe_openai_compatible(
     )
 
 
-def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
+def run_provider_test(
+    req: ModelGatewayTestIn, owner_id: str | None = None,
+) -> ModelGatewayTestOut:
     """Run a provider test synchronously for existing direct callers."""
-    prepared = _prepare_provider_test(req)
+    prepared = _prepare_provider_test(req, owner_id)
     if isinstance(prepared, ModelGatewayTestOut):
         return prepared
     provider = prepared.provider
@@ -1077,9 +1228,11 @@ def run_provider_test(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
         return _smoke_failure_output(prepared, exc)
 
 
-async def run_provider_test_async(req: ModelGatewayTestIn) -> ModelGatewayTestOut:
+async def run_provider_test_async(
+    req: ModelGatewayTestIn, owner_id: str | None = None,
+) -> ModelGatewayTestOut:
     """Run a provider test without blocking FastAPI's default worker pool."""
-    prepared = _prepare_provider_test(req)
+    prepared = _prepare_provider_test(req, owner_id)
     if isinstance(prepared, ModelGatewayTestOut):
         return prepared
     provider = prepared.provider

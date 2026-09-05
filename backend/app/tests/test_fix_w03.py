@@ -482,6 +482,32 @@ def test_lan_token_expired_after_ttl(tmp_path, monkeypatch):
     assert client.get("/platform/system/lan/status", headers=_H).json()["token_state"] == "expired"
 
 
+def test_lan_session_is_scoped_and_revoked_on_disable(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    monkeypatch.setenv("WANWEI_DEVICE_GEAR_ENABLED", "1")
+    enabled = client.post("/platform/system/lan/enable", json={"gear": "device"}, headers=_H)
+    token = enabled.json()["token"]
+
+    verified = client.post("/platform/system/lan/verify", json={"token": token})
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    credential = body["session_credential"]
+    assert credential.startswith("lan_")
+    assert credential != token
+    assert credential != "test-key"
+    assert body["expires_in"] > 0
+
+    session_headers = {"x-api-key": credential}
+    assert client.get("/platform/agents/runs", headers=session_headers).status_code == 200
+    # LAN credentials are for the mobile companion only, not device settings.
+    blocked = client.get("/platform/system/settings", headers=session_headers)
+    assert blocked.status_code == 403, blocked.text
+
+    disabled = client.post("/platform/system/lan/disable", headers=_H)
+    assert disabled.status_code == 200, disabled.text
+    assert client.get("/platform/agents/runs", headers=session_headers).status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # 02-#5 guards：root_path 目录白名单 + device 档放行审计
 # ---------------------------------------------------------------------------

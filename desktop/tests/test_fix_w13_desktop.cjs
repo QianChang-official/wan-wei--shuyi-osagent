@@ -378,6 +378,119 @@ async function t(name, fn) {
     assert.strictEqual(lossy.encoding, 'utf8-lossy', '非法 UTF-8 应回退并标注');
   });
 
+  await t('冷启动清理陈旧 LAN 状态且失败时不创建窗口', () => {
+    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
+    assert.ok(src.includes("method: 'POST'"), '冷启动清理必须使用 POST');
+    assert.ok(src.includes("/platform/system/lan/disable"), '应调用 LAN disable 接口');
+    assert.ok(src.includes("req.setHeader('X-API-Key', apiKey)"), '请求必须认证');
+    assert.ok(src.includes('setTimeout(fail, 5000)'), '请求必须有超时上限');
+    assert.ok(src.includes("data.enabled !== false") && src.includes("data.bind !== '127.0.0.1'"),
+      '必须确认响应已关闭 LAN 并绑定 loopback');
+    assert.ok(src.includes('data.token_set !== false') && src.includes('data.revoked_sessions'),
+      '必须确认旧会话已撤销');
+    const boot = src.indexOf('await startBackend(py);');
+    const reconcile = src.indexOf('await reconcileLanState();', boot);
+    const window = src.indexOf('createWindow();', reconcile);
+    assert.ok(boot >= 0 && reconcile > boot && window > reconcile,
+      '冷启动应在后端启动后、创建窗口前完成清理');
+    assert.match(src, /logLine\('boot failed: ' \+ err.message\);\r?\n      await stopBackend\(\);/,
+      '清理失败必须停止后端并走启动失败路径');
+    assert.strictEqual((src.match(/await reconcileLanState\(\);/g) || []).length, 1,
+      '不得在 LAN toggle restart 路径重复清理');
+  });
+
+  await t('Cold-start LAN reconciliation validates responses and bounds failures', async () => {
+    const vm = require('node:vm');
+    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
+    const helper = src.slice(src.indexOf('function reconcileLanState()'), src.indexOf('function stopBackend()'));
+    const disabled = { enabled: false, bind: '127.0.0.1', token_set: false, revoked_sessions: 2 };
+    for (const scenario of ['success', 'status', 'redirect', 'json', 'null', 'enabled', 'bind',
+      'token', 'revocation', 'oversize', 'request-error', 'response-error', 'aborted', 'timeout', 'setup-error']) {
+      let timeout;
+      let cleared = false;
+      let aborted = false;
+      const req = new EventEmitter();
+      const res = new EventEmitter();
+      const headers = {};
+      req.setHeader = (name, value) => { headers[name] = value; };
+      req.abort = () => { aborted = true; req.emit('abort'); };
+      req.end = () => {
+        if (scenario === 'timeout') return;
+        if (scenario === 'request-error') { req.emit('error', new Error(TEST_API_KEY)); return; }
+        res.statusCode = scenario === 'status' ? 401 : scenario === 'redirect' ? 302 : 200;
+        req.emit('response', res);
+        if (scenario === 'response-error') { res.emit('error', new Error(TEST_API_KEY)); return; }
+        if (scenario === 'aborted') { res.emit('aborted'); return; }
+        const data = { ...disabled };
+        if (scenario === 'enabled') data.enabled = true;
+        if (scenario === 'bind') data.bind = '0.0.0.0';
+        if (scenario === 'token') data.token_set = true;
+        if (scenario === 'revocation') delete data.revoked_sessions;
+        const body = scenario === 'json' ? TEST_API_KEY : scenario === 'null' ? 'null'
+          : scenario === 'oversize' ? ' '.repeat(8193) : JSON.stringify(data);
+        res.emit('data', Buffer.from(body.slice(0, 7)));
+        res.emit('data', Buffer.from(body.slice(7)));
+        res.emit('end');
+      };
+      const context = vm.createContext({
+        Buffer, backendPort: 8123, apiKey: TEST_API_KEY,
+        net: { request: (options) => {
+          assert.strictEqual(options.method, 'POST');
+          assert.strictEqual(options.url, 'http://127.0.0.1:8123/platform/system/lan/disable');
+          assert.strictEqual(options.redirect, 'error');
+          if (scenario === 'setup-error') throw new Error(TEST_API_KEY);
+          return req;
+        } },
+        setTimeout: (fn, ms) => { assert.strictEqual(ms, 5000); timeout = fn; return 1; },
+        clearTimeout: (id) => { assert.strictEqual(id, 1); cleared = true; },
+      });
+      const pending = vm.runInContext(`${helper}\nreconcileLanState()`, context);
+      if (scenario === 'timeout') timeout();
+      if (scenario === 'success') {
+        await pending;
+        assert.strictEqual(aborted, false);
+      } else {
+        await assert.rejects(pending, (err) => err.message === 'Cold-start LAN reconciliation failed', scenario);
+        assert.strictEqual(aborted, scenario !== 'setup-error', scenario);
+      }
+      if (scenario !== 'setup-error') assert.strictEqual(headers['X-API-Key'], TEST_API_KEY);
+      assert.strictEqual(cleared, true, scenario);
+    }
+  });
+
+  await t('Cold-start UI waits for reconciliation and stays closed on failure', async () => {
+    const vm = require('node:vm');
+    const src = fs.readFileSync(path.join(SRC_DIR, 'main.js'), 'utf8');
+    const boot = src.slice(src.indexOf('    try {', src.indexOf('app.whenReady()')),
+      src.indexOf('\n  });', src.indexOf('app.whenReady()')));
+    for (const succeeds of [true, false]) {
+      const calls = [];
+      let settle;
+      const pending = new Promise((resolve, reject) => {
+        settle = () => succeeds ? resolve() : reject(new Error('reconciliation failed'));
+      });
+      const context = vm.createContext({
+        APP_NAME: 'test', backendPort: 8123, backendPython: '',
+        ensureBackendEnv: async () => 'python',
+        startBackend: async (...args) => { assert.deepStrictEqual(args, ['python']); calls.push('start'); },
+        reconcileLanState: () => { calls.push('reconcile'); return pending; },
+        stopBackend: async () => { calls.push('stop'); },
+        logLine: () => {}, dialog: { showErrorBox: () => calls.push('error') },
+        app: { exit: (code) => { assert.strictEqual(code, 1); calls.push('exit'); } },
+        createWindow: () => calls.push('window'), createTray: () => calls.push('tray'),
+        notify: () => calls.push('notify'),
+      });
+      const running = vm.runInContext(`(async () => { ${boot} })()`, context);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepStrictEqual(calls, ['start', 'reconcile']);
+      settle();
+      await running;
+      assert.deepStrictEqual(calls, succeeds
+        ? ['start', 'reconcile', 'window', 'tray', 'notify']
+        : ['start', 'reconcile', 'stop', 'error', 'exit']);
+    }
+  });
+
   let failed = 0;
   for (const [status, name] of results) {
     if (status === 'FAIL') failed += 1;

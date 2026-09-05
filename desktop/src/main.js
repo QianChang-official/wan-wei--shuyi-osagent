@@ -307,6 +307,11 @@ function startBackend(python, host = '127.0.0.1') {
       ...process.env,
       WANWEI_HOST: host,
       WANWEI_PORT: String(backendPort),
+      // Host checks are fail-closed in the backend. LAN mode accepts only the
+      // actual selected LAN IPv4 plus loopback; local mode accepts loopback.
+      WANWEI_ALLOWED_HOSTS: host === '0.0.0.0'
+        ? ['127.0.0.1', 'localhost', '::1', ...lanIPv4s()].filter(Boolean).join(',')
+        : '127.0.0.1,localhost,::1',
       WANWEI_API_KEY: apiKey,
       WANWEI_ENCRYPTION_KEY: process.env.WANWEI_ENCRYPTION_KEY || '',
       WANWEI_MEMORY_DB: path.join(RUNTIME_DIR, 'memory.db'),
@@ -354,6 +359,59 @@ function startBackend(python, host = '127.0.0.1') {
   });
 }
 
+/** Cold boot only: revoke stale LAN sessions before exposing the console. */
+function reconcileLanState() {
+  return new Promise((resolve, reject) => {
+    let req;
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Never include credentials, response bodies or transport errors in logs.
+      reject(new Error('Cold-start LAN reconciliation failed'));
+      try { if (req) req.abort(); } catch { /* already closed */ }
+    };
+    const timer = setTimeout(fail, 5000);
+    try {
+      req = net.request({
+        method: 'POST',
+        url: `http://127.0.0.1:${backendPort}/platform/system/lan/disable`,
+        redirect: 'error',
+      });
+      req.on('error', fail);
+      req.on('abort', fail);
+      req.setHeader('X-API-Key', apiKey);
+      req.on('response', (res) => {
+        const chunks = [];
+        let bytes = 0;
+        res.on('error', fail);
+        res.on('aborted', fail);
+        res.on('data', (chunk) => {
+          if (settled) return;
+          bytes += chunk.length;
+          if (bytes > 8192) { fail(); return; }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          if (settled) return;
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            if (!data || data.enabled !== false || data.bind !== '127.0.0.1'
+                || data.token_set !== false || !Number.isInteger(data.revoked_sessions)
+                || data.revoked_sessions < 0) { fail(); return; }
+          } catch { fail(); return; }
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        });
+        if (res.statusCode !== 200) fail();
+      });
+      req.end();
+    } catch { fail(); }
+  });
+}
+
 /** 停止后端；返回 Promise，等进程真正退出（5s 不退则 SIGKILL），供 LAN 重启与退出流程复用 */
 function stopBackend() {
   const proc = backendProc;
@@ -383,13 +441,20 @@ async function restartBackend(host) {
 }
 
 /** 取本机局域网 IPv4（优先私有网段 10./192.168./172.16-31.） */
-function firstLanIPv4() {
+function lanIPv4s() {
   const candidates = [];
   for (const list of Object.values(os.networkInterfaces())) {
     for (const it of list || []) {
-      if (it && it.family === 'IPv4' && !it.internal) candidates.push(it.address);
+      if (it && it.family === 'IPv4' && !it.internal && !candidates.includes(it.address)) {
+        candidates.push(it.address);
+      }
     }
   }
+  return candidates;
+}
+
+function firstLanIPv4() {
+  const candidates = lanIPv4s();
   const priv = candidates.find((a) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a));
   return priv || candidates[0] || '';
 }
@@ -856,8 +921,10 @@ if (!gotLock) {
       const py = await ensureBackendEnv((t, b) => notify(t, b));
       backendPython = py;
       await startBackend(py);
+      await reconcileLanState();
     } catch (err) {
       logLine('boot failed: ' + err.message);
+      await stopBackend();
       dialog.showErrorBox(APP_NAME + ' 启动失败', err.message);
       app.exit(1);
       return;

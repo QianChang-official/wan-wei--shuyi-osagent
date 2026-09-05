@@ -37,7 +37,9 @@ pydantic_core==2.46.4
 Pygments==2.20.0
 pyparsing==3.3.2
 py-serializable==2.1.0
+python-multipart==0.0.31
 pytest==9.1.1
+reportlab==5.0.0
 requests==2.34.2
 rich==15.0.0
 sortedcontainers==2.4.0

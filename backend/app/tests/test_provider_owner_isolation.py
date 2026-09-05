@@ -126,3 +126,32 @@ def test_ownerless_legacy_provider_rows_bind_to_compatible_actor(client):
     openai_b = next(item for item in foreign.json() if item["pid"] == "openai")
     assert openai_b["configured"] is False
     assert client.get("/platform/providers/aux", headers=HEADERS_B).json()["model"] == ""
+
+
+def test_same_provider_can_have_legacy_and_scoped_records(client):
+    from backend.app.platform_api import providers as providers_mod
+
+    providers_mod._store.set(
+        "openai",
+        {"enabled": True, "model": "legacy", "api_key_encrypted": ""},
+    )
+    configured = client.put(
+        "/platform/providers/configs/openai",
+        json={"model": "owner-b", "enabled": True},
+        headers=HEADERS_B,
+    )
+    assert configured.status_code == 200
+    assert configured.json()["model"] == "owner-b"
+
+    listed_a = client.get("/platform/providers/configs", headers=HEADERS_A)
+    listed_b = client.get("/platform/providers/configs", headers=HEADERS_B)
+    assert next(item for item in listed_a.json() if item["pid"] == "openai")["model"] == "legacy"
+    assert next(item for item in listed_b.json() if item["pid"] == "openai")["model"] == "owner-b"
+    raw = providers_mod._store.all()
+    assert raw["openai"]["model"] == "legacy"
+    assert any(
+        isinstance(value, dict)
+        and value.get("openai", {}).get("model") == "owner-b"
+        for key, value in raw.items()
+        if key.startswith(providers_mod._OWNER_KEY_PREFIX)
+    )
