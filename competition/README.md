@@ -17,5 +17,6 @@
 5. [麒麟验证](05-kylin-validation.md)
 6. [演示场景](06-demo-scenarios.md)
 7. [路线图与边界](07-roadmap.md)
+8. [效果演示视频分镜脚本](08-demo-video-script.md)
 
 `docs/` 保存设计、实现与测试的技术原文（`INNOVATIONS.md`、`BENCHMARK.md`、`MemoryOS-记忆治理层.md` 等），与本目录互相链接但不重复替代。
