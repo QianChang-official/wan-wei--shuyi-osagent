@@ -263,7 +263,7 @@ bash scripts/run_dev.sh
 
 ## 竞赛与研究资源
 
-**竞赛交付**（挑战杯揭榜挂帅 · 银河麒麟赛题）：[赛题总览](competition/README.md) · [问题定义](competition/01-problem.md) · [记忆架构](competition/03-memory-architecture.md) · [基准评测](competition/04-benchmark.md) · [麒麟验收](competition/05-kylin-validation.md) · [答辩材料](competition/挑战杯答辩材料.md)
+**竞赛交付**（挑战杯揭榜挂帅 · 银河麒麟赛题）：[评审报告](competition/评审报告.md)（面向评委的主文档，按打分表顺序组织）· [赛题总览](competition/README.md) · [问题定义](competition/01-problem.md) · [记忆架构](competition/03-memory-architecture.md) · [基准评测](competition/04-benchmark.md) · [麒麟验收](competition/05-kylin-validation.md) · [答辩材料](competition/挑战杯答辩材料.md)
 
 **文档中心**：[七项创新与证据](docs/INNOVATIONS.md) · [MemoryOS 记忆治理层](docs/MemoryOS-记忆治理层.md) · [万枢平台架构设计](docs/万枢平台-架构设计.md) · [安全编码规范](docs/代码审查规范与安全编码标准.md)；另有 49 份设计与归档文档见 [文档中心合集](文档中心_DOCUMENTATION_HUB.md)。
 

@@ -1,33 +1,46 @@
 # 宛委·枢忆 OSAgent 2.0 思维导图
 
+> 2026-09 重画：与 main 分支实际模块（backend/app 下 memory_runtime / memoryos / kylin_sdk 等）
+> 及近期已合并 PR（#196/#197/#200/#203/#205/#214/#215）一一对应。
+> 图片由 `render_mindmap.py` 生成（微软雅黑，评委可读字号）：`python assets/mindmap/render_mindmap.py`
+
+![全景架构](wanwei_shuyi_osagent_2_0_mindmap.png)
+
 ```mermaid
 mindmap
   root((宛委·枢忆 OSAgent 2.0))
-    项目定位
-      麒麟 OS Agent
-      偏好+知识双记忆
-      端侧轻量化
-    记忆演化
-      TTME-style 扩展
-      情景/语义/经验记忆
-      MASE-style 反馈
-    语义压缩
-      SimpleMem-style
-      结构化压缩
-      意图感知检索
-    安全防御
-      记忆投毒防御
-      Trust-aware 检索
-      可疑记忆隔离
-    评测验收
-      贡献归因
-      纵向安全
-      消融实验
-    SOTA 对标
-      MemOS
-      LangGraph
-      Honcho
-      SE-GA/TTME
-      Engram/MoE
-
+    交互层
+      Vue3 控制台
+      Electron 麒麟桌面端
+      手机端 LAN 配对
+    平台接入
+      FastAPI 后端
+      模型网关(多供应商)
+      MCP 工具接入
+      工作流与审批
+    安全与隔离
+      owner 数据隔离
+      审计 fail-closed(失败即关闭)
+      策略门禁 Policy Gate
+    偏好记忆 EGPM
+      Beta 后验置信更新
+      情感证据调制
+      结果反馈闭环
+      偏好记忆图演化
+      工具调用序列挖掘
+    知识治理
+      知识冲突检测与消解
+      TKE 知识双时态演化
+      关联检索 RRF 三路融合
+      本地向量索引
+    记忆流转
+      工作→短期→中期→长期
+      遗忘与重要性衰减
+      记忆胶囊存储
+    治理与评测
+      MemoryOS 生命周期状态机
+      不可变账本与可证明删除
+      MEB 基准与消融实验
+      麒麟 V11 实机适配
 ```
+
