@@ -1,3 +1,15 @@
+// Copyright (c) 2026 QianChang-official
+//
+// 宛委·枢忆 is licensed under Mulan PSL v2.
+// You can use this software according to the terms of the Mulan PSL v2.
+// You may obtain a copy of Mulan PSL v2 at:
+// http://license.coscl.org.cn/MulanPSL2
+//
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+// See the Mulan PSL v2 for more details.
+
 import type { RouteRecordRaw } from 'vue-router'
 
 // 万枢协作平台路由（v0.12）：工作台 / 模型接入 / 智能体 / 空间 / 自动化 /
