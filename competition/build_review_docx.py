@@ -118,7 +118,7 @@ def main() -> None:
                 run.add_picture(str(MINDMAP), width=Cm(15.2))
                 cap = doc.add_paragraph()
                 cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(cap.add_run("图 2-1 宛委·枢忆 OSAgent 2.0 全景架构"), 10.5)
+                set_font(cap.add_run("图 2-1 宛委·枢忆 OSAgent 2.0 整体架构"), 10.5)
             if level == 1:
                 par = doc.add_paragraph()
                 par.alignment = WD_ALIGN_PARAGRAPH.CENTER
