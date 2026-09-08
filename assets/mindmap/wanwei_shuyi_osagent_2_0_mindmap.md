@@ -4,7 +4,7 @@
 > 及近期已合并 PR（#196/#197/#200/#203/#205/#214/#215）一一对应。
 > 图片由 `render_mindmap.py` 生成（微软雅黑，评委可读字号）：`python assets/mindmap/render_mindmap.py`
 
-![全景架构](wanwei_shuyi_osagent_2_0_mindmap.png)
+![整体架构](wanwei_shuyi_osagent_2_0_mindmap.png)
 
 ```mermaid
 mindmap

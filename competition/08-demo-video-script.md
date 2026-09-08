@@ -15,7 +15,7 @@
 
 ### 场景 1：开场与定位（0:00–0:40）
 
-- 画面：README 首页与全景架构图（`assets/mindmap/wanwei_shuyi_osagent_2_0_mindmap.png`）。
+- 画面：README 首页与整体架构图（`assets/mindmap/wanwei_shuyi_osagent_2_0_mindmap.png`）。
 - 口播要点：核心问题——AI 记忆“记得住”但“管不住”；本方案提供可验证的记忆治理层。
 - 口播须说明图中英文术语：EGPM（偏好记忆治理闭环）、TKE（知识双时态演化）、RRF（倒数排名融合）。
 

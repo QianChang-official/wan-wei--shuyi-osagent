@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""渲染 README 全景架构思维导图（微软雅黑，评委可读的大字号）。
+"""渲染 README 整体架构思维导图（微软雅黑，评委可读的大字号）。
 
 数据源为 ``wanwei_shuyi_osagent_2_0_mindmap.mmd`` 的同构内容；两者需同步维护。
 输出 ``wanwei_shuyi_osagent_2_0_mindmap.png``（README 引用）。
@@ -92,7 +92,7 @@ def main() -> None:
     fig.patch.set_facecolor("white")
 
     ax.text(
-        0.5, 0.985, "宛委·枢忆 OSAgent 2.0 全景架构",
+        0.5, 0.985, "宛委·枢忆 OSAgent 2.0 整体架构",
         ha="center", va="top", fontsize=29, fontweight="bold", color="#1A2733",
     )
     ax.text(

@@ -19,7 +19,7 @@
 > *AI 会记住你。但更重要的是——它能证明自己已经忘记。*
 
 <p align="center">
-  <img src="assets/mindmap/wanwei_shuyi_osagent_2_0_mindmap.png" alt="宛委·枢忆 全景架构" width="880">
+  <img src="assets/mindmap/wanwei_shuyi_osagent_2_0_mindmap.png" alt="宛委·枢忆 整体架构" width="880">
 </p>
 
 ---
