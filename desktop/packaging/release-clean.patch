@@ -1,8 +1,8 @@
 diff --git a/backend/app/platform_api/_system_svc_runtime.py b/backend/app/platform_api/_system_svc_runtime.py
-index bdbfa1e..5ea7173 100644
+index 47f1eb710c1feca1de23be4967320f5e8e93b90b..e5600f47e22be7df485df46026658f3d29dbbd76 100644
 --- a/backend/app/platform_api/_system_svc_runtime.py
 +++ b/backend/app/platform_api/_system_svc_runtime.py
-@@ -12,7 +12,6 @@
+@@ -24,7 +24,6 @@
  - 模拟器镜像下载（未配置 WANWEI_EMULATOR_IMAGE_URL 时后台线程模拟推进
    2%/0.5s；配置后 httpx 流式真实下载到 data/platform/downloads/，可选
    SHA256 校验，.part 临时名完成后原子改名）
@@ -10,7 +10,7 @@ index bdbfa1e..5ea7173 100644
  - 沙盒命令执行（白名单 + cwd 监禁 + 5s 超时 + 4KB 截断）
  - wanwei CLI 使用指南（静态文档）
  
-@@ -26,14 +25,11 @@
+@@ -38,14 +37,11 @@ import logging
  import math
  import os
  import re
@@ -25,7 +25,7 @@ index bdbfa1e..5ea7173 100644
  from pathlib import Path, PureWindowsPath
  from typing import Any, Literal
  from urllib.parse import urlparse, urlsplit, urlunsplit
-@@ -45,7 +41,7 @@
+@@ -57,7 +53,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
  from .deps import WORK_GEARS
  from .guards import audit_safe, require_gear
  from .store import JsonStore
@@ -34,7 +34,7 @@ index bdbfa1e..5ea7173 100644
  from ..security.ssrf import SSRFError, resolve_external_url
  from ..soul.ownership import actor_id_for_request, configured_actor_id
  from ..utils.datetime_utils import utc_now_iso
-@@ -55,13 +51,10 @@
+@@ -67,13 +63,10 @@ def _require_device_owner(request: Request) -> None:
      """Keep device-level state behind the configured local principal.
  
      The system service controls one physical desktop (voice history, browser
@@ -50,7 +50,7 @@ index bdbfa1e..5ea7173 100644
      owner_id = actor_id_for_request(request)
      if owner_id not in {'anonymous', configured_actor_id()}:
          raise HTTPException(status_code=404, detail={'error': 'not_found'})
-@@ -101,7 +94,6 @@
+@@ -113,7 +106,6 @@ _BACKGROUND_DATA_MIMES = frozenset({'image/png', 'image/jpeg', 'image/webp', 'im
  _BACKGROUND_UNSAFE_CHARS = re.compile(r'["\'()\\<>\r\n]')
  _SANDBOX_TIMEOUT_S = 5
  _SANDBOX_TRUNCATE = 4096
@@ -58,12 +58,10 @@ index bdbfa1e..5ea7173 100644
  
  # 沙盒执行环境：仅保留运行白名单内系统命令所必需的最小环境变量，
  # 绝不继承任何 WANWEI_* 变量，避免通过 `env` 等命令泄露主 API Key。
-@@ -240,16 +232,6 @@
-         if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-             raise ValueError('browser launch URL only allows http/https absolute URLs')
+@@ -254,16 +246,6 @@ class BrowserLaunchIn(BaseModel):
          return v.strip()
--
--
+ 
+ 
 -class LanEnableIn(BaseModel):
 -    model_config = ConfigDict(extra='forbid')
 -    gear: str = Field(min_length=1, max_length=32)
@@ -72,10 +70,12 @@ index bdbfa1e..5ea7173 100644
 -class LanVerifyIn(BaseModel):
 -    model_config = ConfigDict(extra='forbid')
 -    token: str = Field(min_length=1, max_length=128)
- 
- 
+-
+-
  class SandboxExecIn(BaseModel):
-@@ -1208,130 +1190,13 @@
+     model_config = ConfigDict(extra='forbid')
+     command: str = Field(min_length=1, max_length=500)
+@@ -1220,130 +1202,13 @@ def emulator_download_cancel(did: str) -> dict:
      return {**rec, 'ok': True}
  
  
@@ -209,7 +209,7 @@ index bdbfa1e..5ea7173 100644
          lan['enabled'] = False
          lan['bind'] = '127.0.0.1'
          lan['lan_url'] = None
-@@ -1339,54 +1204,12 @@
+@@ -1351,54 +1216,12 @@ def lan_disable() -> dict:
          lan['token_created_at'] = None
          lan['token_consumed'] = False
          _sys_store.set('lan', lan)
@@ -271,10 +271,22 @@ index bdbfa1e..5ea7173 100644
  
 diff --git a/backend/app/platform_api/mobile_remote.py b/backend/app/platform_api/mobile_remote.py
 deleted file mode 100644
-index f6ed9c1..0000000
+index 31df29205d4159ad49db6f077f13996469b05ffc..0000000000000000000000000000000000000000
 --- a/backend/app/platform_api/mobile_remote.py
 +++ /dev/null
-@@ -1,508 +0,0 @@
+@@ -1,520 +0,0 @@
+-# Copyright (c) 2026 QianChang-official
+-#
+-# 宛委·枢忆 is licensed under Mulan PSL v2.
+-# You can use this software according to the terms of the Mulan PSL v2.
+-# You may obtain a copy of Mulan PSL v2 at:
+-# http://license.coscl.org.cn/MulanPSL2
+-#
+-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+-# See the Mulan PSL v2 for more details.
+-
 -"""手机端远程控制补充 API：实时事件流 / 工具调用实时查询 / 文件上传。
 -
 -为宛委枢忆手机端 APP（meoo-app）提供 orca/mobile 风格的远程控制能力：
@@ -784,10 +796,10 @@ index f6ed9c1..0000000
 -    await _append_event({'event_type': 'file_delete', 'file_id': file_id, 'owner_id': owner_id})
 -    return {'deleted': file_id}
 diff --git a/desktop/src/main.js b/desktop/src/main.js
-index 9b31cce..3aff398 100644
+index 2ab0b8b11e7e8ed7b4c9f39f9fef9f78755b4173..2b478cd75da6c1f6f2af977a70413f7d7b95180a 100644
 --- a/desktop/src/main.js
 +++ b/desktop/src/main.js
-@@ -60,11 +60,7 @@ let quitting = false;
+@@ -72,11 +72,7 @@ let quitting = false;
  let powerSaveBlockerId = null;       // 当前 blocker id，null 表示未启用
  let preventSleepMode = 'app';        // 'app' 阻止系统挂起 | 'display' 连同屏幕常亮
  
@@ -799,7 +811,7 @@ index 9b31cce..3aff398 100644
  
  // ------------------------------------------------------------- small helpers
  
-@@ -524,18 +520,6 @@ function lanIPv4s() {
+@@ -536,18 +532,6 @@ function lanIPv4s() {
    return candidates;
  }
  
@@ -818,7 +830,7 @@ index 9b31cce..3aff398 100644
  /** 导航白名单：仅允许控制台自身（http://127.0.0.1:<port>/），其余一律视为外站 */
  function isConsoleUrl(url, port = backendPort) {
    return typeof url === 'string' && url.startsWith(`http://127.0.0.1:${port}/`);
-@@ -556,7 +540,7 @@ function isTrustedFrame(frame) {
+@@ -568,7 +552,7 @@ function isTrustedFrame(frame) {
    try { return isConsoleUrl(frame && frame.url); } catch { return false; }
  }
  
@@ -827,7 +839,7 @@ index 9b31cce..3aff398 100644
  function injectApiKeyForSession(sess) {
    sess.webRequest.onBeforeSendHeaders(
      { urls: [`http://127.0.0.1:${backendPort}/*`] },
-@@ -633,70 +617,6 @@ function setPreventSleep(enable, mode) {
+@@ -645,70 +629,6 @@ function setPreventSleep(enable, mode) {
    return getPreventSleep();
  }
  
@@ -898,7 +910,7 @@ index 9b31cce..3aff398 100644
  
  // --------------------------------------------------------- window state
  function loadWindowState() {
-@@ -781,7 +701,7 @@ function createTray() {
+@@ -793,7 +713,7 @@ function createTray() {
    });
  }
  
@@ -907,7 +919,7 @@ index 9b31cce..3aff398 100644
  function refreshTray() {
    if (!tray || tray.isDestroyed()) return;
    const openInBrowser = `http://127.0.0.1:${backendPort}/console/`;
-@@ -792,14 +712,7 @@ function refreshTray() {
+@@ -804,14 +724,7 @@ function refreshTray() {
      { label: '任务期间阻止睡眠', type: 'checkbox', checked: getPreventSleep().enabled,
        sublabel: preventSleepMode === 'display' ? '含屏幕常亮' : '仅阻止系统挂起',
        click: (item) => setPreventSleep(item.checked, preventSleepMode) },
@@ -922,7 +934,7 @@ index 9b31cce..3aff398 100644
    items.push(
      { type: 'separator' },
      { label: '开机自启动', type: 'checkbox', checked: getAutostart(),
-@@ -939,31 +852,6 @@ function registerIpc() {
+@@ -951,31 +864,6 @@ function registerIpc() {
      setPreventSleep(!!enable, mode));
    handle('desktop:get-prevent-sleep', () => getPreventSleep());
  
@@ -954,7 +966,7 @@ index 9b31cce..3aff398 100644
  }
  
  // ------------------------------------------------------------------- boot
-@@ -984,7 +872,7 @@ if (!gotLock) {
+@@ -996,7 +884,7 @@ if (!gotLock) {
      }
      // 真实异步探测空闲端口（原 findFreePortSync 恒回退 8010，已删除，见上方说明）
      backendPort = await findFreePort();
@@ -963,7 +975,7 @@ index 9b31cce..3aff398 100644
      injectApiKeyForSession(session.defaultSession);
      registerIpc();
  
-@@ -1026,7 +914,6 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+@@ -1038,7 +926,6 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
    module.exports = {
      findFreePort,
      truncateLogIfNeeded,
@@ -971,7 +983,7 @@ index 9b31cce..3aff398 100644
      isConsoleUrl,
      isTrustedFrame,
      isVisibleOnSomeDisplay,
-@@ -1037,7 +924,5 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
+@@ -1049,7 +936,5 @@ if (process.env.WANWEI_DESKTOP_TEST_EXPORTS === '1') {
      probeBackendEnv,
      backendExecutionRemedyHint,
      ensureBackendEnv,
@@ -980,10 +992,10 @@ index 9b31cce..3aff398 100644
    };
  }
 diff --git a/desktop/src/preload.js b/desktop/src/preload.js
-index b4430b6..a2dd5df 100644
+index eed6cc7e9fa02969a4f6d1a1271021e0e9b34a5d..afc3c478245af0f18ac0b59ca923a0cbb648e190 100644
 --- a/desktop/src/preload.js
 +++ b/desktop/src/preload.js
-@@ -42,12 +42,8 @@
+@@ -54,12 +54,8 @@ contextBridge.exposeInMainWorld('wanweiDesktop', {
    setPreventSleep: (enable, mode) => ipcRenderer.invoke('desktop:set-prevent-sleep', { enable, mode }),
    getPreventSleep: () => ipcRenderer.invoke('desktop:get-prevent-sleep'),
  
@@ -997,10 +1009,10 @@ index b4430b6..a2dd5df 100644
  
  // API Key 注入（键名与 Web 端约定一致：localStorage 'wanwei-desktop-api-key'，
 diff --git a/frontend/console-vue/src/App.vue b/frontend/console-vue/src/App.vue
-index cd26dd2..71982c0 100644
+index dfaa03a6b3a90d68bd3e8f047419ad5da5728521..fd8068b0a549b9890ed248e1c06fa03af3cdf4aa 100644
 --- a/frontend/console-vue/src/App.vue
 +++ b/frontend/console-vue/src/App.vue
-@@ -80,7 +80,6 @@
+@@ -94,7 +94,6 @@ const navGroups = [
        { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
        { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
        { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },
@@ -1009,10 +1021,10 @@ index cd26dd2..71982c0 100644
    },
  ]
 diff --git a/frontend/console-vue/src/router/platform.ts b/frontend/console-vue/src/router/platform.ts
-index c2bc3fe..2da79d3 100644
+index 03d44fd8faff1f4627ab990145a4cad003c4d14c..73b6f2a38d1d3da1c4c6005c2d07ad55cf6163b6 100644
 --- a/frontend/console-vue/src/router/platform.ts
 +++ b/frontend/console-vue/src/router/platform.ts
-@@ -1,7 +1,7 @@
+@@ -13,7 +13,7 @@
  import type { RouteRecordRaw } from 'vue-router'
  
  // 万枢协作平台路由（v0.12）：工作台 / 模型接入 / 智能体 / 空间 / 自动化 /
@@ -1021,28 +1033,28 @@ index c2bc3fe..2da79d3 100644
  // 各视图均已实现，懒加载仅在实际访问时解析。
  export const platformRoutes: RouteRecordRaw[] = [
    { path: '/platform/workbench', name: 'platformWorkbench', component: () => import('@/views/platform/WorkbenchView.vue'), meta: { title: '万枢工作台', seal: '枢' } },
-@@ -14,5 +14,4 @@
+@@ -26,5 +26,4 @@ export const platformRoutes: RouteRecordRaw[] = [
    { path: '/platform/sessions', name: 'platformSessions', component: () => import('@/views/platform/SessionsView.vue'), meta: { title: '会话管理', seal: '笺' } },
    { path: '/platform/settings', name: 'platformSettings', component: () => import('@/views/platform/SettingsView.vue'), meta: { title: '通用设置', seal: '设' } },
    { path: '/platform/help', name: 'platformHelp', component: () => import('@/views/platform/HelpView.vue'), meta: { title: '帮助', seal: '助' } },
 -  { path: '/mobile', name: 'mobile', component: () => import('@/views/platform/MobileView.vue'), meta: { title: '手机伴侣', seal: '伴' } },
  ]
 diff --git a/frontend/console-vue/src/views/platform/HelpView.vue b/frontend/console-vue/src/views/platform/HelpView.vue
-index 071d55c..34b8d16 100644
+index f2bb2a01fdd596a462463d3d4d2f4582669a6cdb..ee6664290b5877678ff2d9c4b9f55ecf47468aa1 100644
 --- a/frontend/console-vue/src/views/platform/HelpView.vue
 +++ b/frontend/console-vue/src/views/platform/HelpView.vue
-@@ -22,10 +22,6 @@
-   {
+@@ -37,10 +37,6 @@ const faqs: Faq[] = [
      q: '记忆指令怎么用？',
      a: '「记忆中枢」保存着你的偏好、项目背景与长期指令。在对话中说「记住：……」即可写入；也可在记忆中枢页面直接增删。记忆仅存放在本机数据中，不会上传到任何服务器。',
--  },
+   },
 -  {
 -    q: '如何用手机控制？',
 -    a: '在本应用「通用设置 → 局域网手机控制」中点击开启，页面会显示一个局域网地址。手机与电脑连入同一网络后，用手机浏览器打开该地址即可访问控制台。关闭后地址立即失效。',
-   },
+-  },
    {
      q: 'git 空间是做什么的？',
-@@ -296,7 +292,7 @@
+     a: '「空间」舱室用于管理工作区：每个空间对应一个本地目录，可绑定 git 仓库，查看分支与变更状态，让智能体在指定空间内读写代码。真实推送（push）等外部动作只有在配置就绪后才会启用，未就绪时会明确标注为模拟。',
+@@ -310,7 +306,7 @@ const techStack = ['FastAPI 后端', 'Vue 3 + TypeScript + Vite', 'Electron 桌
            <div class="faq-a long">
              <p>一、本地数据不出机。对话记录、记忆内容、工作区文件、设置偏好与反馈表单，全部保存在本机数据目录或浏览器本机存储中，本软件不设有任何默认的数据回传通道。</p>
              <p>二、密钥加密存储。模型服务商密钥仅在你主动填写后保存，落盘前经加密处理，界面展示一律为掩码；真实密钥仅在发起对应模型调用时短暂使用，不写入日志。</p>
@@ -1053,10 +1065,24 @@ index 071d55c..34b8d16 100644
            </div>
 diff --git a/frontend/console-vue/src/views/platform/MobileView.vue b/frontend/console-vue/src/views/platform/MobileView.vue
 deleted file mode 100644
-index a6fad18..0000000
+index a7b7c1201aecb95770436352e066c2f15c583844..0000000000000000000000000000000000000000
 --- a/frontend/console-vue/src/views/platform/MobileView.vue
 +++ /dev/null
-@@ -1,1257 +0,0 @@
+@@ -1,1271 +0,0 @@
+-<!--
+- Copyright (c) 2026 QianChang-official
+-
+- 宛委·枢忆 is licensed under Mulan PSL v2.
+- You can use this software according to the terms of the Mulan PSL v2.
+- You may obtain a copy of Mulan PSL v2 at:
+- http://license.coscl.org.cn/MulanPSL2
+-
+- THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+- EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+- MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+- See the Mulan PSL v2 for more details.
+--->
+-
 -<script setup lang="ts">
 -/**
 - * 手机伴侣 — 局域网手机控制页（路由 /mobile）。
@@ -2315,10 +2341,10 @@ index a6fad18..0000000
 -.composer-send:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
 -</style>
 diff --git a/frontend/console-vue/src/views/platform/SettingsView.vue b/frontend/console-vue/src/views/platform/SettingsView.vue
-index 60dfa71..1c2f987 100644
+index 7a60167f69bbe5651ef62b19ab3b040e0fc94fd7..e43cf1b2281fbad0beaa6fed957afd26c5f6463d 100644
 --- a/frontend/console-vue/src/views/platform/SettingsView.vue
 +++ b/frontend/console-vue/src/views/platform/SettingsView.vue
-@@ -15,8 +15,6 @@
+@@ -29,8 +29,6 @@ declare global {
        setAutostart?: (enable: boolean) => unknown
        setPreventSleep?: (enable: boolean) => unknown
        getPreventSleep?: () => Promise<{ enabled?: boolean; mode?: string }>
@@ -2327,12 +2353,10 @@ index 60dfa71..1c2f987 100644
      }
    }
  }
-@@ -35,15 +33,6 @@
- interface PowerState {
-   prevent_sleep?: boolean
+@@ -51,15 +49,6 @@ interface PowerState {
    mode?: string
--}
--
+ }
+ 
 -interface LanStatus {
 -  enabled?: boolean
 -  lan_url?: string
@@ -2340,10 +2364,12 @@ index 60dfa71..1c2f987 100644
 -  token?: string
 -  message?: string
 -  simulated?: boolean
- }
- 
+-}
+-
  interface EmulatorDownload {
-@@ -78,8 +67,6 @@
+   id: string
+   name?: string
+@@ -92,8 +81,6 @@ const langOptions: { value: LangChoice; label: string }[] = [
  
  /* ── 桌面桥（preload 暴露的 window.wanweiDesktop；浏览器环境为 undefined） ── */
  const desktop = window.wanweiDesktop
@@ -2352,7 +2378,7 @@ index 60dfa71..1c2f987 100644
  
  /* ── 基础状态 ── */
  const theme = ref<ThemeChoice>(readTheme())
-@@ -95,9 +82,6 @@
+@@ -109,9 +96,6 @@ const savingKey = shallowRef('')
  const notice = shallowRef('')
  const error = shallowRef('')
  
@@ -2362,7 +2388,7 @@ index 60dfa71..1c2f987 100644
  
  const downloads = shallowRef<EmulatorDownload[]>([])
  const emuLoading = ref(true)
-@@ -291,63 +275,6 @@
+@@ -305,63 +289,6 @@ async function togglePreventSleep() {
    }
  }
  
@@ -2426,7 +2452,7 @@ index 60dfa71..1c2f987 100644
  
  /* ── 开发模拟器下载 ── */
  function normalizeDownload(raw: EmulatorDownload, index: number): EmulatorDownload {
-@@ -468,7 +395,6 @@
+@@ -482,7 +409,6 @@ onMounted(() => {
      if (bgDataUrl.value) applyBodyBackground(bgDataUrl.value)
    })
    syncPreventSleep()
@@ -2434,7 +2460,7 @@ index 60dfa71..1c2f987 100644
    loadDownloads()
    if (desktop?.getAutostart) {
      desktop.getAutostart()
-@@ -489,7 +415,7 @@
+@@ -503,7 +429,7 @@ onUnmounted(() => {
        seal="设"
        title="通用设置"
        en="SETTINGS"
@@ -2443,7 +2469,7 @@ index 60dfa71..1c2f987 100644
      />
  
      <div v-if="error" class="notice error" role="alert" aria-live="polite">
-@@ -591,59 +517,6 @@
+@@ -605,59 +531,6 @@ onUnmounted(() => {
          <p v-if="settingsOffline" class="hint">当前后端离线：以上选择暂存于本机浏览器，联机后将以此为准重新写入。</p>
        </GfCard>
  
@@ -2503,7 +2529,7 @@ index 60dfa71..1c2f987 100644
  
        <!-- ══ 开发模拟器 ══ -->
        <GfCard title="开发模拟器" seal="拟" class="span-2">
-@@ -806,45 +679,6 @@
+@@ -820,45 +693,6 @@ onUnmounted(() => {
  }
  .bg-caption { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--ink-muted); flex-wrap: wrap; }
  
@@ -2550,10 +2576,10 @@ index 60dfa71..1c2f987 100644
  /* ── 模拟器下载 ── */
  .dl-list { display: grid; gap: 12px; margin-top: 12px; }
 diff --git a/frontend/console-vue/src/views/platform/WorkbenchView.vue b/frontend/console-vue/src/views/platform/WorkbenchView.vue
-index 8d9d1ff..0d2edfd 100644
+index b1d98123a1f6ee9406b15e4b33de5d87d0c03ce0..c8613196ec4a1bd321dcde97599ca285054f12ee 100644
 --- a/frontend/console-vue/src/views/platform/WorkbenchView.vue
 +++ b/frontend/console-vue/src/views/platform/WorkbenchView.vue
-@@ -709,7 +709,7 @@
+@@ -723,7 +723,7 @@ async function approveRun(run: RunRecord): Promise<void> {
    try {
      const res = await apiPost<Record<string, any>>(`/agents/runs/${encodeURIComponent(run.id)}/approve`, {})
      // 以后端返回的真实 status 为准（批准后通常回到 running 继续推进），不再本地假置 approved；
