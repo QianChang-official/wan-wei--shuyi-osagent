@@ -1,3 +1,15 @@
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """宛委·枢忆 三分钟治理证据链演示脚本。
 
 自动完成「写入 → 检索 → 删除 → 验证 → 导出证明」全流程，

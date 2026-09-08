@@ -1,3 +1,15 @@
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 # 本地开发启动（Windows）：以 backend\.venv 运行 uvicorn，默认 127.0.0.1:8010；venv 缺失时明确提示先跑 setup.ps1。
 [CmdletBinding()]
 param(

@@ -1,3 +1,15 @@
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """incidents 作用域口径回归测试（issue #175，方案 1）。
 
 钉住已定口径：``memory_incidents`` 无 owner 维度，是**平台级全局治理事件流**

@@ -1,3 +1,15 @@
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 # 麒麟 V11 QEMU 虚拟机管理（Windows）：install 模式创建虚拟机并挂载 ISO 安装，boot 模式日常启动。
 [CmdletBinding()]
 param(
