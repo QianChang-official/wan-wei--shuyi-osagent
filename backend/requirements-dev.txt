@@ -2,7 +2,7 @@
 pytest==9.1.1
 pip-audit==2.10.1
 # httpx2 is kept for the current Starlette/FastAPI TestClient compatibility matrix.
-httpx2==2.5.0
+httpx2==2.12.0
 
 # Fast syntax/lint gate used by CI for high-signal errors only.
 ruff==0.8.6
