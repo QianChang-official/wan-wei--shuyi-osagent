@@ -1,0 +1,15 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 51423.86it/s]
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+[  1000] seed 39s | cold p95 81.86ms | hot p95 78.2ms
+initialized
+initialized
+[ 10000] seed 402s | cold p95 498.4ms | hot p95 433.86ms
+initialized
+initialized
+[ 50000] seed 3526s | cold p95 2785.39ms | hot p95 2711.49ms
+
+报告: reports/latency_scale.json

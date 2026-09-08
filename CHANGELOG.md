@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### 2026-09-08 - 麒麟 VM 全指标实测证据包（赛题四指标 + 适配验证当日采集）
+
+- **Evidence · 一次性全指标采集**：在银河麒麟 V11 虚拟机（Build 20260212，6.6 内核，4 vCPU/Hyper-V，Python 3.12.3）内当日连续采集赛题四项指标原始数据，入库 `reports/kylin-vm-evidence-20260908/`（34 文件 + SHA256SUMS），索引文档 `competition/09-vm-evidence.md`。全部数字出自原始 JSON/控制台日志，逐条可复核。
+- **指标实测（麒麟 SDK 生产路径）**：知识检索响应延迟 **p50 27.51ms / p95 92.675ms / max 115.4ms**（常驻 bridge 30 次端到端，`06-*`）；知识召回 **Recall@5 = 1.0**（MEB full 双配置 + 四臂消融全部，`01b-*`/`02-*`）；冲突处理 **4/4 = 100%** + TKE 双时态 100%/100% + no_governance 消融对照 0%（`02-*`/`04-*`）；偏好提取**多口径如实报告**——生产/回退路径 3/4（`MEB-PREF-003` 语义通道泄漏，宿主机同错、已知行为、给出三条优化方向），fts_only 4/4，12 例历史宽口径 91.67%，EGPM 事件级消融 61.1%（论证朴素投票不可靠，非系统指标）。
+- **Evidence · 规模曲线双口径**：纯 FTS 通道 1k/10k/50k 冷态 p95 = 6.0/53.2/224.6ms（≤500ms 达标，`05b-*`）；全栈回退链（语义 brute-force + FTS）50k p95 2785ms——语义回退通道万条以上退化，HNSW 为既定优化方向（`05-*`）。
+- **Kylin 适配验证（#206-D/E 回传）**：CI 等价配置全量后端回归 **1870 passed / 2 failed / 7 skipped**（唯二失败为需 `.git` 的 release-staging 测试，证据树为 tarball 解包）；全能力配置 1866/9/4 的 9 失败逐条归因（7 例=目标机具备 CI 不具备的 bridge/本地模型，2 例=.git），无功能回归。detached（nohup 脱离会话）python 回环连接报 `EPERM` 而 curl 不受影响、attached 不复现（复现 3 次），已记录为 V11 环境行为观测并给出 systemd user 部署建议。
+- **Fixed · demo_governance 适配当前 API**：`/memory/v2/search` 已改 GET（原 POST 405）；示例明文口令现被 Policy Gate S3 设计性拦截，改为「先演示拦截、再写可治理敏感知识」双段叙事。修复后麒麟 VM 实机全链路通过（rc=0）：S3 拦截 → 入库 → `kylin_native` 检索 → 自然语言遗忘 → 五处残留取证全零 → PDF 删除证明证书（`09c-*`，真实场景应用案例）。
+- **Eval · bench_egpm 补 JSON 落盘**：EGPM 基准同次运行同时产出机器可读 `egpm_benchmark.json` 与 Markdown 报告；新增 `scripts/bench_kylin_sdk_latency.py`（麒麟 SDK 端到端延迟基准，预热剔除 + 逐次原始延迟 + 用后清理，非麒麟环境如实退出不编数）。
+
 ### 2026-09-07 - PR #215 麒麟实机与手机端复验修复
 
 - **Security · 审计读取 fail-closed**：请求身份不可用或为空时审计查询返回空结果，不再退化为读取全部审计记录；空 owner 无法选中未认领的旧记录。JSON1 不可用的 LIKE 兼容查询同样保持 owner 作用域。

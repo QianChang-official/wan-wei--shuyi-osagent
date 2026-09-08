@@ -12,7 +12,7 @@
 
 """宛委·枢忆 三分钟治理证据链演示脚本。
 
-自动完成「写入 → 检索 → 删除 → 验证 → 导出证明」全流程，
+自动完成「S3 硬拦截 → 写入 → 检索 → 删除 → 验证 → 导出证明」全流程，
 每步打印关键信息，供录屏或现场演示使用。
 
 用法：
@@ -25,9 +25,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 import urllib.request
 import urllib.error
+import urllib.parse
 
 
 def _request(
@@ -90,8 +90,8 @@ def main() -> int:
     _print_kv("状态", "就绪")
 
     # ── 步骤 1：写入记忆 ──────────────────────────────────────────────
-    _print_step(1, "写入记忆")
-    statement = "项目Alpha的数据库密码是 db@Alpha2026!，仅限内网使用"
+    _print_step(1, "写入记忆（先演示 S3 硬拦截，再写入可治理的敏感知识）")
+    # 1a. 明文口令：Policy Gate 直接拒绝入库（block_from_memory）。
     status, body = _request(
         base,
         "/memory/v2/capsules",
@@ -99,7 +99,29 @@ def main() -> int:
         method="POST",
         body={
             "memory_class": "knowledge",
-            "content": {"knowledge_type": "credential", "statement": statement},
+            "content": {
+                "knowledge_type": "credential",
+                "statement": "项目Alpha的数据库密码是 db@Alpha2026!，仅限内网使用",
+            },
+            "source_type": "manual_config",
+        },
+    )
+    gate_1a = body.get("governance", {}).get("policy_result", "—") if isinstance(body, dict) else "—"
+    _print_kv("明文口令 policy_gate", gate_1a)
+    _print_kv("明文口令 生命周期", body.get("state", {}).get("lifecycle", "—") if isinstance(body, dict) else "—")
+    if gate_1a != "reject":
+        print("  ⚠️ 明文口令未被拦截（预期 reject）——请核对 Policy Gate 规则")
+
+    # 1b. 可治理的敏感内部知识：允许入库，走完删除证明全链路。
+    statement = "项目Alpha的运维手册位于内网 wiki:/ops/alpha/handbook，数据库访问凭据由运维组统一托管，不落入个人记忆"
+    status, body = _request(
+        base,
+        "/memory/v2/capsules",
+        api_key=key,
+        method="POST",
+        body={
+            "memory_class": "knowledge",
+            "content": {"knowledge_type": "internal_doc", "statement": statement},
             "source_type": "manual_config",
         },
     )
@@ -114,18 +136,19 @@ def main() -> int:
 
     # ── 步骤 2：检索召回 ──────────────────────────────────────────────
     _print_step(2, "检索召回（跨会话记忆）")
+    query = urllib.parse.quote("项目Alpha 运维手册")
     status, body = _request(
         base,
-        "/memory/v2/search",
+        f"/memory/v2/search?q={query}&top_k=5",
         api_key=key,
-        method="POST",
-        body={"query": "项目Alpha 数据库密码", "top_k": 5},
+        method="GET",
     )
     if status != 200:
         print(f"  ❌ 检索失败（{status}）：{body}")
         return 1
-    hits = body.get("items", [])
+    hits = body.get("results", []) if isinstance(body, dict) else []
     _print_kv("命中数", str(len(hits)))
+    _print_kv("检索后端", str(body.get("retrieval", {}).get("backend", "—")) if isinstance(body, dict) else "—")
     if hits:
         _print_kv("首条内容", hits[0].get("content", {}).get("statement", "—")[:60])
         _print_kv("provenance", json.dumps(hits[0].get("provenance", {}), ensure_ascii=False)[:80])

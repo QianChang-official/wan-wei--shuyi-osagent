@@ -1,0 +1,11 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+INFO:     Started server process [230075]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+initialized
+INFO:     127.0.0.1:36376 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [230075]

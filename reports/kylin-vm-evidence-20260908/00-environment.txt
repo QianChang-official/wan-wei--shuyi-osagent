@@ -1,0 +1,113 @@
+captured_at: 2026-09-08T08:26:45+08:00
+--- /etc/os-release ---
+NAME="Kylin"
+FULL_NAME="kylin"
+VERSION="银河麒麟桌面操作系统V11"
+VERSION_US="Kylin Linux Desktop V11"
+ID=kylin
+PRETTY_NAME="Kylin V11"
+VERSION_ID="v11"
+HOME_URL="http://www.kylinos.cn/"
+VERSION_CODENAME=kylin
+KYLIN_RELEASE_ID="2603"
+ID_LIKE=openKylin
+--- /etc/kylin-build ---
+Kylin-Desktop V11
+Build 20260212
+buildid: 83681
+--- uname ---
+Linux wanwei-pc 6.6.0-63-generic #63-KYLINOS SMP PREEMPT_DYNAMIC Sat Feb  7 12:39:56 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+--- hostname ---
+wanwei-pc
+--- cpu ---
+架构：                                   x86_64
+CPU 运行模式：                           32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+字节序：                                 Little Endian
+CPU:                                     4
+在线 CPU 列表：                          0-3
+厂商 ID：                                AuthenticAMD
+型号名称：                               AMD Ryzen 9 7845HX with Radeon Graphics
+CPU 系列：                               25
+型号：                                   97
+每个核的线程数：                         1
+每个座的核数：                           1
+座：                                     4
+步进：                                   2
+--- mem ---
+               total        used        free      shared  buff/cache   available
+内存：         7.8Gi       3.3Gi       434Mi        98Mi       4.4Gi       4.5Gi
+交换：          18Gi       1.1Gi        17Gi
+--- disk ---
+文件系统        大小  已用  可用 已用% 挂载点
+/dev/sda5        59G   36G   20G   65% /
+/dev/sda6        39G  5.0G   32G   14% /home
+--- python ---
+Python 3.12.3
+--- kylin vector engine service ---
+wanwei      1717  0.0  0.3 1390856 29284 ?       SLsl 07:22   0:02 /usr/bin/kylin-ai-vector-engine INFO /usr/share/kylin-ai-vector-engine/vector_engine.json
+--- sdk bridge ---
+-rwxr-xr-x 1 root root 212752  9月 5日 15:41 /usr/local/bin/wanwei-kylin-sdk-bridge
+f774d2d4e8abf25ff5b2c0c550413bd0  /usr/local/bin/wanwei-kylin-sdk-bridge
+--- pip freeze ---
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+cloudpickle==3.1.2
+cryptography==50.0.0
+fastapi==0.139.0
+filelock==3.32.5
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpcore2==2.5.0
+httpx==0.28.1
+httpx2==2.5.0
+huggingface_hub==1.30.0
+idna==3.19
+iniconfig==2.3.0
+Jinja2==3.1.6
+joblib==1.6.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+mpmath==1.3.0
+narwhals==2.25.0
+networkx==3.6.1
+numpy==2.5.3
+packaging==26.3
+pillow==12.3.0
+pluggy==1.6.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.21.0
+pytest==9.1.1
+python-multipart==0.0.31
+PyYAML==6.0.3
+regex==2026.9.3
+reportlab==5.0.0
+rich==15.0.0
+safetensors==0.8.0
+scikit-learn==1.9.0
+scipy==1.18.1
+sentence-transformers==6.0.1
+setuptools==84.0.0
+shellingham==1.5.4
+starlette==1.3.1
+sympy==1.14.0
+threadpoolctl==3.6.0
+tokenizers==0.23.2
+torch @ file:///home/wanwei/torch-2.14.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=a09987c95ec4cffdb6df798d3d641558110a334cfccce22f2f046d83142bc260
+tqdm==4.70.0
+transformers==5.16.1
+truststore==0.10.4
+typer==0.27.2
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.51.0

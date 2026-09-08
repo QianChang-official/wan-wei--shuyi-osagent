@@ -1,0 +1,289 @@
+{
+  "benchmark": "MEB",
+  "suite": "full",
+  "run_id": "run_20260908T020217Z_994efa",
+  "timestamp": "2026-09-08T02:02:17Z",
+  "summary": {
+    "total_cases": 20,
+    "passed": 19,
+    "failed": 1,
+    "pass_rate": 0.95,
+    "hidden_cases": 0,
+    "public_cases": 20
+  },
+  "weights": {
+    "ux": 0.4,
+    "safety": 0.25,
+    "product": 0.25,
+    "academic": 0.1
+  },
+  "scores": {
+    "ux": 0.8,
+    "safety": 1.0,
+    "product": 1.0,
+    "academic": 1.0,
+    "mheb_overall": 0.92,
+    "retrieval_precision_at_5": 0.9524,
+    "retrieval_recall_at_5": 1.0
+  },
+  "dimension_breakdown": {
+    "ux": {
+      "passed": 4,
+      "total": 5
+    },
+    "safety": {
+      "passed": 8,
+      "total": 8
+    },
+    "product": {
+      "passed": 5,
+      "total": 5
+    },
+    "academic": {
+      "passed": 2,
+      "total": 2
+    }
+  },
+  "category_breakdown": {
+    "preference_extraction": {
+      "passed": 3,
+      "total": 4,
+      "rate": 0.75
+    },
+    "knowledge_recall": {
+      "passed": 4,
+      "total": 4,
+      "rate": 1.0
+    },
+    "conflict_update": {
+      "passed": 4,
+      "total": 4,
+      "rate": 1.0
+    },
+    "forgetting": {
+      "passed": 4,
+      "total": 4,
+      "rate": 1.0
+    },
+    "poisoning": {
+      "passed": 4,
+      "total": 4,
+      "rate": 1.0
+    }
+  },
+  "mq": {
+    "mq_overall": 0.9625,
+    "subskills": {
+      "write_precision": 0.75,
+      "retrieval_efficiency": 1.0,
+      "update_correctness": 1.0,
+      "forgetting_control": 1.0,
+      "safety_governance": 1.0
+    },
+    "weights": {
+      "write_precision": 0.15,
+      "retrieval_efficiency": 0.2,
+      "update_correctness": 0.2,
+      "forgetting_control": 0.15,
+      "safety_governance": 0.3
+    },
+    "uncovered_subskills": [],
+    "subskill_sources": {
+      "write_precision": "preference_extraction",
+      "retrieval_efficiency": "knowledge_recall",
+      "update_correctness": "conflict_update",
+      "forgetting_control": "forgetting",
+      "safety_governance": "poisoning"
+    },
+    "iq": null,
+    "iq_note": "IQ（推理能力）由所接入的模型提供，本系统不测量，也不据此定位 IQ×MQ 象限——象限需要两个坐标。IQ 评测请用 ARC-AGI / MMLU / GPQA 等既有基准。",
+    "matrix_reference": {
+      "iq_low_mq_low": "普通助手（单次对话可用，无状态）",
+      "iq_low_mq_high": "大号知识库（记得多，但不会用）",
+      "iq_high_mq_low": "强模型（单次推理强，跨会话失忆）",
+      "iq_high_mq_high": "真正的 Agent（记得住 + 会用）"
+    },
+    "scope_note": "MQ 是本仓自建 MEB 用例集上的通过率加权，不是跨系统可比的标准化分数（没有人群基线，'Quotient' 一词不含常模标定含义）。"
+  },
+  "evaluation": {
+    "kind": "internal_memory_layer_regression",
+    "runner_version": "meb-harness-1.1",
+    "source_revision": "working-tree",
+    "source_revision_pinned": false,
+    "source_revision_source": "default:working-tree",
+    "source_tree_sha256": "45ee2ea5086dac9855030095ee654052c4d4e5e2b9d3b2b12c790dc70b388e22",
+    "case_manifest_sha256": "462dee4ef98cb5e1998f978efd3040d135e0747fdccd2731dee8b959d79656a4",
+    "suite_contract": {
+      "suite": "full",
+      "expected_public_cases": 20,
+      "actual_cases_in_report": 20,
+      "hidden_cases": 0
+    },
+    "environment": {
+      "python": "3.12.3",
+      "platform": "Linux-6.6.0-63-generic-x86_64-with-glibc2.38",
+      "architecture": "x86_64",
+      "sqlite": "3.42.0",
+      "execution": "in_process"
+    },
+    "seed": null,
+    "reproducibility": "deterministic case runner; no model-generated answer is used",
+    "limitations": [
+      "source_revision defaults to working-tree unless WANWEI_SOURCE_REVISION is set; this is not a pinned git revision.",
+      "source_tree_sha256 identifies the measured runner/case bytes but does not prove a signed release.",
+      "environment and latency describe the local in-process run; HTTP, model generation, and remote Kylin/native SDK time are excluded."
+    ]
+  },
+  "competition_metrics": {
+    "schema_version": "1.0",
+    "official": false,
+    "source": "MEB public cases in this repository",
+    "suite": "full",
+    "public_cases": 20,
+    "hidden_cases": 0,
+    "preference_extraction_accuracy": 0.75,
+    "knowledge_recall": 1.0,
+    "conflict_correctness": 1.0,
+    "retrieval_latency_p95_ms": 22.38,
+    "sample_counts": {
+      "preference_extraction": 4,
+      "knowledge_recall": 4,
+      "knowledge_recall_queries": 4,
+      "conflict_update": 4,
+      "retrieval_traces": 28
+    },
+    "case_pass_rates": {
+      "preference_extraction": 0.75,
+      "knowledge_recall": 1.0,
+      "conflict_update": 1.0
+    },
+    "metric_definitions": {
+      "preference_extraction_accuracy": "category case-pass rate; not field-level extraction precision/recall/F1",
+      "knowledge_recall": "mean Recall@5 over search steps declaring relevant_refs",
+      "conflict_correctness": "category case-pass rate for conflict lifecycle assertions",
+      "retrieval_latency_p95_ms": "p95 of recorded in-process retrieval trace latency"
+    },
+    "targets": {
+      "preference_extraction_accuracy": null,
+      "knowledge_recall": null,
+      "conflict_correctness": null,
+      "retrieval_latency_p95_ms": null
+    },
+    "limitations": [
+      "no independent hidden set ships in this repo; official=false and these are internal scores only",
+      "knowledge_recall is mean Recall@5 over judged relevance labels, not end-to-end answer accuracy",
+      "latency is measured in-process on this machine and is not a cross-machine guarantee"
+    ]
+  },
+  "failures": [
+    {
+      "case_id": "MEB-PREF-003",
+      "category": "preference_extraction",
+      "reason": "must_not_contain 泄漏: '地铁'",
+      "failed_step": 2
+    }
+  ],
+  "economics": {
+    "memories": 26,
+    "total_cost": 0.001762,
+    "total_utility": 2.0,
+    "useful_recalls": 0,
+    "neutral_recalls": 20,
+    "harmful_recalls": 0,
+    "negative_roi_memories": 6,
+    "avg_roi": 1134.255,
+    "cost_per_useful_recall": null,
+    "cost_config": {
+      "token_cost": 2e-06,
+      "storage_per_kb": 1e-05,
+      "maintenance_fixed": 0.001
+    }
+  },
+  "health": {
+    "timestamp": "2026-09-08T02:02:17Z",
+    "mhs": 91.8,
+    "level": "healthy",
+    "metrics": {
+      "total": 22,
+      "staleness": 0.0,
+      "conflict": 0.0909,
+      "noise": 0.0,
+      "unused": 0.0,
+      "sensitive_coverage": 1.0,
+      "deletion_residue": false,
+      "poisoning_incidents": 0,
+      "precision@5": 0.9524,
+      "state_counts": {
+        "candidate": 0,
+        "active": 15,
+        "reinforced": 1,
+        "stale": 0,
+        "conflicted": 2,
+        "deprecated": 2,
+        "quarantined": 2,
+        "rejected": 0,
+        "forgotten": 3,
+        "deleted": 0
+      },
+      "quarantined": 2,
+      "candidate": 0,
+      "poisoning_blocked": 2,
+      "unresolved_incidents": 0,
+      "precision_source": "measured: current MEB run",
+      "deletion_sample": {
+        "sampled": 4,
+        "residue_found": false,
+        "incomplete": []
+      },
+      "unused_days_threshold": 30.0
+    },
+    "issues": [
+      "conflict 9.1% > 2%"
+    ],
+    "unmeasured": [],
+    "release_gate": {
+      "frozen": false,
+      "reason": null,
+      "blocking_incidents": [],
+      "threshold": 3,
+      "checked_at": "2026-09-08T02:02:17Z"
+    }
+  },
+  "governance": {
+    "ledger": {
+      "total": 63,
+      "by_op_type": {
+        "delete": 4,
+        "retrieve": 20,
+        "transition": 10,
+        "update": 2,
+        "write": 26,
+        "write_rejected": 1
+      },
+      "by_risk_class": {
+        "high": 2,
+        "low": 57,
+        "medium": 4
+      }
+    },
+    "release_gate": {
+      "frozen": false,
+      "reason": null,
+      "blocking_incidents": [],
+      "threshold": 3,
+      "checked_at": "2026-09-08T02:02:17Z"
+    },
+    "deletion_checks": 4,
+    "deletion_all_complete": true
+  },
+  "traces": {
+    "count": 28,
+    "avg_latency_ms": 10.71,
+    "avg_injected_tokens": 12.29
+  },
+  "honesty_notes": [
+    "断言对象是召回记忆内容而非 LLM 回答（见 harness 模块 docstring）——本报告测量 MQ（记忆治理效能），不测 IQ（推理能力）。",
+    "成本金额基于 token 估算（字符数 × 0.3）而非实测用量，仅供相对比较。",
+    "precision@5 为 null 表示用例集未提供相关性标注，不代表召回精度为 0。"
+  ]
+}

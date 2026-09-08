@@ -1,0 +1,14 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+[  1000] seed 7s | cold p95 6.0ms | hot p95 3.78ms
+initialized
+initialized
+[ 10000] seed 137s | cold p95 53.24ms | hot p95 45.72ms
+initialized
+initialized
+[ 50000] seed 2125s | cold p95 224.56ms | hot p95 209.97ms
+
+报告: reports/latency_scale.json

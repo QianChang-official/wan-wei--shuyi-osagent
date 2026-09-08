@@ -1,0 +1,27 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+INFO:     Started server process [233763]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+initialized
+INFO:     127.0.0.1:51336 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51348 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/v2/capsules status=200 duration_ms=31.60 request_id=req_7a1b9d64653d428494d2d6fd0b14a296
+initialized
+INFO:     127.0.0.1:51358 - "POST /memory/v2/capsules HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/v2/capsules status=200 duration_ms=577.51 request_id=req_253bece29e134218b1274e3f32757837
+INFO:     127.0.0.1:51364 - "POST /memory/v2/capsules HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/v2/search status=200 duration_ms=31.95 request_id=req_d6d99c9d190c4dcabb76c4852f926b71
+INFO:     127.0.0.1:51380 - "GET /memory/v2/search?q=%E9%A1%B9%E7%9B%AEAlpha%20%E8%BF%90%E7%BB%B4%E6%89%8B%E5%86%8C&top_k=5 HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/preview status=200 duration_ms=22.27 request_id=req_887b10b01973456b8b30fb5e0bbc7d95
+INFO:     127.0.0.1:51396 - "POST /memory/forget/preview HTTP/1.1" 200 OK
+INFO:     request_complete method=POST route=/memory/forget/confirm status=200 duration_ms=23.62 request_id=req_d82665f6ac434a8d85def097642b8c3d
+INFO:     127.0.0.1:51408 - "POST /memory/forget/confirm HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/governance/verify-deletion/{capsule_id} status=200 duration_ms=2.92 request_id=req_6ddc1bf649d4406ebfb95bdbc2c6299f
+INFO:     127.0.0.1:51420 - "GET /memory/governance/verify-deletion/cap_ed9ba42f79f3 HTTP/1.1" 200 OK
+INFO:     request_complete method=GET route=/memory/governance/verify-deletion/{capsule_id}/certificate status=200 duration_ms=4.13 request_id=req_09f9f3ff886348a0bd33b85ceda108f1
+INFO:     127.0.0.1:51422 - "GET /memory/governance/verify-deletion/cap_ed9ba42f79f3/certificate HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [233763]

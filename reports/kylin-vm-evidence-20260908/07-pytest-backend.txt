@@ -1,0 +1,543 @@
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+........................................................................ [ 15%]
+........................................................................ [ 19%]
+........................................................................ [ 22%]
+......................................................ss...........s.... [ 26%]
+........................................................................ [ 30%]
+.....................................................................s.. [ 34%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 45%]
+..................................FF.........F.......................... [ 49%]
+..................F..................................................... [ 53%]
+........................................................................ [ 57%]
+........................................................................ [ 61%]
+............................................F........................... [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 72%]
+........................................................................ [ 76%]
+........................................................................ [ 80%]
+.............................FF......................................... [ 84%]
+........................................................................ [ 88%]
+............................................F........................... [ 91%]
+.......F................................................................ [ 95%]
+........................................................................ [ 99%]
+.......                                                                  [100%]
+=================================== FAILURES ===================================
+____________ test_fts_is_the_fallback_when_native_bridge_is_missing ____________
+
+isolated_db = '/tmp/tmpabviv5w1.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a0cd76657f0>
+
+    def test_fts_is_the_fallback_when_native_bridge_is_missing(isolated_db, monkeypatch):
+        monkeypatch.setattr(vi, "get_native_sdk", lambda: _FakeNativeAdapter(available=False))
+        _write("FTS 后备检索仍可工作")
+    
+        results, status = rt.search_capsules_with_status("后备检索", top_k=3)
+    
+>       assert status == {"backend": "fts_fallback", "fallback_reason": "bridge_not_installed"}
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError
+
+backend/app/tests/kylin_native_sdk_cases.py:234: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+_________________ test_legacy_capsules_use_fts_until_reindexed _________________
+
+isolated_db = '/tmp/tmpbts71kf5.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a0cd777f230>
+
+    def test_legacy_capsules_use_fts_until_reindexed(isolated_db, monkeypatch):
+        adapter = _FakeNativeAdapter(available=False)
+        monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+        written = _write("旧数据在迁移前仍然可以被 FTS 检索")
+        adapter.available = True
+    
+        results, status = rt.search_capsules_with_status("迁移前", top_k=3)
+    
+        assert written["native_index"]["reason"] == "bridge_not_installed"
+>       assert status["backend"] == "fts_fallback"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError
+
+backend/app/tests/kylin_native_sdk_cases.py:248: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+_____ test_concurrent_forget_prevents_late_upsert_from_reactivating_vector _____
+
+isolated_db = '/tmp/tmp5hkn71q3.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a0cdd97ef00>
+
+    def test_concurrent_forget_prevents_late_upsert_from_reactivating_vector(isolated_db, monkeypatch):
+        adapter = _FakeNativeAdapter()
+        monkeypatch.setattr(vi, "get_native_sdk", lambda: adapter)
+        entered_upsert = threading.Event()
+        release_upsert = threading.Event()
+        native_upsert = adapter.upsert
+    
+        def blocked_upsert(**kwargs):
+            response = native_upsert(**kwargs)
+            entered_upsert.set()
+            assert release_upsert.wait(timeout=5)
+            return response
+    
+        adapter.upsert = blocked_upsert
+        result_holder = {}
+    
+        def write_in_background():
+            result_holder["write"] = _write("并发遗忘不能被晚到的向量写入复活")
+    
+        writer = threading.Thread(target=write_in_background)
+        writer.start()
+        assert entered_upsert.wait(timeout=5)
+        conn = vi.get_conn()
+        row = conn.execute(
+            "SELECT capsule_id,vector_id,status FROM memory_vector_refs",
+        ).fetchone()
+        assert row["status"] == "indexing"
+    
+        forgotten = cs.forget_capsules([row["capsule_id"]])
+        release_upsert.set()
+        writer.join(timeout=5)
+    
+        assert not writer.is_alive()
+        assert forgotten["deleted_capsule_ids"] == [row["capsule_id"]]
+>       assert result_holder["write"]["native_index"] == {
+            "backend": "fts_fallback",
+            "indexed": False,
+            "reason": "capsule_forgotten_during_index",
+        }
+E       AssertionError
+
+backend/app/tests/kylin_native_sdk_cases.py:456: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+__________________ test_semantic_recall_without_shared_words ___________________
+
+isolated_db = '/tmp/tmpooieb8rx.db'
+
+    @pytest.mark.skipif(not HAS_MODEL, reason="无本地模型目录(WANWEI_LOCAL_EMBED_DIR 未设置)")
+    def test_semantic_recall_without_shared_words(isolated_db):
+        """核心能力:无共同词的 query 命中语义相近记忆(FTS 做不到的事)。"""
+        from backend.app.memory_runtime.capsule_store import write_capsule
+        from backend.app.memory_runtime.retrieval import search_capsules_with_status
+    
+        write_capsule(memory_class="preference", content={"text": "用户喜欢喝美式咖啡,不加糖"})
+        write_capsule(memory_class="knowledge", content={"text": "项目使用 FastAPI 加 SQLite"})
+        write_capsule(memory_class="preference", content={"text": "用户对花生过敏"})
+    
+        # 「提神的饮品」与三条记忆都无共同词
+        results, status = search_capsules_with_status("来点提神的饮品推荐", top_k=3)
+>       assert status["backend"] == "local_embedding"
+E       AssertionError: assert 'kylin_native' == 'local_embedding'
+E         
+E         - local_embedding
+E         + kylin_native
+
+backend/app/tests/test_local_embedding.py:85: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 9112.19it/s]
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+_______________________ test_full_public_suite_all_pass ________________________
+
+isolated_db = '/tmp/tmpawztbkfl.db'
+
+    def test_full_public_suite_all_pass(isolated_db):
+        report = harness.run_suite(suite="full", write_report=False)
+        assert report["summary"]["total_cases"] == harness.PUBLIC_SUITE_EXPECTED_CASES["full"] == 20
+        assert report["summary"]["hidden_cases"] == 0
+>       assert not report["failures"], f"公开集有失败用例: {report['failures']}"
+E       AssertionError: 公开集有失败用例: [{'case_id': 'MEB-PREF-003', 'category': 'preference_extraction', 'reason': "must_not_contain 泄漏: '地铁'", 'failed_step': 2}]
+E       assert not [{'case_id': 'MEB-PREF-003', 'category': 'preference_extraction', 'reason': "must_not_contain 泄漏: '地铁'", 'failed_step': 2}]
+
+backend/app/tests/test_memoryos_harness.py:169: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+_ test_committed_archive_applies_cleanup_and_preserves_shared_auth[autocrlf-off] _
+
+tmp_path = PosixPath('/var/tmp/pytest-of-wanwei/pytest-0/test_committed_archive_applies0')
+git_autocrlf = 'false'
+
+    def test_committed_archive_applies_cleanup_and_preserves_shared_auth(tmp_path, git_autocrlf):
+        # git archive exports committed object bytes without checkout EOL conversion.
+        # The working-tree fixture separately exercises any uncommitted source edits.
+>       committed_patch = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"HEAD:{PATCH_PATH}"],
+            check=True, capture_output=True,
+        ).stdout
+
+backend/app/tests/test_pr215_release_staging.py:91: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', '-C', '/home/wanwei/wanwei-eval', 'show', 'HEAD:desktop/packaging/release-clean.patch'],)
+kwargs = {'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', '-C', '/home/wanwei/wanwei-eval', 'show', 'HEAD:desktop/packaging/release-clean.patch']' returned non-zero exit status 128.
+
+/usr/lib/python3.12/subprocess.py:571: CalledProcessError
+_ test_committed_archive_applies_cleanup_and_preserves_shared_auth[autocrlf-on] _
+
+tmp_path = PosixPath('/var/tmp/pytest-of-wanwei/pytest-0/test_committed_archive_applies1')
+git_autocrlf = 'true'
+
+    def test_committed_archive_applies_cleanup_and_preserves_shared_auth(tmp_path, git_autocrlf):
+        # git archive exports committed object bytes without checkout EOL conversion.
+        # The working-tree fixture separately exercises any uncommitted source edits.
+>       committed_patch = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"HEAD:{PATCH_PATH}"],
+            check=True, capture_output=True,
+        ).stdout
+
+backend/app/tests/test_pr215_release_staging.py:91: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', '-C', '/home/wanwei/wanwei-eval', 'show', 'HEAD:desktop/packaging/release-clean.patch'],)
+kwargs = {'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', '-C', '/home/wanwei/wanwei-eval', 'show', 'HEAD:desktop/packaging/release-clean.patch']' returned non-zero exit status 128.
+
+/usr/lib/python3.12/subprocess.py:571: CalledProcessError
+______________________ test_search_no_match_returns_empty ______________________
+
+isolated_db = '/tmp/tmpa6sgjj9l.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a0cddedb2c0>
+
+    def test_search_no_match_returns_empty(isolated_db, monkeypatch):
+        monkeypatch.setenv("WANWEI_KYLIN_NATIVE_MODE", "off")
+        _write("周报应使用正式语气")
+        # keyword that does not exist => must NOT fallback to latest
+        results = rt.search_capsules("量子色动力学专用术语xyz", top_k=5)
+>       assert results == []
+E       AssertionError: assert [{'capsule_id...ts': [], ...}] == []
+E         
+E         Left contains one more item: {'capsule_id': 'cap_127a3b5713cb', 'memory_class': 'knowledge', 'content': {'text': '周报应使用正式语气'}, 'source_events': [], ...}
+E         Use -v to get more diff
+
+backend/app/tests/test_retrieval.py:69: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+initialized
+------------------------------ Captured log setup ------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+----------------------------- Captured stdout call -----------------------------
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+__________ test_chinese_search_hits_real_capsule_not_latest_fallback ___________
+
+tmp_path = PosixPath('/var/tmp/pytest-of-wanwei/pytest-0/test_chinese_search_hits_real_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a0cd733a7e0>
+
+    def test_chinese_search_hits_real_capsule_not_latest_fallback(tmp_path, monkeypatch):
+        monkeypatch.setenv("WANWEI_KYLIN_NATIVE_MODE", "off")
+        client = _client(tmp_path)
+        first = {"memory_class": "knowledge", "content": {"text": "请生成周报，使用正式语气和三段式结构。"}}
+        second = {"memory_class": "knowledge", "content": {"text": "完全无关的部署日志。"}}
+        w1 = client.post("/memory/v2/capsules", json=first, headers={"x-api-key": "test-key"}).json()
+        client.post("/memory/v2/capsules", json=second, headers={"x-api-key": "test-key"}).json()
+        for q in ["周报", "正式语气", "三段式结构"]:
+            res = client.get("/memory/v2/search", params={"q": q}, headers={"x-api-key": "test-key"}).json()["results"]
+            assert res and res[0]["capsule_id"] == w1["capsule_id"]
+>       assert client.get("/memory/v2/search", params={"q": "不存在关键词"}, headers={"x-api-key": "test-key"}).json()["results"] == []
+E       AssertionError: assert [{'capsule_id...ts': [], ...}] == []
+E         
+E         Left contains 2 more items, first extra item: {'capsule_id': 'cap_6caea12bc09d', 'memory_class': 'knowledge', 'content': {'text': '完全无关的部署日志。'}, 'source_events': [], ...}
+E         Use -v to get more diff
+
+backend/app/tests/test_security_baseline.py:550: AssertionError
+----------------------------- Captured stdout call -----------------------------
+initialized
+initialized
+------------------------------ Captured log call -------------------------------
+WARNING  backend.app.platform_api.knowledge:knowledge.py:162 kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+WARNING  backend.app.security.auth:auth.py:536 WANWEI_API_KEY is shorter than 32 characters; use a stronger key for any non-loopback deployment.
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/starlette/testclient.py:53
+  /home/wanwei/wanwei-eval/.venv/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED backend/app/tests/test_kylin_native_sdk.py::test_fts_is_the_fallback_when_native_bridge_is_missing
+FAILED backend/app/tests/test_kylin_native_sdk.py::test_legacy_capsules_use_fts_until_reindexed
+FAILED backend/app/tests/test_kylin_native_sdk.py::test_concurrent_forget_prevents_late_upsert_from_reactivating_vector
+FAILED backend/app/tests/test_local_embedding.py::test_semantic_recall_without_shared_words
+FAILED backend/app/tests/test_memoryos_harness.py::test_full_public_suite_all_pass
+FAILED backend/app/tests/test_pr215_release_staging.py::test_committed_archive_applies_cleanup_and_preserves_shared_auth[autocrlf-off]
+FAILED backend/app/tests/test_pr215_release_staging.py::test_committed_archive_applies_cleanup_and_preserves_shared_auth[autocrlf-on]
+FAILED backend/app/tests/test_retrieval.py::test_search_no_match_returns_empty
+FAILED backend/app/tests/test_security_baseline.py::test_chinese_search_hits_real_capsule_not_latest_fallback
+9 failed, 1866 passed, 4 skipped, 1 warning in 322.01s (0:05:22)

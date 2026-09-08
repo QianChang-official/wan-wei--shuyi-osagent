@@ -1,0 +1,25 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 3533.91it/s]
+
+=== MEB full · run_20260908T020217Z_994efa ===
+用例: 19/20 通过 (公开 20 / 隐藏 0)
+MHEB 综合分: 0.92
+  - ux       : 0.8
+  - safety   : 1.0
+  - product  : 1.0
+  - academic : 1.0
+precision@5: 0.9524
+competition_metrics (official=false): preference=0.75, knowledge_recall@5=1.0, conflict=1.0, retrieval_p95_ms=22.38
+记忆健康: MHS=91.8 (healthy)
+  ! conflict 9.1% > 2%
+证据来源: working-tree (unpinned)
+  source_tree_sha256: 45ee2ea5086dac9855030095ee654052c4d4e5e2b9d3b2b12c790dc70b388e22
+  case_manifest_sha256: 462dee4ef98cb5e1998f978efd3040d135e0747fdccd2731dee8b959d79656a4
+经济: 26 条记忆, 总成本 0.001762, 平均 ROI 1134.255, 负 ROI 6 条
+
+失败用例:
+  ✗ MEB-PREF-003 (step#2): must_not_contain 泄漏: '地铁'
+
+报告已写入: /home/wanwei/wanwei-eval/reports/meb_score_report.json

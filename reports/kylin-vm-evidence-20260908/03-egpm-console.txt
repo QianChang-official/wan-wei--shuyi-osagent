@@ -1,0 +1,51 @@
+{
+  "benchmark": "EGPM",
+  "captured_at": "2026-09-08T08:29:05+0800",
+  "dataset": {
+    "source": "in-repo synthetic public set (memory_benchmark/dataset.py)",
+    "seed": 42,
+    "repeats_per_scenario": 12,
+    "scenarios": [
+      "drift",
+      "high_emotion",
+      "stable",
+      "temporary",
+      "weak",
+      "wrong"
+    ],
+    "events": 72
+  },
+  "note": "official=False；仓内公开合成集，不冒充官方竞赛成绩。",
+  "results": {
+    "Baseline": {
+      "preference_accuracy": 0.6111111111111112,
+      "false_preference_rate": 0.9473684210526315,
+      "drift_precision": 0.0,
+      "drift_recall": 0.0,
+      "drift_f1": 0.0,
+      "calibration_error": 0.11111111111111116,
+      "brier": 0.25
+    },
+    "+Beta": {
+      "preference_accuracy": 0.6111111111111112,
+      "false_preference_rate": 0.9473684210526315,
+      "drift_precision": 0.0,
+      "drift_recall": 0.0,
+      "drift_f1": 0.0,
+      "calibration_error": 0.14913658871992208,
+      "brier": 0.22784435056100893
+    },
+    "+Drift": {
+      "preference_accuracy": 0.6111111111111112,
+      "false_preference_rate": 0.9473684210526315,
+      "drift_precision": 0.3333333333333333,
+      "drift_recall": 0.5,
+      "drift_f1": 0.4,
+      "calibration_error": 0.14913658871992208,
+      "brier": 0.22784435056100893
+    },
+    "+Emotion": null
+  }
+}
+
+报告: /home/wanwei/wanwei-eval/reports/egpm_benchmark.json / /home/wanwei/wanwei-eval/reports/egpm_benchmark_report.md

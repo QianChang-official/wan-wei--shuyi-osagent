@@ -1,0 +1,16 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 3383.04it/s]
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+initialized
+initialized
+initialized
+initialized
+Active Knowledge Accuracy: 100.00%
+Evolution Chain Accuracy:  100.00%
+报告: reports/tke_benchmark_report.md

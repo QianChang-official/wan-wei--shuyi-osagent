@@ -1,0 +1,19 @@
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+initialized
+initialized
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights:  45%|████▌     | 32/71 [00:00<00:00, 312.50it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 378.97it/s]
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+kb FTS5 分词方案升级至 v2（CJK 逐字插空格），已重建索引
+[        hybrid] pass 19/20 | pref 0.75 | recall 1.0 | conflict 1.0
+initialized
+initialized
+[      fts_only] pass 20/20 | pref 1.0 | recall 1.0 | conflict 1.0
+initialized
+initialized
+[   vector_only] pass 18/20 | pref 0.5 | recall 1.0 | conflict 1.0
+initialized
+initialized
+[ no_governance] pass 14/20 | pref 0.75 | recall 1.0 | conflict 0.0
+
+报告: reports/baseline_compare.json
