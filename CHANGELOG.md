@@ -13,6 +13,13 @@
 - **Fixed · demo_governance 适配当前 API**：`/memory/v2/search` 已改 GET（原 POST 405）；示例明文口令现被 Policy Gate S3 设计性拦截，改为「先演示拦截、再写可治理敏感知识」双段叙事。修复后麒麟 VM 实机全链路通过（rc=0）：S3 拦截 → 入库 → `kylin_native` 检索 → 自然语言遗忘 → 五处残留取证全零 → PDF 删除证明证书（`09c-*`，真实场景应用案例）。
 - **Eval · bench_egpm 补 JSON 落盘**：EGPM 基准同次运行同时产出机器可读 `egpm_benchmark.json` 与 Markdown 报告；新增 `scripts/bench_kylin_sdk_latency.py`（麒麟 SDK 端到端延迟基准，预热剔除 + 逐次原始延迟 + 用后清理，非麒麟环境如实退出不编数）。
 
+### 2026-09-07 - 面向评委的竞赛交付文档整改（#216）
+
+- **Documentation · 评审报告**：新增 `competition/评审报告.md` 评委主文档，章节与初评打分表一一对应（技术创新性 → 方案可行性 → 性能指标 → 实用性 → 文档规范性）；补齐对比实验的基线选择依据（fts_only / vector_only / hybrid / no_governance 四基线及理由）、记忆流转机制（工作→短期→中期→长期）交互逻辑说明、真实场景案例与麒麟适配实测摘要；英文技术术语首次出现均附中文标注。
+- **Documentation · README 思维导图重画**：`assets/mindmap/wanwei_shuyi_osagent_2_0_mindmap.png` 依据 main 分支实际模块与近期已合并 PR（#196/#197/#200/#203/#205/#214/#215）重画，由 `assets/mindmap/render_mindmap.py` 生成（微软雅黑）；Mermaid 源同步更新。
+- **Documentation · 索引**：`competition/README.md` 以评审报告为评委入口；README 竞赛交付链接同步。
+- **Security · 版权头**：全仓 399 个自有源码文件统一写入木兰 PSL v2 版权头（Copyright (c) 2026 QianChang-official），新增幂等工具 `scripts/license_header.py` 与 CI 校验 job（PR #217/#218）。
+
 ### 2026-09-07 - PR #215 麒麟实机与手机端复验修复
 
 - **Security · 审计读取 fail-closed**：请求身份不可用或为空时审计查询返回空结果，不再退化为读取全部审计记录；空 owner 无法选中未认领的旧记录。JSON1 不可用的 LIKE 兼容查询同样保持 owner 作用域。
