@@ -10,3 +10,4 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""模型网关：供应商配置、连通性测试与 SSRF 出网校验。"""

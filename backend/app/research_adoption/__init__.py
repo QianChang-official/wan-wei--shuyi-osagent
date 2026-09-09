@@ -10,3 +10,4 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""技术采纳研究：采纳路线、技术清单与版本映射。"""

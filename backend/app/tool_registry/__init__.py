@@ -10,3 +10,4 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""工具与技能注册表：能力清单与工具调用结果结构化提取。"""

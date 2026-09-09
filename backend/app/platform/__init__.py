@@ -10,3 +10,4 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+"""平台服务层：平台模块清单与能力摘要。"""

@@ -11,3 +11,4 @@
 # See the Mulan PSL v2 for more details.
 
 
+"""宛委·枢忆 OSAgent 后端应用包（ASGI 入口 app.main）。"""
