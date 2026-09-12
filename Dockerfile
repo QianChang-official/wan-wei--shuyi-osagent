@@ -9,6 +9,11 @@ RUN npm run build
 
 FROM python:3.12-slim-bookworm AS runtime
 
+# libpcre2 安全升级：base 镜像自带的 10.42-1 存在 HIGH 级 CVE-2026-86145 /
+# CVE-2026-89161（Trivy 2026-09-12 漏库更新后命中安全门禁）；bookworm-security
+# 已发布修复版 10.42-1+deb12u1。只升级该包，不整体 apt upgrade（保持镜像最小变更）。
+RUN apt-get update     && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0     && rm -rf /var/lib/apt/lists/*
+
 ARG APP_VERSION=v0.11.0-wanshu
 LABEL org.opencontainers.image.title="Wanwei Shuyi MemoryOps Autopilot"       org.opencontainers.image.description="Single-node OSAgent memory governance and evaluation platform"       org.opencontainers.image.source="https://github.com/QianChang-official/wan-wei--shuyi-osagent"       org.opencontainers.image.version="${APP_VERSION}"
 
