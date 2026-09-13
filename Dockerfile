@@ -11,8 +11,9 @@ FROM python:3.12-slim-bookworm AS runtime
 
 # libpcre2 安全升级：base 镜像自带的 10.42-1 存在 HIGH 级 CVE-2026-86145 /
 # CVE-2026-89161（Trivy 2026-09-12 漏库更新后命中安全门禁）；bookworm-security
-# 已发布修复版 10.42-1+deb12u1。只升级该包，不整体 apt upgrade（保持镜像最小变更）。
-RUN apt-get update     && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0     && rm -rf /var/lib/apt/lists/*
+# 已发布修复版 10.42-1+deb12u1。--only-upgrade 在源中无候选版本时静默 no-op，
+# 故升级后显式断言版本包含 deb12u 安全补丁位，未达修复版即构建失败（防假绿）。
+RUN apt-get update     && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0     && rm -rf /var/lib/apt/lists/*     && v=\$(dpkg-query -W -f='\${Version}' libpcre2-8-0)     && echo "libpcre2-8-0 => \$v"     && case "\$v" in 10.42-1+deb12u[1-9]*) echo 'libpcre2-8-0 已达修复版';; *) echo "ERROR: libpcre2-8-0 版本 \$v 未含 deb12u 安全补丁，期望 10.42-1+deb12u1+" >&2; exit 1;; esac
 
 ARG APP_VERSION=v0.11.0-wanshu
 LABEL org.opencontainers.image.title="Wanwei Shuyi MemoryOps Autopilot"       org.opencontainers.image.description="Single-node OSAgent memory governance and evaluation platform"       org.opencontainers.image.source="https://github.com/QianChang-official/wan-wei--shuyi-osagent"       org.opencontainers.image.version="${APP_VERSION}"
