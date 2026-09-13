@@ -19,6 +19,7 @@ principal boundary without storing or returning the credential itself.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,15 +41,23 @@ class SoulScope:
     owner_id: str
 
 
-def configured_actor_id() -> str:
-    """Return the actor used for internal calls and legacy migration."""
-    return actor_id_from_api_key(get_api_key())
+def configured_actor_id(conn: sqlite3.Connection | None = None) -> str:
+    """Return the actor used for internal calls and legacy migration.
+
+    Callers that already hold a database connection must pass it: resolving
+    the identity otherwise re-enters get_conn(), which closes the held handle
+    once another thread has bumped the connection generation.
+    """
+    return actor_id_from_api_key(get_api_key(), conn=conn)
 
 
-def actor_id_for_request(request: Any | None) -> str:
+def actor_id_for_request(
+    request: Any | None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
     """Resolve the authenticated request actor without exposing the API key."""
     if request is None:
-        return configured_actor_id()
+        return configured_actor_id(conn)
     state = getattr(request, "state", None)
     if state is not None and hasattr(state, "authenticated_identity"):
         authenticated = getattr(state, "authenticated_identity", None)
@@ -63,8 +72,8 @@ def actor_id_for_request(request: Any | None) -> str:
     if not provided:
         # Middleware rejects missing credentials before handlers run.  Keeping
         # this fallback makes direct/internal handler calls deterministic.
-        return configured_actor_id()
-    return actor_id_from_api_key(provided)
+        return configured_actor_id(conn)
+    return actor_id_from_api_key(provided, conn=conn)
 
 
 def owner_id_for_soul(soul_id: str) -> str | None:
