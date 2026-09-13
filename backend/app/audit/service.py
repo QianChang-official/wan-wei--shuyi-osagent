@@ -61,10 +61,13 @@ def _effective_owner(
     return current_audit_owner() or _configured_owner(conn)
 
 
-def _read_owner(owner_id: str | None) -> str | None:
+def _read_owner(
+    owner_id: str | None,
+    conn: sqlite3.Connection | None = None,
+) -> str | None:
     if owner_id is not None:
         return owner_id
-    return current_audit_owner() or _configured_owner()
+    return current_audit_owner() or _configured_owner(conn)
 
 
 def _legacy_owner_allowed(
@@ -147,17 +150,17 @@ def list_logs(
     owner_id: str | None = None,
 ) -> list[dict]:
     capped = max(1, min(limit, 200))
-    read_owner = _read_owner(owner_id)
+    conn = get_conn()
+    _ensure_audit_table(conn)
+    # Resolve owner and the configured-actor comparison on this handle.
+    # Nested get_conn() inside identity lookup would close it if another
+    # thread bumped the connection generation after we opened it.
+    read_owner = _read_owner(owner_id, conn)
     # An unavailable principal is never a request for all audit records. This
     # also prevents an empty owner from selecting unclaimed legacy rows.
     if not read_owner:
         return []
-    # Resolve the configured-owner comparison before opening the list connection
-    # so a nested identity lookup cannot close the handle used below.
-    legacy_allowed = _legacy_owner_allowed(read_owner)
-
-    conn = get_conn()
-    _ensure_audit_table(conn)
+    legacy_allowed = _legacy_owner_allowed(read_owner, conn)
     owner_clause = "owner_id=?"
     if legacy_allowed:
         owner_clause = "(owner_id=? OR owner_id IS NULL OR owner_id='')"

@@ -120,6 +120,7 @@ def test_default_limiter_covers_capsule_detail_reads():
     assert limiter.limit_for("/platform/mobile/tool-calls", method="GET") == 120
     assert limiter.limit_for("/platform/mobile/list", method="GET") == 120
     assert limiter.limit_for("/platform/agents/runs", method="GET") == 120
+    assert limiter.limit_for("/platform/agents/context-size", method="GET") == 120
     assert limiter.limit_for("/platform/system/power", method="GET") == 120
 
 
@@ -142,6 +143,9 @@ def test_default_protected_get_limit_shares_bucket_across_unlisted_paths():
     assert rl.allow("a", "/platform/mobile/events", method="GET", now=t) is True
     assert rl.allow("a", "/platform/mobile/tool-calls", method="GET", now=t) is True
     assert rl.allow("a", "/platform/mobile/list", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/agents/runs", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/agents/context-size", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/system/power", method="GET", now=t) is True
     # A different IP still has a full shared read budget.
     assert rl.allow("b", "/memory/v2/capsules/cap_other", method="GET", now=t) is True
 

@@ -1301,7 +1301,11 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
             },
         )
     if not capsule_ids and not event_ids:
-        audit_id=record('forget_confirm_selection_required',{'forget_request_id':req.forget_request_id})
+        audit_id=record(
+            'forget_confirm_selection_required',
+            {'forget_request_id':req.forget_request_id},
+            owner_id=request_owner_id,
+        )
         return {
             'status': 'selection_required',
             'audit_id': audit_id,

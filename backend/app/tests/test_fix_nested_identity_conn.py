@@ -77,3 +77,19 @@ def test_actor_id_for_request_reuses_held_conn(isolated_db, monkeypatch):
     # （含首次引导：独立写连接，不触碰调用方句柄）。
     assert actor_id_for_request(_StubRequest({"x-api-key": key}), conn=conn)
     assert conn.execute("SELECT 1").fetchone() is not None
+
+
+def test_legacy_owner_allowed_reuses_held_conn(isolated_db, monkeypatch):
+    """list_logs 的配置-owner 比较必须复用已持有连接。"""
+    monkeypatch.setenv("WANWEI_API_KEY", "nested-conn-owner-key-0123456789abcdef")
+    from backend.app.audit.service import _legacy_owner_allowed
+    from backend.app.db import get_conn
+    from backend.app.soul.ownership import configured_actor_id
+
+    owner = configured_actor_id()
+    conn = get_conn()
+    _bump_generation_from_other_thread()
+
+    assert _legacy_owner_allowed(owner, conn) is True
+    # 若实现嵌套 get_conn()，此刻 conn 已被关闭，下一行抛 ProgrammingError。
+    assert conn.execute("SELECT 1").fetchone() is not None

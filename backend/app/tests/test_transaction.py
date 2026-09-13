@@ -201,3 +201,45 @@ def test_audit_record_in_transaction_survives_concurrent_close_all(isolated_db, 
         ("stress_tx_probe",),
     ).fetchone()[0]
     assert count == 40
+
+
+def test_audit_list_logs_survives_concurrent_close_all(isolated_db, monkeypatch):
+    """list_logs must not re-enter get_conn() after it already holds a handle."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("WANWEI_API_KEY", "stress-audit-owner-key-0123456789")
+    from backend.app.audit.service import list_logs, record
+    from backend.app.db import close_all, get_conn
+
+    record("stress_list_probe", {"n": 0})
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def reader(_idx: int) -> int:
+        try:
+            return len(list_logs(limit=10))
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+
+    def invalidator() -> None:
+        while not stop.wait(timeout=0.001):
+            close_all()
+
+    invalidator_thread = threading.Thread(target=invalidator)
+    invalidator_thread.start()
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            counts = list(executor.map(reader, range(40)))
+    finally:
+        stop.set()
+        invalidator_thread.join(timeout=5)
+
+    assert not errors
+    assert counts
+    assert all(count >= 1 for count in counts)
+    leftover = get_conn().execute(
+        "SELECT COUNT(*) FROM audit_logs WHERE event_type=?",
+        ("stress_list_probe",),
+    ).fetchone()[0]
+    assert leftover == 1
