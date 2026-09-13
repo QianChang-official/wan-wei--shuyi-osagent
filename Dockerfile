@@ -14,6 +14,13 @@ LABEL org.opencontainers.image.title="Wanwei Shuyi MemoryOps Autopilot"       or
 
 ENV PYTHONUNBUFFERED=1     PYTHONDONTWRITEBYTECODE=1     PYTHONPATH=/app/backend     WANWEI_PRODUCTION=1     WANWEI_MEMORY_DB=/data/memory.db     WANWEI_PLATFORM_DIR=/data/platform
 
+# pcre2 CVE-2026-86145 / CVE-2026-89161（HIGH，Debian 已发 10.42-1+deb12u1 修复）：
+# python:3.12-slim-bookworm 移动标签尚未随安全更新重建，显式升级该库使镜像
+# 与 Container vulnerability scan 门禁对齐；上游标签跟上后本层退化为幂等 no-op。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN addgroup --system --gid 10001 wanwei     && adduser --system --uid 10001 --ingroup wanwei --home /nonexistent --no-create-home wanwei
 
 WORKDIR /app
