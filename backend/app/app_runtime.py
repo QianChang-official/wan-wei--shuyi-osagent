@@ -936,6 +936,7 @@ def forget_preview(req: ForgetPreviewIn, request: Request = None):
                 'retrieval': retrieval,
                 'candidates': audit_candidates,
             },
+            owner_id=soul_scope.owner_id if soul_scope else None,
         )
         conn.commit()
     except (sqlite3.Error, OSError):
@@ -1237,7 +1238,11 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
         # nested get_conn() would close this handle on a generation bump.
         ticket_denied = request_owner_id != configured_actor_id(conn=conn)
     if not ticket or ticket_denied:
-        audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
+        audit_id=record(
+            'forget_confirm_not_found',
+            {'forget_request_id':req.forget_request_id},
+            owner_id=request_owner_id,
+        )
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
     scope_owner_id = ticket_owner_id or (request_owner_id if ownerless_legacy_ticket else None)
     if not req.confirm:
@@ -1256,7 +1261,12 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                 return json.loads(current['result']) if current['result'] else {'status': 'cancelled'}
             if current['status'] != 'pending':
                 raise HTTPException(status_code=409, detail='forget_request_in_progress')
-            audit_id = record_in_transaction(conn, 'forget_confirm_cancelled', req.model_dump())
+            audit_id = record_in_transaction(
+                conn,
+                'forget_confirm_cancelled',
+                req.model_dump(),
+                owner_id=request_owner_id,
+            )
             cancelled_result = {'status': 'cancelled', 'audit_id': audit_id}
             conn.execute(
                 "UPDATE memory_forget_requests SET status='cancelled', result=?, updated_at=? WHERE forget_request_id=?",
@@ -1413,6 +1423,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                     'deleted_event_ids': event_ids,
                     'native_vector': result['native_vector'],
                 },
+                owner_id=request_owner_id,
             )
             response = {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids,'native_vector':result['native_vector']}
             stored_result = {

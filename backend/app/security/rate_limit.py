@@ -70,6 +70,16 @@ _LIMITS_PER_MIN: dict[str, int] = {
     "/memory/search": 60,
     "/platform/mcp/servers": 30,
     "/platform/mcp/overview": 30,
+    # LAN companion polling. These exact paths used to have their own 120/min
+    # budget (raw-path default). After unlisted protected reads share one
+    # bucket, they must stay listed so a unique-id flood cannot starve the
+    # phone/H5 poll loop, and the poll loop cannot consume the anti-DoS budget.
+    "/platform/agents/runs": 120,
+    "/platform/agents/context-size": 120,
+    "/platform/system/power": 120,
+    "/platform/mobile/events": 120,
+    "/platform/mobile/tool-calls": 120,
+    "/platform/mobile/list": 120,
 }
 
 # Burst capacity per endpoint == its per-minute limit (allows a short burst up to
