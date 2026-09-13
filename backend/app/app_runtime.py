@@ -1128,6 +1128,10 @@ def _audit_legacy_capsule_links(
     audit_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
     has_audit_owner = 'owner_id' in audit_columns
     if owner_id is not None:
+        # The configured-actor comparison must reuse the caller's connection;
+        # a nested get_conn() would close this handle after another thread
+        # bumped the connection generation.
+        configured_owner = configured_actor_id(conn=conn)
         event_clauses = [
             f"event_id IN ({placeholders})",
             "owner_id=?",
@@ -1144,7 +1148,7 @@ def _audit_legacy_capsule_links(
         missing = [row['event_id'] for row in scoped_events]
         if not missing:
             return {}
-        if not has_audit_owner and owner_id != configured_actor_id():
+        if not has_audit_owner and owner_id != configured_owner:
             # A four-column legacy audit table cannot prove ownership. Only the
             # configured compatibility actor may consume its ownerless rows.
             return {}
@@ -1156,7 +1160,7 @@ def _audit_legacy_capsule_links(
     ]
     params: list[object] = list(missing)
     if owner_id is not None and has_audit_owner:
-        if owner_id == configured_actor_id():
+        if owner_id == configured_owner:
             clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
         else:
             clauses.append("owner_id=?")
@@ -1172,7 +1176,7 @@ def _audit_legacy_capsule_links(
         fallback_clauses = ["event_type='memory_write'"]
         fallback_params: list[object] = []
         if owner_id is not None and has_audit_owner:
-            if owner_id == configured_actor_id():
+            if owner_id == configured_owner:
                 fallback_clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
             else:
                 fallback_clauses.append("owner_id=?")
@@ -1219,7 +1223,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
            WHERE ticket.forget_request_id=?""",
         (req.forget_request_id,),
     ).fetchone()
-    request_owner_id = actor_id_for_request(request)
+    request_owner_id = actor_id_for_request(request, conn=conn)
     ticket_owner_id = ticket['ticket_owner_id'] if ticket else None
     ticket_soul_id = ticket['ticket_soul_id'] if ticket else None
     ownerless_legacy_ticket = ticket is not None and not ticket_owner_id
@@ -1229,7 +1233,9 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
     elif ticket is not None:
         # Ownerless historical tickets remain compatible only with the
         # configured actor; never let another API key claim their scope.
-        ticket_denied = request_owner_id != configured_actor_id()
+        # conn is already held here: the identity lookup must reuse it, or a
+        # nested get_conn() would close this handle on a generation bump.
+        ticket_denied = request_owner_id != configured_actor_id(conn=conn)
     if not ticket or ticket_denied:
         audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
