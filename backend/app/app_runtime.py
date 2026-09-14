@@ -914,6 +914,10 @@ def forget_preview(req: ForgetPreviewIn, request: Request = None):
     ]
     conn = get_conn()
     timestamp = utc_now_iso()
+    # BEGIN IMMEDIATE 前预解析审计 owner。soul_scope=None 的内部直连路径会走
+    # configured_actor_id() 兜底，身份未登记时其引导写发生在独立连接上——
+    # 若留到事务内解析会与这里的写锁竞争到 busy 超时（与 tier_manager 同款处理）。
+    audit_owner_id = soul_scope.owner_id if soul_scope is not None else configured_actor_id()
     try:
         conn.execute('BEGIN IMMEDIATE')
         conn.execute(
@@ -936,6 +940,7 @@ def forget_preview(req: ForgetPreviewIn, request: Request = None):
                 'retrieval': retrieval,
                 'candidates': audit_candidates,
             },
+            owner_id=audit_owner_id,
         )
         conn.commit()
     except (sqlite3.Error, OSError):
@@ -1127,7 +1132,12 @@ def _audit_legacy_capsule_links(
     placeholders = ','.join('?' for _ in missing)
     audit_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
     has_audit_owner = 'owner_id' in audit_columns
+    configured_owner: str | None = None
     if owner_id is not None:
+        # The configured-actor comparison must reuse the caller's connection;
+        # a nested get_conn() would close this handle after another thread
+        # bumped the connection generation.
+        configured_owner = configured_actor_id(conn=conn)
         event_clauses = [
             f"event_id IN ({placeholders})",
             "owner_id=?",
@@ -1144,7 +1154,7 @@ def _audit_legacy_capsule_links(
         missing = [row['event_id'] for row in scoped_events]
         if not missing:
             return {}
-        if not has_audit_owner and owner_id != configured_actor_id():
+        if not has_audit_owner and owner_id != configured_owner:
             # A four-column legacy audit table cannot prove ownership. Only the
             # configured compatibility actor may consume its ownerless rows.
             return {}
@@ -1156,7 +1166,7 @@ def _audit_legacy_capsule_links(
     ]
     params: list[object] = list(missing)
     if owner_id is not None and has_audit_owner:
-        if owner_id == configured_actor_id():
+        if owner_id == configured_owner:
             clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
         else:
             clauses.append("owner_id=?")
@@ -1172,7 +1182,7 @@ def _audit_legacy_capsule_links(
         fallback_clauses = ["event_type='memory_write'"]
         fallback_params: list[object] = []
         if owner_id is not None and has_audit_owner:
-            if owner_id == configured_actor_id():
+            if owner_id == configured_owner:
                 fallback_clauses.append("(owner_id=? OR owner_id IS NULL OR owner_id='')")
             else:
                 fallback_clauses.append("owner_id=?")
@@ -1219,7 +1229,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
            WHERE ticket.forget_request_id=?""",
         (req.forget_request_id,),
     ).fetchone()
-    request_owner_id = actor_id_for_request(request)
+    request_owner_id = actor_id_for_request(request, conn=conn)
     ticket_owner_id = ticket['ticket_owner_id'] if ticket else None
     ticket_soul_id = ticket['ticket_soul_id'] if ticket else None
     ownerless_legacy_ticket = ticket is not None and not ticket_owner_id
@@ -1229,9 +1239,15 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
     elif ticket is not None:
         # Ownerless historical tickets remain compatible only with the
         # configured actor; never let another API key claim their scope.
-        ticket_denied = request_owner_id != configured_actor_id()
+        # conn is already held here: the identity lookup must reuse it, or a
+        # nested get_conn() would close this handle on a generation bump.
+        ticket_denied = request_owner_id != configured_actor_id(conn=conn)
     if not ticket or ticket_denied:
-        audit_id=record('forget_confirm_not_found',{'forget_request_id':req.forget_request_id})
+        audit_id=record(
+            'forget_confirm_not_found',
+            {'forget_request_id':req.forget_request_id},
+            owner_id=request_owner_id,
+        )
         return {'status':'not_found','audit_id':audit_id,'deleted_capsule_ids':[],'deleted_event_ids':[]}
     scope_owner_id = ticket_owner_id or (request_owner_id if ownerless_legacy_ticket else None)
     if not req.confirm:
@@ -1250,7 +1266,12 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                 return json.loads(current['result']) if current['result'] else {'status': 'cancelled'}
             if current['status'] != 'pending':
                 raise HTTPException(status_code=409, detail='forget_request_in_progress')
-            audit_id = record_in_transaction(conn, 'forget_confirm_cancelled', req.model_dump())
+            audit_id = record_in_transaction(
+                conn,
+                'forget_confirm_cancelled',
+                req.model_dump(),
+                owner_id=request_owner_id,
+            )
             cancelled_result = {'status': 'cancelled', 'audit_id': audit_id}
             conn.execute(
                 "UPDATE memory_forget_requests SET status='cancelled', result=?, updated_at=? WHERE forget_request_id=?",
@@ -1285,7 +1306,11 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
             },
         )
     if not capsule_ids and not event_ids:
-        audit_id=record('forget_confirm_selection_required',{'forget_request_id':req.forget_request_id})
+        audit_id=record(
+            'forget_confirm_selection_required',
+            {'forget_request_id':req.forget_request_id},
+            owner_id=request_owner_id,
+        )
         return {
             'status': 'selection_required',
             'audit_id': audit_id,
@@ -1407,6 +1432,7 @@ def forget_confirm(req: ForgetConfirmIn, request: Request = None):
                     'deleted_event_ids': event_ids,
                     'native_vector': result['native_vector'],
                 },
+                owner_id=request_owner_id,
             )
             response = {'status':'forgotten','audit_id':audit_id,'deleted_capsule_ids':result['deleted_capsule_ids'],'deleted_event_ids':event_ids,'native_vector':result['native_vector']}
             stored_result = {
