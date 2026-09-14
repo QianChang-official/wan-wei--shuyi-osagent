@@ -1,5 +1,10 @@
 # Pull Request Review Guidance
 
+## 评审执行约束（对 kilo-code-bot）
+
+- **评审本仓库的 PR 时不要派生子代理（do not spawn sub-agents）**，所有评审在主会话内直接完成。本仓库较大 PR 在 6 子代理分片模式下多次撞固定时限后静默失败（无评论产出，上游已知问题 Kilo-Org/kilocode#8434），主会话直评可在时限内完成；本约束在官方文档的 REVIEW.md 支持范围内（"how Kilo should use sub-agents"）。
+- 其余评审口径不变，见下文各节。
+
 Use this file together with the repository's tests and documentation. Review only
 the behavior introduced or changed by the pull request. Do not turn pre-existing
 debt, speculative redesigns, or cosmetic preferences into blocking findings.
