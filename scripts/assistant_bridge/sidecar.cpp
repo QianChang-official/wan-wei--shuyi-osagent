@@ -156,8 +156,10 @@ int main() {
             } else {
                 resp_body = "{\"error\":\"not found\"}";
             }
-            std::string http = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
-                + std::to_string(resp_body.size()) + "\r\nConnection: close\r\n\r\n" + resp_body;
+            std::string headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n";
+            headers += "Content-Length: " + std::to_string(resp_body.size());
+            headers += "\r\nConnection: close\r\n\r\n";
+            std::string http = headers + resp_body;
             send(client, http.c_str(), http.size(), 0);
             close(client);
         }).detach();
