@@ -115,6 +115,39 @@ def test_default_limiter_covers_capsule_detail_reads():
     limiter = build_default_rate_limiter()
 
     assert limiter.limit_for("/memory/v2/capsules/cap_private", method="GET") == 120
+    assert limiter.limit_for("/memory/v2/capsules/cap_private", method="HEAD") == 120
+    assert limiter.limit_for("/platform/mobile/events", method="GET") == 120
+    assert limiter.limit_for("/platform/mobile/tool-calls", method="GET") == 120
+    assert limiter.limit_for("/platform/mobile/list", method="GET") == 120
+    assert limiter.limit_for("/platform/agents/runs", method="GET") == 120
+    assert limiter.limit_for("/platform/agents/context-size", method="GET") == 120
+    assert limiter.limit_for("/platform/system/power", method="GET") == 120
+
+
+def test_default_protected_get_limit_shares_bucket_across_unlisted_paths():
+    """Varying resource ids must not mint a fresh 120/min bucket per path."""
+    rl = build_default_rate_limiter()
+    t = 500.0
+
+    allowed = sum(
+        1
+        for i in range(200)
+        if rl.allow("a", f"/memory/v2/capsules/cap_{i}", method="GET", now=t)
+    )
+    assert allowed == 120
+    assert rl.allow("a", "/platform/agents/agent_x", method="GET", now=t) is False
+    assert rl.allow("a", "/memory/v2/capsules/cap_head", method="HEAD", now=t) is False
+    # Exact listed paths keep their own budget.
+    assert rl.allow("a", "/memory/v2/capsules", method="GET", now=t) is True
+    # LAN polling paths stay listed so a unique-id flood cannot starve them.
+    assert rl.allow("a", "/platform/mobile/events", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/mobile/tool-calls", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/mobile/list", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/agents/runs", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/agents/context-size", method="GET", now=t) is True
+    assert rl.allow("a", "/platform/system/power", method="GET", now=t) is True
+    # A different IP still has a full shared read budget.
+    assert rl.allow("b", "/memory/v2/capsules/cap_other", method="GET", now=t) is True
 
 
 def test_default_limiter_tightly_limits_native_status_probe():

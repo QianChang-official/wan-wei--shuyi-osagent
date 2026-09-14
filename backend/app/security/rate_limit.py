@@ -70,6 +70,16 @@ _LIMITS_PER_MIN: dict[str, int] = {
     "/memory/search": 60,
     "/platform/mcp/servers": 30,
     "/platform/mcp/overview": 30,
+    # LAN companion polling. These exact paths used to have their own 120/min
+    # budget (raw-path default). After unlisted protected reads share one
+    # bucket, they must stay listed so a unique-id flood cannot starve the
+    # phone/H5 poll loop, and the poll loop cannot consume the anti-DoS budget.
+    "/platform/agents/runs": 120,
+    "/platform/agents/context-size": 120,
+    "/platform/system/power": 120,
+    "/platform/mobile/events": 120,
+    "/platform/mobile/tool-calls": 120,
+    "/platform/mobile/list": 120,
 }
 
 # Burst capacity per endpoint == its per-minute limit (allows a short burst up to
@@ -128,16 +138,20 @@ class RateLimiter:
             return path, self._limits[path]
 
         normalized_method = method.upper()
-        if normalized_method == "GET" and self._protected_get_limit_per_min is not None:
+        # HEAD is the body-less form of GET; APIKeyMiddleware already treats it
+        # as protected. Rate-limit it on the same surface so a HEAD flood cannot
+        # bypass the read budget.
+        if normalized_method in {"GET", "HEAD"} and self._protected_get_limit_per_min is not None:
             if path in self._protected_get_paths:
                 return path, self._protected_get_limit_per_min
             protected_prefix = self._protected_prefix_for(path)
             if protected_prefix is not None:
                 return f"{protected_prefix}/*", self._protected_get_limit_per_min
             if self._public_path_checker is not None and not self._public_path_checker(path):
-                # 与 APIKeyMiddleware 同源：所有需鉴权的 GET（含 /platform/* 等
-                # 未单独列名的保护性读取）共享默认保护性读额度。
-                return path, self._protected_get_limit_per_min
+                # Share one per-IP budget across unlisted protected reads. Using
+                # the raw path as the bucket key let a client mint a unique
+                # capsule/agent/run id per request and never hit 429.
+                return "__protected_get_default__", self._protected_get_limit_per_min
 
         if normalized_method in self._write_methods and self._default_write_limit_per_min is not None:
             return f"__write_default__:{normalized_method}:*", self._default_write_limit_per_min
