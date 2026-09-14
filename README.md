@@ -172,6 +172,7 @@ bash scripts/run_dev.sh
 | 端侧规模曲线（纯 FTS 词面通道，麒麟 VM 实测） | 冷态 p95 = **6.0 / 53.2 / 224.6 ms**（1k/10k/50k 条），热态 3.8 / 45.7 / 210.0 ms | 50 条中文 query，逐次原始延迟留档；5 万条仍满足赛题 ≤500ms |
 | 端侧规模曲线（全栈回退链：语义 brute-force + FTS） | 50k 档 p95 **2785 ms** | 语义回退通道在万条以上明显退化，HNSW 为既定优化方向；该通道仅兜底，主通道实测 92.7 ms ≪ 500ms |
 | MemoryArena-Lite 生产记忆评测 | **6 cases / 20 assertions 全部通过** | `unsafe_autonomy_rate = 0.0`，evidence_card_coverage / policy_gate_hit / lifecycle_correct 均 1.0，2026-09-08 麒麟 VM 复测，见 [`reports/kylin-vm-evidence-20260908/arena/`](reports/kylin-vm-evidence-20260908/arena/) |
+| 麒麟 V10 (SP3) 全量验证 | **1872 passed / 7 skipped（100 s，EXIT=0）** | main@7fed5b4，Python 3.12.14 + requirements.lock，2026-09-11；生产模式冒烟通过（/health、/health/ready、/openapi.json 共 204 条路由），无 key 写请求 401、带凭据业务端到端 200；证据与边界说明见 [#229](https://github.com/QianChang-official/wan-wei--shuyi-osagent/issues/229) |
 
 > 上一轮 v1.0.0 验收口径（宿主机，2026-09-05）为 HTTP 全链路 p50 29 ms / p95 83 ms；2026-07 麒麟 SDK one-shot 冷启动口径为 p50 195.32 ms / p95 246.47 ms。常驻 bridge 把模型加载移出请求路径后端到端 p95 降至 92.7 ms，三轮数据均可对照原始文件复核。
 
@@ -184,7 +185,7 @@ bash scripts/run_dev.sh
 | **可证明删除** | ✅ 五处取证 + PDF 证书 | — | — | —（自述 "invalidated — not deleted"） |
 | **不可变审计账本** | ✅ append-only，触发器强制 | — | — | — |
 | **生命周期治理** | ✅ 10 态 + 422 裁决 | 新算法 ADD-only（自述 no UPDATE/DELETE） | 编辑 / 删除 API，无状态机裁决 | 双时序事实失效 |
-| **信创 / 麒麟适配** | ✅ V11 验收 + deb/rpm | — | — | — |
+| **信创 / 麒麟适配** | ✅ V11 实测验收 + V10 SP3 全量验证 + deb/rpm | — | — | — |
 | **交付形态** | 单节点全本地，无云端形态 | Library / 自托管 / 云平台 | 云 API / 云插件 / 自托管 / 本地插件 | OSS 自托管（商业版 Zep 为托管云） |
 
 > 竞品信息取自各家 README（2026-09 快照）；"—"表示其 README 未宣称该能力，不代表产品绝对缺失，选型前请以各家官方文档为准。各家在自身主线（分数 / 调度 / 时序图谱）上都很强，只是「删除可证明」这条线，目前没有人在做。完整评测口径见 [docs/BENCHMARK.md](docs/BENCHMARK.md)。
