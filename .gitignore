@@ -41,3 +41,6 @@ dl/
 reports/
 backend/app/uploads/
 /pytest_audit_*.txt
+# assistant-bridge 编译产物（make / make test 生成）
+scripts/assistant_bridge/wanwei-assistant-sidecar
+scripts/assistant_bridge/json_util_test
