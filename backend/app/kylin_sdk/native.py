@@ -27,6 +27,7 @@ one JSON request on stdin and one JSON response on stdout.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -36,6 +37,8 @@ from typing import Any
 
 from ..db import database_path
 from ..security.auth import is_production_mode
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_BRIDGE_NAME = "wanwei-kylin-sdk-bridge"
@@ -93,12 +96,18 @@ class NativeSdkConfig:
     vector_db_path: Path
     timeout_seconds: float
     mode: str
+    vector_encrypt: bool = False
+    vector_key_file: str | None = None
 
 
 def load_config() -> NativeSdkConfig:
     configured_db = os.environ.get("WANWEI_KYLIN_VECTOR_DB")
     vector_db_path = Path(configured_db).expanduser() if configured_db else database_path().with_name("kylin-vector.db")
     model = os.environ.get("WANWEI_KYLIN_EMBEDDING_MODEL", "").strip() or None
+    # 向量库文件加密（#234）：默认关闭保持现状；开启后 bridge 以
+    # LoadDBFile(db, true, key) 加载，key 仅从受保护文件读取。
+    vector_encrypt = os.environ.get("WANWEI_KYLIN_VECTOR_ENCRYPT", "").strip().lower() in _TRUE_VALUES
+    key_file = os.environ.get("WANWEI_KYLIN_VECTOR_KEY_FILE", "").strip() or None
     return NativeSdkConfig(
         bridge_path=_resolve_bridge_path(),
         collection=os.environ.get("WANWEI_KYLIN_VECTOR_COLLECTION", DEFAULT_COLLECTION).strip() or DEFAULT_COLLECTION,
@@ -107,6 +116,8 @@ def load_config() -> NativeSdkConfig:
         vector_db_path=vector_db_path,
         timeout_seconds=_timeout_seconds(),
         mode=_native_mode(),
+        vector_encrypt=vector_encrypt,
+        vector_key_file=key_file,
     )
 
 
@@ -127,7 +138,42 @@ class KylinNativeSdk:
             if is_production_mode() and not os.environ.get("WANWEI_KYLIN_SDK_BRIDGE"):
                 return {"available": False, "reason": "bridge_path_required_in_production"}
             return {"available": False, "reason": "bridge_not_installed"}
+        # 加密开启时先自检 key 文件：缺失 / 非普通文件 / 不可读 / 权限过宽都不带病启动，
+        # 明确降级到 FTS 而不是等 bridge 调用时才失败。
+        if self.config.vector_encrypt:
+            reason = self._key_file_problem()
+            if reason is not None:
+                return {"available": False, "reason": reason}
         return {"available": True, "reason": None, "bridge_path": str(self.config.bridge_path)}
+
+    def _key_file_problem(self) -> str | None:
+        """返回 key 文件的问题描述；无问题返回 None。"""
+        key_path = self.config.vector_key_file
+        if not key_path:
+            return "vector_encryption_key_unavailable"
+        path = Path(key_path).expanduser()
+        if not path.is_file():
+            return "vector_encryption_key_unavailable"
+        if not os.access(path, os.R_OK):
+            return "vector_encryption_key_unreadable"
+        # 组/其他可读的 key 文件等于把记忆库密钥暴露给同机其他账户：
+        # 生产模式直接失败（与 WANWEI_API_KEY 的 secret 文件同一口径），
+        # 非生产模式只告警，避免开发环境被硬卡住。
+        # 注：仅 POSIX 语义下检查权限位——Windows 的 st_mode 不含这些位。
+        try:
+            mode = path.stat().st_mode
+        except OSError:
+            return "vector_encryption_key_unreadable"
+        if os.name == "posix" and mode & 0o077:
+            message = (
+                f"[kylin-native] key 文件权限过宽（{oct(mode & 0o777)}）：{path}；"
+                "建议 chmod 600，避免同机其他账户读取向量库密钥。"
+            )
+            if is_production_mode():
+                logger.error(message)
+                return "vector_encryption_key_permissions_too_open"
+            logger.warning(message)
+        return None
 
     def status(self) -> dict[str, Any]:
         availability = self.availability()
@@ -170,6 +216,8 @@ class KylinNativeSdk:
             "app_id": self.config.app_id,
             "db_file": str(self.config.vector_db_path),
             "embedding_model": self.config.embedding_model,
+            "encrypt": self.config.vector_encrypt,
+            "key_file": self.config.vector_key_file,
             **payload,
         }
         # 常驻模式优先:模型只加载一次。进程死亡/超时/协议错误返回 None,
@@ -319,6 +367,8 @@ def _persistent_bridge(config: NativeSdkConfig) -> _PersistentBridge:
         config.app_id,
         str(config.vector_db_path),
         config.embedding_model or "",
+        config.vector_encrypt,
+        config.vector_key_file or "",
     )
     with _PERSISTENT_BRIDGES_LOCK:
         bridge = _PERSISTENT_BRIDGES.get(key)
@@ -329,6 +379,8 @@ def _persistent_bridge(config: NativeSdkConfig) -> _PersistentBridge:
                 "app_id": config.app_id,
                 "db_file": str(config.vector_db_path),
                 "embedding_model": config.embedding_model,
+                "encrypt": config.vector_encrypt,
+                "key_file": config.vector_key_file,
             }
             bridge = _PersistentBridge(config.bridge_path, warmup)
             _PERSISTENT_BRIDGES[key] = bridge

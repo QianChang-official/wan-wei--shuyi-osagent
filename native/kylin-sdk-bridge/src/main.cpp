@@ -2,9 +2,11 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -27,6 +29,8 @@ namespace {
 using json = nlohmann::json;
 constexpr const char* kResponsePrefix = "WANWEI_KYLIN_RESPONSE:";
 constexpr const char* kDefaultEmbeddingModel = "ensemble-embd_gte-base_uint8-text";
+// key 文件大小上界（8 KiB 足够容纳任何密钥文本；文件不存在/为空/超限都直接失败）
+constexpr std::uintmax_t kMaxKeyFileBytes = 8 * 1024;
 
 class NativeError : public std::runtime_error {
 public:
@@ -62,6 +66,52 @@ std::string optional_string(const json& request, const char* name) {
         throw NativeError(std::string("invalid_") + name);
     }
     return it->get<std::string>();
+}
+
+bool optional_bool(const json& request, const char* name) {
+    const auto it = request.find(name);
+    if (it == request.end() || it->is_null()) {
+        return false;
+    }
+    if (!it->is_boolean()) {
+        throw NativeError(std::string("invalid_") + name);
+    }
+    return it->get<bool>();
+}
+
+// 加密向量库的 key 只从受保护文件读取（调用方传路径而非 key 本体），
+// 避免 key 出现在 JSON 协议、进程参数或日志里。
+std::string read_key_file(const std::string& path) {
+    std::error_code file_error;
+    const auto size = std::filesystem::file_size(path, file_error);
+    if (file_error) {
+        throw NativeError("vector_key_file_unreadable");
+    }
+    // 上界保护：key 文件不可能是大文件，若指向 /dev/zero 之类的特殊文件，
+    // 无界读取会耗尽内存或永不返回。
+    if (size == 0 || size > kMaxKeyFileBytes) {
+        throw NativeError("vector_key_file_invalid_size");
+    }
+    if (!std::filesystem::is_regular_file(path, file_error) || file_error) {
+        throw NativeError("vector_key_file_not_regular");
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw NativeError("vector_key_file_unreadable");
+    }
+    std::string key(static_cast<std::size_t>(size), '\0');
+    in.read(&key[0], static_cast<std::streamsize>(key.size()));
+    if (in.gcount() != static_cast<std::streamsize>(key.size())) {
+        throw NativeError("vector_key_file_read_failed");
+    }
+    while (!key.empty() &&
+           (key.back() == '\n' || key.back() == '\r' || key.back() == ' ' || key.back() == '\t')) {
+        key.pop_back();
+    }
+    if (key.empty()) {
+        throw NativeError("vector_key_file_empty");
+    }
+    return key;
 }
 
 int64_t required_int64(const json& request, const char* name) {
@@ -204,7 +254,14 @@ public:
             throw NativeError("vector_client_create_failed");
         }
         require_status(client_->Connect(VectorDB::ConnectParam(required_string(request, "app_id"))), "vector_connect");
-        require_status(client_->LoadDBFile(db_file_), "vector_load_db");
+        // 官方 LoadDBFile(db_file, encrypt, key)：encrypt 开启时从 key_file 读 key
+        // （key 不进协议/日志）。默认不加密，行为与既有版本一致。
+        const bool encrypt = optional_bool(request, "encrypt");
+        std::string key;
+        if (encrypt) {
+            key = read_key_file(required_string(request, "key_file"));
+        }
+        require_status(client_->LoadDBFile(db_file_, encrypt, key), "vector_load_db");
     }
 
     ~VectorRuntime() {
@@ -304,10 +361,14 @@ public:
     }
 
     VectorRuntime& vector_db(const json& request) {
+        // 缓存键含全部影响 VectorRuntime 构造的配置：加密开关与 key 文件
+        // 路径变化时必须重建连接，不能跨配置复用。
         const std::string key =
             required_string(request, "app_id") + "\x1f" +
             required_string(request, "collection") + "\x1f" +
-            required_string(request, "db_file");
+            required_string(request, "db_file") + "\x1f" +
+            (optional_bool(request, "encrypt") ? "enc1" : "enc0") + "\x1f" +
+            optional_string(request, "key_file");
         const auto it = vector_dbs_.find(key);
         if (it != vector_dbs_.end()) {
             return *it->second;
