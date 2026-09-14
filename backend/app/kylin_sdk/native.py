@@ -159,11 +159,12 @@ class KylinNativeSdk:
         # 组/其他可读的 key 文件等于把记忆库密钥暴露给同机其他账户：
         # 生产模式直接失败（与 WANWEI_API_KEY 的 secret 文件同一口径），
         # 非生产模式只告警，避免开发环境被硬卡住。
+        # 注：仅 POSIX 语义下检查权限位——Windows 的 st_mode 不含这些位。
         try:
             mode = path.stat().st_mode
         except OSError:
             return "vector_encryption_key_unreadable"
-        if mode & 0o077:
+        if os.name == "posix" and mode & 0o077:
             message = (
                 f"[kylin-native] key 文件权限过宽（{oct(mode & 0o777)}）：{path}；"
                 "建议 chmod 600，避免同机其他账户读取向量库密钥。"

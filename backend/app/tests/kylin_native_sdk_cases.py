@@ -13,6 +13,7 @@
 """Native Kylin SDK protocol and fallback lifecycle tests."""
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -1898,6 +1899,13 @@ def test_vector_encryption_request_payload(monkeypatch, tmp_path):
     assert "s3cret" not in captured["input"]
 
 
+# 权限位语义仅 POSIX 成立（Windows 的 st_mode 不含这些位）
+_POSIX_PERMISSIONS = pytest.mark.skipif(
+    os.name != "posix", reason="POSIX 权限位语义（Windows 的 st_mode 不含这些位）"
+)
+
+
+@_POSIX_PERMISSIONS
 def test_vector_encryption_rejects_unreadable_key_file(monkeypatch, tmp_path):
     """#234: key 文件存在但不可读 → 降级而非把失败拖到 bridge 调用期。"""
     bridge = tmp_path / "bridge"
@@ -1922,6 +1930,7 @@ def test_vector_encryption_rejects_unreadable_key_file(monkeypatch, tmp_path):
         key_file.chmod(0o600)
 
 
+@_POSIX_PERMISSIONS
 def test_vector_encryption_key_permissions_checked(monkeypatch, tmp_path):
     """#234: 权限过宽的 key 文件在生产模式失败关闭、非生产模式放行并告警。"""
     bridge = tmp_path / "bridge"
@@ -1947,6 +1956,7 @@ def test_vector_encryption_key_permissions_checked(monkeypatch, tmp_path):
     assert native.KylinNativeSdk().availability()["available"] is True
 
 
+@_POSIX_PERMISSIONS
 def test_vector_encryption_accepts_private_key_file(monkeypatch, tmp_path):
     """#234: 600 权限的 key 文件在生产模式正常放行。"""
     bridge = tmp_path / "bridge"
