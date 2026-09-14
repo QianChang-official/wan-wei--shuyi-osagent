@@ -20,6 +20,14 @@ import urllib.request
 SIDECAR = "http://127.0.0.1:8021"
 
 
+def _open(url, timeout: int, **kwargs):
+    """限定 http/https scheme 的 urlopen,防御 file:/自定义 scheme(B310)."""
+    target = url.full_url if isinstance(url, urllib.request.Request) else url
+    if not target.startswith(("http://", "https://")):
+        raise ValueError(f"unexpected url scheme: {target}")
+    return urllib.request.urlopen(url, timeout=timeout, **kwargs)
+
+
 def chat(text: str, timeout: int = 120) -> str:
     """发一条消息给麒麟个人助手,返回拼接后的纯文本回复."""
     req = urllib.request.Request(
@@ -28,7 +36,7 @@ def chat(text: str, timeout: int = 120) -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _open(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
     if "error" in data:
         raise RuntimeError(data["error"])
@@ -65,7 +73,7 @@ def _extract_text(raw: str) -> str:
 
 def health() -> bool:
     try:
-        with urllib.request.urlopen(f"{SIDECAR}/health", timeout=3) as resp:
+        with _open(f"{SIDECAR}/health", timeout=3) as resp:
             return json.loads(resp.read()).get("ok", False)
     except Exception:
         return False
