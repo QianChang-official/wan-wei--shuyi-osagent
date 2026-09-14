@@ -419,7 +419,7 @@ def test_ownerless_forget_ticket_only_configured_actor_can_claim(tmp_path, monke
     owner_a = actor_id_from_api_key("owner-a")
     seed_identity("owner-b")
     # Freeze the compatibility actor while exercising a second authenticated key.
-    monkeypatch.setattr(runtime, "configured_actor_id", lambda: owner_a)
+    monkeypatch.setattr(runtime, "configured_actor_id", lambda conn=None: owner_a)
     with transaction() as conn:
         conn.execute(
             "INSERT INTO memory_capsules(capsule_id,memory_type,payload,lifecycle,trust_score,created_at) "

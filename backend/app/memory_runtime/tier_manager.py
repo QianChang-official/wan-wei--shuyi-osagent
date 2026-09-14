@@ -34,7 +34,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..db import get_conn, transaction
-from ..audit.service import record, record_in_transaction
+from ..audit.service import current_audit_owner, record, record_in_transaction
+from ..soul.ownership import configured_actor_id
 from .capsule_store import get_capsule, now
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,11 @@ def _transition(
         )
 
     ts = now()
+    # Resolve the audit owner before opening the transaction. The fallback
+    # inside record_in_transaction runs on the transaction connection, and
+    # bootstrapping the configured key there would take an independent write
+    # connection that contends with this transaction's lock until timeout.
+    audit_owner_id = owner_id or current_audit_owner() or configured_actor_id()
     with transaction() as conn:
         conn.execute(
             "UPDATE memory_capsules_v2 SET memory_tier=?, updated_at=? WHERE capsule_id=?",
@@ -170,6 +176,7 @@ def _transition(
                 "reason": reason,
                 "trigger_source": trigger_source,
             },
+            owner_id=audit_owner_id,
         )
     return {
         "capsule_id": capsule_id,

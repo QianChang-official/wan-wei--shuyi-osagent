@@ -169,6 +169,7 @@ def write_capsule(
                 "policy_result": governance["policy_result"],
                 "memory_class": memory_class,
             },
+            owner_id=resolved_owner_id,
         )
         # 被拒的写入也要留账：治理面板要能回答「有多少次写入被闸门挡下」，
         # 而被拒记忆没有主表行，账本是唯一留痕处。不记内容哈希（内容未落库）。
@@ -242,7 +243,11 @@ def write_capsule(
             content_bytes=len(text.encode("utf-8")),
             extraction_tokens=estimate_tokens(text),
         )
-    audit_id = record("capsule_write", {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class})
+    audit_id = record(
+        "capsule_write",
+        {"capsule_id": capsule_id, "policy_result": governance["policy_result"], "memory_class": memory_class},
+        owner_id=resolved_owner_id,
+    )
     # The vector copy is optional and is never created for rejected,
     # quarantined, or confirmation-pending memories.
     if state["lifecycle"] == "active":
@@ -260,7 +265,6 @@ def write_capsule(
         if embed_and_store(capsule_id, text, ts=created, owner_id=owner_id, soul_id=soul_id):
             native_index = {**native_index, "local_embedding": True}
 
-    
     # 04-#02: Bind affect to capsule when soul_id is provided and lifecycle is active.
     # This closes the affective-aware memory write loop: emotion_memory writes the
     # affect, retrieval consumes it (see retrieval.py _affective_score). Before this,
@@ -270,7 +274,7 @@ def write_capsule(
         try:
             from ..affect.state_machine import load_affect
             from ..affect.emotion_memory import bind_emotion_to_capsule
-            
+
             affect = load_affect(soul_id)
             bind_emotion_to_capsule(capsule_id, soul_id, affect)
         except Exception as exc:
@@ -280,7 +284,7 @@ def write_capsule(
                 "bind_emotion_to_capsule failed for capsule_id=%s soul_id=%s: %s",
                 capsule_id, soul_id, exc
             )
-    
+
     # 冲突候选检测(规则式,只产信号不裁决 — 「conflicted 必须显式裁决」)。
     # 失败不阻断写入:检测是增强信号,不是写入前置条件。
     conflict_candidates: list[dict[str, Any]] = []
@@ -471,7 +475,11 @@ def update_capsule(
             owner_id=owner_id or (cap.get("provenance") or {}).get("owner_id"),
             soul_id=soul_id or (cap.get("provenance") or {}).get("soul_id"),
         )
-    record("capsule_update", {"capsule_id": capsule_id, "state": new_state})
+    record(
+        "capsule_update",
+        {"capsule_id": capsule_id, "state": new_state},
+        owner_id=owner_id or (cap.get("provenance") or {}).get("owner_id"),
+    )
     return get_capsule(capsule_id, owner_id=owner_id, soul_id=soul_id)
 
 
