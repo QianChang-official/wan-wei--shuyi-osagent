@@ -155,6 +155,9 @@ def main() -> int:
 
             cold = _bench_one(db_path, queries, warm=False)
             hot = _bench_one(db_path, queries, warm=True)
+            import backend.app.db as dbmod
+
+            dbmod.close_all()
         finally:
             import shutil
 
