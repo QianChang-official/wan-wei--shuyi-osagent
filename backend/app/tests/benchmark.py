@@ -154,7 +154,16 @@ def main() -> None:
     try:
         results = run_benchmarks(args.iterations, args.warmup, args.seed)
     finally:
-        Path(tmp.name).unlink(missing_ok=True)
+        try:
+            from backend.app import db as dbmod
+
+            dbmod.close_all()
+        except Exception:
+            pass
+        db_path = Path(tmp.name)
+        db_path.unlink(missing_ok=True)
+        Path(str(db_path) + "-wal").unlink(missing_ok=True)
+        Path(str(db_path) + "-shm").unlink(missing_ok=True)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
