@@ -115,4 +115,4 @@ reply = chat("帮我总结今天的会议纪要")
 | sidecar 语法/类型检查（桩头文件） | ✅ 可 | `g++ -std=c++17 -Wall -Wextra -fsyntax-only -I scripts/assistant_bridge/tests/stubs -I scripts/assistant_bridge scripts/assistant_bridge/sidecar.cpp` |
 | sidecar 真实编译与运行 | ❌ 否 | 需要麒麟 SDK（`libkysdk-ai-private-dev`）与个人助手服务，只能在麒麟环境执行 `make && ./wanwei-assistant-sidecar` |
 
-以上前两层已由 `backend/app/tests/test_assistant_bridge_memory_link.py::TestNativeSideChecks` 在 CI 中执行（无编译器时自动跳过）：麒麟 SDK 无法装进 GitHub runner，因此 CI 拦的是**本组件自有代码**的语法/类型/逻辑回归；真实 SDK 构建与端到端运行仍需在麒麟环境验证，属本组件的已知验证边界。
+以上前两层已由 `backend/app/tests/test_assistant_bridge_memory_link.py::TestNativeSideChecks` 在 CI 中执行（无编译器，或编译器缺 POSIX socket 头时自动跳过——GitHub 的 Windows runner 预装 MinGW g++ 即属后者，sidecar 语法回归由具备 POSIX 头的 ubuntu runner 覆盖）：麒麟 SDK 无法装进 GitHub runner，因此 CI 拦的是**本组件自有代码**的语法/类型/逻辑回归；真实 SDK 构建与端到端运行仍需在麒麟环境验证，属本组件的已知验证边界。

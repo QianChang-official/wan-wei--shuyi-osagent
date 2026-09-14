@@ -477,10 +477,14 @@ class TestNativeSideChecks:
             [compiler, "-std=c++17", "-Wall", "-Wextra", "-I", str(_BRIDGE_DIR), str(test_src), "-o", str(binary)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
         assert compile_result.returncode == 0, compile_result.stderr
-        run_result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
+        run_result = subprocess.run(
+            [str(binary)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
+        )
         assert run_result.returncode == 0, run_result.stderr
         assert "all checks passed" in run_result.stdout
 
@@ -488,6 +492,30 @@ class TestNativeSideChecks:
         compiler = self._compiler()
         if compiler is None:
             pytest.skip("no C++ compiler available")
+        # sidecar 依赖 POSIX socket 头（arpa/inet.h 等）。GitHub 的 Windows runner
+        # 预装 MinGW g++（缺这些头），只看「有无编译器」会让检查假失败——
+        # 先用同一编译器探测，缺头按工具链能力跳过；语法回归由具备 POSIX 头的
+        # 环境（ubuntu CI）覆盖。
+        probe = tmp_path / "posix_headers_probe.cpp"
+        probe.write_text(
+            "#include <arpa/inet.h>\n"
+            "#include <netinet/in.h>\n"
+            "#include <sys/socket.h>\n"
+            "#include <unistd.h>\n"
+            "int main() { return 0; }\n",
+            encoding="ascii",
+        )
+        probe_result = subprocess.run(
+            [compiler, "-std=c++17", "-fsyntax-only", str(probe)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if probe_result.returncode != 0:
+            reason = (probe_result.stderr or probe_result.stdout).strip()[:200]
+            pytest.skip(f"compiler lacks POSIX socket headers: {reason}")
         stubs = _BRIDGE_DIR / "tests" / "stubs"
         result = subprocess.run(
             [
@@ -504,6 +532,8 @@ class TestNativeSideChecks:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
         assert result.returncode == 0, result.stderr or result.stdout

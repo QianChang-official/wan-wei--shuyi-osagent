@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
