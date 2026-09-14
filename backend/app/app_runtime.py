@@ -914,6 +914,10 @@ def forget_preview(req: ForgetPreviewIn, request: Request = None):
     ]
     conn = get_conn()
     timestamp = utc_now_iso()
+    # BEGIN IMMEDIATE 前预解析审计 owner。soul_scope=None 的内部直连路径会走
+    # configured_actor_id() 兜底，身份未登记时其引导写发生在独立连接上——
+    # 若留到事务内解析会与这里的写锁竞争到 busy 超时（与 tier_manager 同款处理）。
+    audit_owner_id = soul_scope.owner_id if soul_scope is not None else configured_actor_id()
     try:
         conn.execute('BEGIN IMMEDIATE')
         conn.execute(
@@ -936,7 +940,7 @@ def forget_preview(req: ForgetPreviewIn, request: Request = None):
                 'retrieval': retrieval,
                 'candidates': audit_candidates,
             },
-            owner_id=soul_scope.owner_id if soul_scope else None,
+            owner_id=audit_owner_id,
         )
         conn.commit()
     except (sqlite3.Error, OSError):
@@ -1128,6 +1132,7 @@ def _audit_legacy_capsule_links(
     placeholders = ','.join('?' for _ in missing)
     audit_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
     has_audit_owner = 'owner_id' in audit_columns
+    configured_owner: str | None = None
     if owner_id is not None:
         # The configured-actor comparison must reuse the caller's connection;
         # a nested get_conn() would close this handle after another thread

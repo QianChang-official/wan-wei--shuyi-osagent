@@ -17,9 +17,14 @@ ENV PYTHONUNBUFFERED=1     PYTHONDONTWRITEBYTECODE=1     PYTHONPATH=/app/backend
 # pcre2 CVE-2026-86145 / CVE-2026-89161（HIGH，Debian 已发 10.42-1+deb12u1 修复）：
 # python:3.12-slim-bookworm 移动标签尚未随安全更新重建，显式升级该库使镜像
 # 与 Container vulnerability scan 门禁对齐；上游标签跟上后本层退化为幂等 no-op。
+# --only-upgrade 在源中无候选版本时静默 no-op，升级后显式断言版本包含
+# deb12u 安全补丁位，未达修复版即构建失败（防假绿，与 #230 同口径）。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && v=$(dpkg-query -W -f='${Version}' libpcre2-8-0) \
+    && echo "libpcre2-8-0 => $v" \
+    && case "$v" in 10.42-1+deb12u[1-9]*) echo 'libpcre2-8-0 patched';; *) echo 'ERROR: libpcre2-8-0 version lacks deb12u security update' >&2; exit 1;; esac
 
 RUN addgroup --system --gid 10001 wanwei     && adduser --system --uid 10001 --ingroup wanwei --home /nonexistent --no-create-home wanwei
 
