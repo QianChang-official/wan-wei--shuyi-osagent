@@ -1896,3 +1896,67 @@ def test_vector_encryption_request_payload(monkeypatch, tmp_path):
     assert payload["encrypt"] is True
     assert payload["key_file"] == str(key_file)
     assert "s3cret" not in captured["input"]
+
+
+def test_vector_encryption_rejects_unreadable_key_file(monkeypatch, tmp_path):
+    """#234: key 文件存在但不可读 → 降级而非把失败拖到 bridge 调用期。"""
+    bridge = tmp_path / "bridge"
+    bridge.write_text("#!")
+    key_file = tmp_path / "vector.key"
+    key_file.write_text("s3cret\n", encoding="utf-8")
+    key_file.chmod(0o000)
+    monkeypatch.setenv("WANWEI_KYLIN_SDK_BRIDGE", str(bridge))
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_ENCRYPT", "1")
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_KEY_FILE", str(key_file))
+    monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+
+    try:
+        availability = native.KylinNativeSdk().availability()
+        assert availability["available"] is False
+        assert availability["reason"] in {
+            "vector_encryption_key_unreadable",
+            # root 身份下 os.access 仍为 True（Android CI 常见），此时权限位检查生效
+            "vector_encryption_key_permissions_too_open",
+        }, availability
+    finally:
+        key_file.chmod(0o600)
+
+
+def test_vector_encryption_key_permissions_checked(monkeypatch, tmp_path):
+    """#234: 权限过宽的 key 文件在生产模式失败关闭、非生产模式放行并告警。"""
+    bridge = tmp_path / "bridge"
+    bridge.write_text("#!")
+    key_file = tmp_path / "vector.key"
+    key_file.write_text("s3cret\n", encoding="utf-8")
+    key_file.chmod(0o644)
+    monkeypatch.setenv("WANWEI_KYLIN_SDK_BRIDGE", str(bridge))
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_ENCRYPT", "1")
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_KEY_FILE", str(key_file))
+
+    monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+    assert native.KylinNativeSdk().availability()["available"] is True
+
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+    availability = native.KylinNativeSdk().availability()
+    assert availability["available"] is False
+    assert availability["reason"] == "vector_encryption_key_permissions_too_open"
+
+    # 收紧到 600 后生产模式放行
+    key_file.chmod(0o600)
+    monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+    assert native.KylinNativeSdk().availability()["available"] is True
+
+
+def test_vector_encryption_accepts_private_key_file(monkeypatch, tmp_path):
+    """#234: 600 权限的 key 文件在生产模式正常放行。"""
+    bridge = tmp_path / "bridge"
+    bridge.write_text("#!")
+    key_file = tmp_path / "vector.key"
+    key_file.write_text("s3cret\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    monkeypatch.setenv("WANWEI_KYLIN_SDK_BRIDGE", str(bridge))
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_ENCRYPT", "1")
+    monkeypatch.setenv("WANWEI_KYLIN_VECTOR_KEY_FILE", str(key_file))
+    monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+
+    assert native.KylinNativeSdk().availability()["available"] is True

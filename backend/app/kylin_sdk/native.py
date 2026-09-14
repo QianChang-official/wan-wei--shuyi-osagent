@@ -27,6 +27,7 @@ one JSON request on stdin and one JSON response on stdout.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -36,6 +37,8 @@ from typing import Any
 
 from ..db import database_path
 from ..security.auth import is_production_mode
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_BRIDGE_NAME = "wanwei-kylin-sdk-bridge"
@@ -135,12 +138,41 @@ class KylinNativeSdk:
             if is_production_mode() and not os.environ.get("WANWEI_KYLIN_SDK_BRIDGE"):
                 return {"available": False, "reason": "bridge_path_required_in_production"}
             return {"available": False, "reason": "bridge_not_installed"}
-        # 加密开关打开但 key 文件缺失/不可读时不带病启动，明确降级到 FTS。
+        # 加密开启时先自检 key 文件：缺失 / 非普通文件 / 不可读 / 权限过宽都不带病启动，
+        # 明确降级到 FTS 而不是等 bridge 调用时才失败。
         if self.config.vector_encrypt:
-            key_path = self.config.vector_key_file
-            if not key_path or not Path(key_path).is_file():
-                return {"available": False, "reason": "vector_encryption_key_unavailable"}
+            reason = self._key_file_problem()
+            if reason is not None:
+                return {"available": False, "reason": reason}
         return {"available": True, "reason": None, "bridge_path": str(self.config.bridge_path)}
+
+    def _key_file_problem(self) -> str | None:
+        """返回 key 文件的问题描述；无问题返回 None。"""
+        key_path = self.config.vector_key_file
+        if not key_path:
+            return "vector_encryption_key_unavailable"
+        path = Path(key_path).expanduser()
+        if not path.is_file():
+            return "vector_encryption_key_unavailable"
+        if not os.access(path, os.R_OK):
+            return "vector_encryption_key_unreadable"
+        # 组/其他可读的 key 文件等于把记忆库密钥暴露给同机其他账户：
+        # 生产模式直接失败（与 WANWEI_API_KEY 的 secret 文件同一口径），
+        # 非生产模式只告警，避免开发环境被硬卡住。
+        try:
+            mode = path.stat().st_mode
+        except OSError:
+            return "vector_encryption_key_unreadable"
+        if mode & 0o077:
+            message = (
+                f"[kylin-native] key 文件权限过宽（{oct(mode & 0o777)}）：{path}；"
+                "建议 chmod 600，避免同机其他账户读取向量库密钥。"
+            )
+            if is_production_mode():
+                logger.error(message)
+                return "vector_encryption_key_permissions_too_open"
+            logger.warning(message)
+        return None
 
     def status(self) -> dict[str, Any]:
         availability = self.availability()

@@ -29,6 +29,8 @@ namespace {
 using json = nlohmann::json;
 constexpr const char* kResponsePrefix = "WANWEI_KYLIN_RESPONSE:";
 constexpr const char* kDefaultEmbeddingModel = "ensemble-embd_gte-base_uint8-text";
+// key 文件大小上界（8 KiB 足够容纳任何密钥文本；文件不存在/为空/超限都直接失败）
+constexpr std::uintmax_t kMaxKeyFileBytes = 8 * 1024;
 
 class NativeError : public std::runtime_error {
 public:
@@ -80,13 +82,28 @@ bool optional_bool(const json& request, const char* name) {
 // 加密向量库的 key 只从受保护文件读取（调用方传路径而非 key 本体），
 // 避免 key 出现在 JSON 协议、进程参数或日志里。
 std::string read_key_file(const std::string& path) {
+    std::error_code file_error;
+    const auto size = std::filesystem::file_size(path, file_error);
+    if (file_error) {
+        throw NativeError("vector_key_file_unreadable");
+    }
+    // 上界保护：key 文件不可能是大文件，若指向 /dev/zero 之类的特殊文件，
+    // 无界读取会耗尽内存或永不返回。
+    if (size == 0 || size > kMaxKeyFileBytes) {
+        throw NativeError("vector_key_file_invalid_size");
+    }
+    if (!std::filesystem::is_regular_file(path, file_error) || file_error) {
+        throw NativeError("vector_key_file_not_regular");
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw NativeError("vector_key_file_unreadable");
     }
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    std::string key = ss.str();
+    std::string key(static_cast<std::size_t>(size), '\0');
+    in.read(&key[0], static_cast<std::streamsize>(key.size()));
+    if (in.gcount() != static_cast<std::streamsize>(key.size())) {
+        throw NativeError("vector_key_file_read_failed");
+    }
     while (!key.empty() &&
            (key.back() == '\n' || key.back() == '\r' || key.back() == ' ' || key.back() == '\t')) {
         key.pop_back();
