@@ -15,17 +15,28 @@
 sidecar: POST http://127.0.0.1:8021/chat
 """
 import json
+import urllib.error
 import urllib.request
 
 SIDECAR = "http://127.0.0.1:8021"
 
+# 受限 opener:仅注册 HTTP/HTTPS 处理器,从源头排除 file:/ftp: 等自定义 scheme (B310)
+_OPENER = urllib.request.OpenerDirector()
+for handler_cls in (urllib.request.ProxyHandler, urllib.request.HTTPHandler,
+                    urllib.request.HTTPSHandler, urllib.request.HTTPErrorProcessor,
+                    urllib.request.UnknownHandler):
+    _OPENER.add_handler(handler_cls())
+
 
 def _open(url, timeout: int, **kwargs):
-    """限定 http/https scheme 的 urlopen,防御 file:/自定义 scheme(B310)."""
+    """用受限 opener 发起请求,仅支持 http/https."""
     target = url.full_url if isinstance(url, urllib.request.Request) else url
     if not target.startswith(("http://", "https://")):
         raise ValueError(f"unexpected url scheme: {target}")
-    return urllib.request.urlopen(url, timeout=timeout, **kwargs)
+    try:
+        return _OPENER.open(url, timeout=timeout, **kwargs)
+    except urllib.error.HTTPError:
+        raise
 
 
 def chat(text: str, timeout: int = 120) -> str:
