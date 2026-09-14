@@ -50,6 +50,9 @@ EGPM 算法级消融已补测（72 事件 × 6 场景）：preference_accuracy *
 
 历史宿主机口径（`reports/latency_scale.json`）：1k cold p95 4.61ms、10k 77.06ms、50k 447.94ms。逐次原始延迟在各 JSON 中均可复现。
 
+## 向量检索度量口径（#235）
+麒麟原生通道的向量检索度量使用**官方 SDK 默认 COSINE**：建库侧走快速 `CreateCollection(name, dim, ...)`（`Database.h`），检索侧 `SearchArguments` 构造默认 `MetricType::COSINE`（`types/SearchArguments.h`），双侧一致——官方 `exampleSchema.cpp` 明确「检索度量要与索引一致」（其演示为索引 L2 + `arguments.SetMetricType(L2)`）。选择理由：当前默认 embedding 模型（`ensemble-embd_gte-base_uint8-text`，768 维）为 gte 类归一化文本向量，COSINE 是标准度量，且归一化向量下 COSINE 与 IP 排名等价。`MetricType` 枚举（L2/IP/COSINE/HAMMING/JACCARD）与 `IndexDesc.SetMetricType` 均在官方头文件中开放，后续如需切换度量，建库与检索两侧必须同步修改。COSINE vs IP 对照实验列为可选后续（见 #235），未实测前不写入口径结论。
+
 ## 知识演化与时序（TKE Benchmark）
 四场景（软件演化 Firefox→Chrome→Edge / 流程演化 v1→v2→v3 / 规范替换 / 延迟导入——transaction_time 与 valid_time 错位场景）全部真实写路径：
 - **Active Knowledge Accuracy（as-of/truth 历史回放正确率）：100%**
