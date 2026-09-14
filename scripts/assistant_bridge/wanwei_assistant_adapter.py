@@ -13,7 +13,12 @@
 """宛委 <-> 麒麟个人助手 adapter.
 调用: WanweiAssistant().chat("你好") -> "..."
 sidecar: POST http://127.0.0.1:8021/chat
+
+跨会话记忆（v2）：chat_with_memory() 在对话前检索宛委记忆注入上下文，
+对话后把用户消息中的显式记忆/偏好写回宛委（经服务端 policy_gate 过滤）。
+记忆后端不可用时自动退化为纯透传（fail-open）。
 """
+
 import json
 import urllib.error
 import urllib.request
@@ -22,9 +27,13 @@ SIDECAR = "http://127.0.0.1:8021"
 
 # 受限 opener:仅注册 HTTP/HTTPS 处理器,从源头排除 file:/ftp: 等自定义 scheme (B310)
 _OPENER = urllib.request.OpenerDirector()
-for handler_cls in (urllib.request.ProxyHandler, urllib.request.HTTPHandler,
-                    urllib.request.HTTPSHandler, urllib.request.HTTPErrorProcessor,
-                    urllib.request.UnknownHandler):
+for handler_cls in (
+    urllib.request.ProxyHandler,
+    urllib.request.HTTPHandler,
+    urllib.request.HTTPSHandler,
+    urllib.request.HTTPErrorProcessor,
+    urllib.request.UnknownHandler,
+):
     _OPENER.add_handler(handler_cls())
 
 
@@ -52,6 +61,45 @@ def chat(text: str, timeout: int = 120) -> str:
     if "error" in data:
         raise RuntimeError(data["error"])
     return _extract_text(data.get("reply", ""))
+
+
+def chat_with_memory(text: str, timeout: int = 120, *, owner_id: str | None = None) -> dict:
+    """带宛委记忆的一轮对话。
+
+    1. 记忆写回：提取用户消息中的显式记忆/偏好，经宛委 policy_gate 写入；
+    2. 记忆检索：以用户消息查询宛委，命中时把已知记忆注入发给助手的消息；
+    3. 调用个人助手并返回 {reply, memories_used, memories_written}。
+
+    记忆链路任何一步失败都不影响对话本身（fail-open）。
+    """
+    from memory_link import build_context, remember_statements
+
+    memories_used: list[str] = []
+    memories_written: list[str] = []
+    outbound = text
+
+    # 1) 写回（在检索前写，下一轮即可召回）
+    try:
+        for result in remember_statements(text, owner_id=owner_id):
+            if result.get("capsule_id"):
+                memories_written.append(result["_statement"])
+    except Exception:
+        pass  # fail-open：写回失败不阻塞对话
+
+    # 2) 检索注入
+    try:
+        context_block, memories_used = build_context(text, owner_id=owner_id)
+        if context_block:
+            outbound = f"{context_block}\n\n用户说：{text}"
+    except Exception:
+        pass  # fail-open
+
+    reply = chat(outbound, timeout=timeout)
+    return {
+        "reply": reply,
+        "memories_used": memories_used,
+        "memories_written": memories_written,
+    }
 
 
 def _extract_text(raw: str) -> str:
@@ -92,5 +140,11 @@ def health() -> bool:
 
 if __name__ == "__main__":
     import sys
+
     msg = sys.argv[1] if len(sys.argv) > 1 else "你好,请用一句话介绍你自己"
-    print(chat(msg))
+    result = chat_with_memory(msg)
+    print(result["reply"])
+    if result["memories_used"]:
+        print(f"[注入记忆 {len(result['memories_used'])} 条]", file=sys.stderr)
+    if result["memories_written"]:
+        print(f"[写回记忆 {len(result['memories_written'])} 条]", file=sys.stderr)

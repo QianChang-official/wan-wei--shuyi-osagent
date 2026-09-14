@@ -7,7 +7,8 @@
 | 文件 | 说明 |
 |---|---|
 | `sidecar.cpp` | C++ HTTP sidecar（127.0.0.1:8021），包装官方 `libkyai-assistant`（OsAssistant），负责 glib 主循环、流式回复收集、线程互斥、每轮上下文清理 |
-| `wanwei_assistant_adapter.py` | Python 侧适配器：`chat(text) -> 纯文本回复`，内置流式 JSON 分片解析 |
+| `wanwei_assistant_adapter.py` | Python 侧适配器：`chat(text) -> 纯文本回复`，`chat_with_memory(text)` 带宛委记忆检索注入与写回，内置流式 JSON 分片解析 |
+| `memory_link.py` | 宛委记忆后端 link：`search_memories()`（GET /memory/v2/search）与 `remember_statement()`（POST /memory/v2/capsules），写回经服务端 policy_gate 过滤 |
 | `Makefile` | 一键编译 |
 
 ## 依赖
@@ -32,6 +33,26 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 | POST | `/chat` | `{"text": "用户消息"}` | `{"reply": "纯文本回复", "length": N}` |
 
 每轮对话自动清上下文（`clearContext`），多轮独立。
+
+## 跨会话记忆（宛委记忆后端）
+
+前置：宛委后端已启动（默认 `http://127.0.0.1:8000`，可用 `WANWEI_API_BASE` 覆盖；
+回环绑定免 API key）。
+
+```python
+from wanwei_assistant_adapter import chat_with_memory
+
+r = chat_with_memory("记住我最喜欢的语言是 Python")
+# r["memories_written"] -> 写入的陈述（经服务端 policy_gate，PII 自动拒绝）
+r = chat_with_memory("我最喜欢什么语言？")
+# r["memories_used"]    -> 注入给助手的记忆陈述（跨会话仍在）
+```
+
+- 写回规则刻意保守：仅捕捉「记住xxx」与偏好/自称（「我喜欢/我叫…」）两类，
+  宁漏勿滥；内容过滤以服务端 policy_gate 裁决为准。
+- fail-open：宛委后端不可用时自动退化为纯透传，绝不阻塞对话主链路。
+- 记忆归属 `soul_id=kylin-assistant`（`WANWEI_BRIDGE_OWNER` 可覆盖），
+  与其他业务数据隔离。
 
 ## 宛委侧调用
 
