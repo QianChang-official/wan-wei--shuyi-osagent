@@ -52,6 +52,47 @@ static std::string jesc(const std::string& s) {
     return o;
 }
 
+
+// 召回宛委记忆(调宛委HTTP API,curl子进程;返回拼接的记忆上下文,失败返回空)
+static std::string recall_wanwei_memory(const std::string& text) {
+    // 组装command请求体
+    std::string esc;
+    for (char c : text) {
+        if (c == '"' ) esc += "\\\""; else if (c=='\\') esc += "\\\\"; else esc += c;
+    }
+    std::string payload = "{\"goal\":\"" + esc + "\"}";
+    std::string cmd = "KEY=$(cat ~/.config/wanwei-shuyi-desktop/api-key 2>/dev/null); "
+                      "curl -s -m 20 -X POST http://127.0.0.1:8010/memory/v2/command "
+                      "-H 'Content-Type: application/json' -H \"X-API-Key: $KEY\" --data '" + payload + "'";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return "";
+    std::string out;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), pipe)) out += buf;
+    pclose(pipe);
+    if (out.empty()) return "";
+    // 从返回JSON里抽 recalled_memories 的 content 文本(简易截取,不做完整JSON解析)
+    std::string ctx;
+    size_t pos = 0;
+    while (true) {
+        size_t pv = out.find("\"preference_value\" : \"", pos);
+        size_t ls = out.find("\"lessons\" : \"", pos);
+        size_t st = out.find("\"statement\" : \"", pos);
+        size_t best = std::string::npos; size_t len = 0; std::string which;
+        auto pick = [&](size_t v, const char* w){ if (v != std::string::npos && (best==std::string::npos || v<best)) { best=v; which=w; } };
+        pick(pv, "preference_value"); pick(ls, "lessons"); pick(st, "statement");
+        if (best == std::string::npos) break;
+        size_t start = best + strlen("\"X\" : \"") - 3;
+        start = out.find('"', best) + 1;
+        size_t end = out.find("\"", start);
+        if (end == std::string::npos) break;
+        ctx += "- " + which + ": " + out.substr(start, end-start) + "\n";
+        pos = end + 1;
+    }
+    return ctx;
+}
+
+
 static std::string handle_chat(const std::string& body) {
     // parse {"text":"..."} - find "text" field manually (no json lib)
     std::string text;
@@ -69,6 +110,11 @@ static std::string handle_chat(const std::string& body) {
 
     std::lock_guard<std::mutex> lock(g_chat_mutex);
     g_assistant->clearContext();
+    std::string memory_ctx = recall_wanwei_memory(text);
+    std::string final_text = text;
+    if (!memory_ctx.empty()) {
+        final_text = "[系统提示]以下是用户的历史偏好记忆,回答时请优先遵循这些偏好,并可向用户确认是否正确:\n" + memory_ctx + "\n[用户问题]" + text;
+    }
     std::atomic<bool> done{false};
     std::string full_reply;
 
@@ -76,7 +122,7 @@ static std::string handle_chat(const std::string& body) {
         full_reply += chunk;
     });
     // parse text json back for content array
-    std::string msg = "{\"content\":[{\"text\":\"" + jesc(text) + "\"}]}";
+    std::string msg = "{\"content\":[{\"text\":\"" + jesc(final_text) + "\"}]}";
     g_assistant->chatAsync(msg);
 
     // glib mainloop pump in this thread with timeout 90s
