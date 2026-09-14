@@ -99,15 +99,18 @@ def _derive_legacy_owner_id(api_key: str) -> str:
     return "api_" + digest.hex()
 
 
-def _identity_table_ready() -> bool:
+def _identity_table_ready(conn: sqlite3.Connection | None = None) -> bool:
     """检查 identity 表是否已建（init_db 可能尚未运行）。
 
-    只读查询复用线程本地连接，不创建或提交调用方事务。
+    只读查询复用调用方连接或线程本地连接，不创建或提交调用方事务。
+    调用方已持有连接时必须传入，避免嵌套 get_conn() 在 generation
+    失效后关掉仍在使用的句柄。
     """
-    from ..db import assert_db_identity, get_conn
+    if conn is None:
+        from ..db import assert_db_identity, get_conn
 
-    conn = get_conn()
-    assert_db_identity()
+        conn = get_conn()
+        assert_db_identity()
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity'"
     ).fetchone()
@@ -138,7 +141,7 @@ def _credential_transaction() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def actor_id_from_api_key(api_key: str) -> str:
+def actor_id_from_api_key(api_key: str, *, conn: sqlite3.Connection | None = None) -> str:
     """Resolve the stable owner ID for an API key.
 
     **v0.12 身份层解耦**：owner_id 不再由 API key 直接派生，而是独立 UUID。
@@ -160,7 +163,7 @@ def actor_id_from_api_key(api_key: str) -> str:
     if not normalized:
         raise ValueError("api_key must not be empty")
 
-    if not _identity_table_ready():
+    if not _identity_table_ready(conn):
         return _derive_legacy_owner_id(normalized)
 
     from ..db import get_conn
@@ -168,7 +171,8 @@ def actor_id_from_api_key(api_key: str) -> str:
     import uuid
 
     key_hash = _api_key_hash(normalized)
-    row = get_conn().execute(
+    lookup_conn = conn if conn is not None else get_conn()
+    row = lookup_conn.execute(
         "SELECT identity_id FROM identity WHERE api_key_hash=?",
         (key_hash,),
     ).fetchone()
@@ -180,15 +184,15 @@ def actor_id_from_api_key(api_key: str) -> str:
 
     # Recheck under the write lock: another request may have bootstrapped this
     # owner after the read-only fast path found no identity.
-    with _credential_transaction() as conn:
-        row = conn.execute(
+    with _credential_transaction() as write_conn:
+        row = write_conn.execute(
             "SELECT identity_id FROM identity WHERE api_key_hash=?",
             (key_hash,),
         ).fetchone()
         if row is not None:
             return str(row["identity_id"])
         identity_id = "id_" + uuid.uuid4().hex[:16]
-        conn.execute(
+        write_conn.execute(
             "INSERT INTO identity(identity_id, api_key_hash, created_at) VALUES (?,?,?)",
             (identity_id, key_hash, utc_now_iso_compact()),
         )
