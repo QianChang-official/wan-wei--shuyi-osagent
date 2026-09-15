@@ -1,0 +1,55 @@
+{
+  "case_id": "demo_multisource_preference",
+  "title": "演示：多源数据接入与偏好跨场景适配",
+  "description": "演示赛题功能(1)(2)：用户行为+手动配置双源数据写入，同一偏好跨办公/编程场景自动适配。",
+  "sessions": [
+    {
+      "session_id": "d1_manual_pref",
+      "write_capsules": [
+        {
+          "memory_class": "preference",
+          "content": {
+            "target": "代码注释语言",
+            "preference_value": "代码注释和commit message一律用中文",
+            "strength": 0.85,
+            "scope": "project"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit",
+          "affects_future_behavior": true
+        }
+      ],
+      "expect_lifecycle": "active",
+      "description": "手动配置：显式偏好直接入库"
+    },
+    {
+      "session_id": "d2_behavior_observed",
+      "write_capsules": [
+        {
+          "memory_class": "preference",
+          "content": {
+            "target": "沟通详略",
+            "preference_value": "用户在办公场景偏好简短结论先行，技术场景才要完整推理链",
+            "strength": 0.55,
+            "scope": "task"
+          },
+          "source_type": "behavior",
+          "write_intent": "inferred",
+          "affects_future_behavior": true
+        }
+      ],
+      "expect_policy_result": "require_confirmation",
+      "expect_lifecycle": "candidate",
+      "description": "行为推断：低置信偏好进入待确认队列(演示治理能力)"
+    },
+    {
+      "session_id": "d3_cross_scene_recall",
+      "command_goal": "帮我写个中文注释的部署脚本并简单汇报进度",
+      "expect_memory_classes": [
+        "preference"
+      ],
+      "expect_evidence_cards": true,
+      "description": "跨场景任务到来，应同时召回显式偏好和已确认的行为偏好"
+    }
+  ]
+}

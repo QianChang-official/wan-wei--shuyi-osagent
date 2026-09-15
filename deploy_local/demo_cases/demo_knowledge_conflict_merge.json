@@ -1,0 +1,49 @@
+{
+  "case_id": "demo_knowledge_conflict_merge",
+  "title": "演示：知识记忆冲突检测与融合",
+  "description": "演示赛题功能(3)：同一约束的新旧版本写入，冲突检测并融合为最新有效版本。",
+  "sessions": [
+    {
+      "session_id": "k1_old_knowledge",
+      "write_capsules": [
+        {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "constraint",
+            "statement": "演示服务部署端口使用 8000",
+            "validity_scope": "project"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        }
+      ],
+      "expect_lifecycle": "active"
+    },
+    {
+      "session_id": "k2_new_conflict",
+      "write_capsules": [
+        {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "constraint",
+            "statement": "演示服务部署端口从 8000 迁移到 8010，原端口让给监控服务",
+            "validity_scope": "project"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        }
+      ],
+      "expect_lifecycle": "active",
+      "description": "冲突知识写入：新旧端口约束并存，需标记冲突"
+    },
+    {
+      "session_id": "k3_query_latest",
+      "command_goal": "演示服务应该部署在哪个端口",
+      "expect_memory_classes": [
+        "knowledge"
+      ],
+      "expect_evidence_cards": true,
+      "description": "查询时应召回最新约束并附带证据卡说明冲突处理"
+    }
+  ]
+}
