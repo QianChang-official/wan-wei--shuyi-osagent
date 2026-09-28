@@ -20,7 +20,6 @@ import json
 
 _SIDECAR_HOST = "127.0.0.1"
 _SIDECAR_PORT = 8021
-SIDECAR = f"http://{_SIDECAR_HOST}:{_SIDECAR_PORT}"
 
 
 def _request(method: str, path: str, body: bytes | None, timeout: int) -> bytes:
