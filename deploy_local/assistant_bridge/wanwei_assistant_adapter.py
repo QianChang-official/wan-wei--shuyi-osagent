@@ -15,22 +15,37 @@
 调用: WanweiAssistant().chat("你好") -> "..."
 sidecar: POST http://127.0.0.1:8021/chat
 """
+import http.client
 import json
-import urllib.request
 
-SIDECAR = "http://127.0.0.1:8021"
+_SIDECAR_HOST = "127.0.0.1"
+_SIDECAR_PORT = 8021
+SIDECAR = f"http://{_SIDECAR_HOST}:{_SIDECAR_PORT}"
+
+
+def _request(method: str, path: str, body: bytes | None, timeout: int) -> bytes:
+    """回环 sidecar 的极简 HTTP 客户端(stdlib http.client,零三方依赖)。
+
+    刻意不用 urllib.request.urlopen:安全审计规则(Bandit B310 等)对一切
+    urlopen 调用无条件告警;本模块目标恒为编译期常量回环地址,用
+    http.client 显式绑定 host/port,从写法上消除 scheme 注入面。
+    """
+    conn = http.client.HTTPConnection(_SIDECAR_HOST, _SIDECAR_PORT, timeout=timeout)
+    try:
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        payload = resp.read()
+        if resp.status != 200:
+            raise RuntimeError(f"sidecar HTTP {resp.status}: {payload[:200]!r}")
+        return payload
+    finally:
+        conn.close()
 
 
 def chat(text: str, timeout: int = 120) -> str:
     """发一条消息给麒麟个人助手,返回拼接后的纯文本回复."""
-    req = urllib.request.Request(
-        f"{SIDECAR}/chat",
-        data=json.dumps({"text": text}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
+    data = json.loads(_request("POST", "/chat", json.dumps({"text": text}).encode(), timeout))
     if "error" in data:
         raise RuntimeError(data["error"])
     reply = _extract_text(data.get("reply", ""))
@@ -75,8 +90,7 @@ def _extract_text(raw: str) -> str:
 
 def health() -> bool:
     try:
-        with urllib.request.urlopen(f"{SIDECAR}/health", timeout=3) as resp:
-            return json.loads(resp.read()).get("ok", False)
+        return json.loads(_request("GET", "/health", None, 3)).get("ok", False)
     except Exception:
         return False
 
