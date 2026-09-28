@@ -7,7 +7,9 @@
 
 ## API
 - GET  /health → {"ok":true}
-- POST /chat {"text":"..."} → {"reply":"...", "length":N}  (reply 为纯文本,每轮自动清 context)
+- POST /chat {"text":"..."} → {"reply":"...", "length":N, "timed_out":bool}
+  - reply 为流式分片原始 JSON 串的拼接（由 adapter 的 `_extract_text` 解析出纯文本），每轮自动清 context
+  - 服务端硬超时 90s：超时返回已收集内容并置 `timed_out:true`（adapter 会附加截断警告）
 
 ## 启动
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus

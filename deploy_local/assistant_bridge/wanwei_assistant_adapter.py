@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
 """宛委 <-> 麒麟个人助手 adapter.
 调用: WanweiAssistant().chat("你好") -> "..."
 sidecar: POST http://127.0.0.1:8021/chat
@@ -21,7 +33,12 @@ def chat(text: str, timeout: int = 120) -> str:
         data = json.loads(resp.read())
     if "error" in data:
         raise RuntimeError(data["error"])
-    return _extract_text(data.get("reply", ""))
+    reply = _extract_text(data.get("reply", ""))
+    if data.get("timed_out"):
+        # sidecar 90s 硬超时:已收集内容照常返回,但如实提示截断,
+        # 调用方可选择向用户预警或重试,而不是把半截回复当完整结果。
+        reply += "\n[警告:回复因超时被截断]"
+    return reply
 
 
 def _extract_text(raw: str) -> str:
@@ -49,6 +66,10 @@ def _extract_text(raw: str) -> str:
                     out.append(str(t["result"]))
         except (AttributeError, TypeError):
             pass
+    if not out and raw:
+        # 一个 JSON 分片都没解析出来:说明上游返回的是纯文本而非分片流,
+        # 原样返回,避免"链路异常时静默拿到空串"掩盖真实故障。
+        return raw
     return "".join(out)
 
 

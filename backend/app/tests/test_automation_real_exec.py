@@ -133,6 +133,30 @@ def _wait_done(run_id: str, timeout: float = 30.0) -> dict:
     raise AssertionError(f'运行 {run_id} 超时未终结')
 
 
+def _wait_audit_event(mem_db: str, event_type: str, run_id: str,
+                      timeout: float = 10.0) -> list:
+    """轮询等待审计事件落库后返回全部命中行。
+
+    为什么要轮询：``_execute_run_real`` 在内存态 ``run['status']`` 终结**之后**
+    才调用 ``audit_safe('flow_run_finished', ...)``，而 ``_wait_done`` 只观察
+    内存态——两个动作之间存在真实的时间窗口（含 _persist_run 的文件 IO）。
+    单次立即查询会偶发读到 0 条（CI ubuntu py3.10 曾抽中），这里按"审计
+    异步落账"的实现事实等待收敛，超时返回最后一次查询结果交由断言裁决。
+    """
+    deadline = time.time() + timeout
+    rows: list = []
+    while time.time() < deadline:
+        with sqlite3.connect(mem_db) as conn:
+            rows = conn.execute(
+                "SELECT payload FROM audit_logs WHERE event_type=? AND payload LIKE ?",
+                (event_type, f'%{run_id}%'),
+            ).fetchall()
+        if rows:
+            return rows
+        time.sleep(0.05)
+    return rows
+
+
 def _create_flow(client: TestClient, **payload) -> dict:
     body = {'name': '真实执行测试流程', 'trigger': 'manual'}
     body.update(payload)
@@ -635,17 +659,8 @@ def test_real_run_audit_start_and_finish_events(store_dir, client, mem_db):
          'config': {'command': command}, 'on_error': 'stop'},
     ])
     run, _final = _run_and_wait(client, flow)
-    with sqlite3.connect(mem_db) as conn:
-        started = conn.execute(
-            "SELECT payload FROM audit_logs WHERE event_type='flow_run_started' "
-            "AND payload LIKE ?",
-            (f'%{run["id"]}%',),
-        ).fetchall()
-        finished = conn.execute(
-            "SELECT payload FROM audit_logs WHERE event_type='flow_run_finished' "
-            "AND payload LIKE ?",
-            (f'%{run["id"]}%',),
-        ).fetchall()
+    started = _wait_audit_event(mem_db, 'flow_run_started', run['id'])
+    finished = _wait_audit_event(mem_db, 'flow_run_finished', run['id'])
     assert len(started) == 1 and '"mode": "real"' in started[0][0]
     assert len(finished) == 1
     finish_payload = json.loads(finished[0][0])
