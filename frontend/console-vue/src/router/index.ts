@@ -14,7 +14,8 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 import { platformRoutes } from './platform'
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { title: '总览', seal: '览' } },
+  { path: '/', name: 'console', component: { render: () => null }, meta: { title: '会话工作台', seal: '枢' } },
+  { path: '/advanced', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { title: '总览', seal: '览' } },
   { path: '/pillars', name: 'pillars', component: () => import('@/views/PillarsView.vue'), meta: { title: '架构', seal: '枢' } },
   { path: '/platform', name: 'platform', component: () => import('@/views/PlatformView.vue'), meta: { title: '舱室', seal: '舱' } },
   { path: '/research-adoption', name: 'researchAdoption', component: () => import('@/views/ResearchAdoptionView.vue'), meta: { title: '权威吸收', seal: '研' } },

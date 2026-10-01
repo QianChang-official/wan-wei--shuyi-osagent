@@ -230,6 +230,9 @@ def test_staged_desktop_keeps_cold_start_cleanup_without_mobile_entrypoints(stag
     router = (staged_release.path / "frontend/console-vue/src/router/platform.ts").read_text(encoding="utf-8")
     assert "MobileView" not in router
     assert not re.search(r"path:\s*['\"]/?mobile['\"]", router)
+    layout = (staged_release.path / "frontend/console-vue/src/shell/AdvancedLayout.vue").read_text(encoding="utf-8")
+    assert "to: '/mobile'" not in layout
+    assert "to: '/platform/sessions'" in layout
     node = shutil.which("node")
     if node:
         subprocess.run([node, "--check", str(main)], check=True, capture_output=True)

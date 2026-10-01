@@ -529,8 +529,11 @@ test('router: catch-all 404 + 标题守卫 + 平台路由注释更新（09-#9/#1
   assert.equal(platform.includes('最小占位文件'), false, '平台路由仍残留过时注释')
 })
 
-test('App.vue: 死路由补侧栏入口（09-#9）', async () => {
-  const app = await readSrc('App.vue')
+test('AdvancedLayout: 保留原侧栏入口，新工作台可达高级工具（09-#9）', async () => {
+  const root = await readSrc('App.vue')
+  assert.ok(root.includes('AdvancedLayout'), '根工作台未挂载高级区域')
+  assert.ok((await readSrc('shell/SidebarRoot.vue')).includes('to="/advanced"'), '工作台缺高级入口')
+  const app = await readSrc('shell/AdvancedLayout.vue')
   for (const p of ["'/capsules'", "'/command'", "'/reflection'", "'/audit'", "'/mobile'"]) {
     assert.ok(app.includes(`to: ${p}`), `侧栏缺 ${p} 入口`)
   }

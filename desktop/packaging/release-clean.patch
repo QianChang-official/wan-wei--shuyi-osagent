@@ -1008,11 +1008,10 @@ index eed6cc7e9fa02969a4f6d1a1271021e0e9b34a5d..afc3c478245af0f18ac0b59ca923a0cb
  });
  
  // API Key 注入（键名与 Web 端约定一致：localStorage 'wanwei-desktop-api-key'，
-diff --git a/frontend/console-vue/src/App.vue b/frontend/console-vue/src/App.vue
-index dfaa03a6b3a90d68bd3e8f047419ad5da5728521..fd8068b0a549b9890ed248e1c06fa03af3cdf4aa 100644
---- a/frontend/console-vue/src/App.vue
-+++ b/frontend/console-vue/src/App.vue
-@@ -94,7 +94,6 @@ const navGroups = [
+diff --git a/frontend/console-vue/src/shell/AdvancedLayout.vue b/frontend/console-vue/src/shell/AdvancedLayout.vue
+--- a/frontend/console-vue/src/shell/AdvancedLayout.vue
++++ b/frontend/console-vue/src/shell/AdvancedLayout.vue
+@@ -100,7 +100,6 @@ const navGroups = [
        { to: '/platform/sessions', seal: '笺', name: '会话管理', en: 'Sessions' },
        { to: '/platform/settings', seal: '设', name: '通用设置', en: 'Settings' },
        { to: '/platform/help', seal: '助', name: '帮助', en: 'Help' },

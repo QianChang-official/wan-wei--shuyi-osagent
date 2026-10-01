@@ -9,7 +9,8 @@
     "build": "vue-tsc -b && vite build",
     "test:security": "node --test tests/api-key-security.test.mjs",
     "test:contracts": "node --test tests/fix-W10-workbench-providers.test.mjs tests/fix-w11-contracts.test.mjs tests/w12-session-arch.test.mjs tests/xss-url-sanitize.test.mjs tests/markdown-sanitize.test.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:behavior": "vitest run --environment jsdom tests/shell-behavior.test.ts"
   },
   "engines": {
     "node": ">= 22.12.0",

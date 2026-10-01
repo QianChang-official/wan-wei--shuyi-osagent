@@ -84,6 +84,8 @@ jobs:
         run: npm run test:security
       - working-directory: frontend/console-vue
         run: npm run test:contracts
+      - working-directory: frontend/console-vue
+        run: npm run test:behavior
       - working-directory: desktop
         run: npm test
       - uses: docker/setup-buildx-action@v3

@@ -91,6 +91,29 @@ jobs:
         run: python scripts/run_meb.py --check-only
       - run: python -m pip_audit -r backend/requirements.txt -r backend/requirements-dev.txt
 
+  agent-tools:
+    name: Optional agent tools (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+            backend/requirements-agent.txt
+      - run: python -m pip install -r backend/requirements-dev.txt -r backend/requirements-agent.txt
+      # Real library contracts use fake HTTP and temporary workspaces, not live
+      # providers, host commands or credentials. Base jobs retain no-extra coverage.
+      - run: python -m pytest backend/app/tests/test_agent_bridge_safety.py --basetemp .pytest-agent-ci -p no:cacheprovider
+      - run: python -m pip_audit -r backend/requirements.txt -r backend/requirements-agent.txt
+
   frontend:
     name: Frontend production build
     runs-on: ubuntu-latest
@@ -126,6 +149,8 @@ jobs:
         run: npm run test:security
       - working-directory: frontend/console-vue
         run: npm run test:contracts
+      - working-directory: frontend/console-vue
+        run: npm run test:behavior
       - working-directory: desktop
         run: npm test
 
@@ -148,6 +173,8 @@ jobs:
         with:
           name: console-vue-dist
           path: frontend/console-vue/dist
+      - name: Validate RPM payload against built console
+        run: python -m pytest backend/app/tests/test_rpm_packaging.py --basetemp .pytest-rpm-ci -p no:cacheprovider
       - name: Start application
         shell: bash
         env:
