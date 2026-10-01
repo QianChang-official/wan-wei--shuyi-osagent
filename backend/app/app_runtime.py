@@ -248,7 +248,9 @@ async def lifespan(app: FastAPI):
     from .init_db import main as init_db
     from .memory_runtime.vector_index import run_vector_delete_sweeper
     from .workflow.persistence import init_workflow_persistence
+    from .memory_runtime.sdk_adapter import validate_sdk_configuration
 
+    validate_sdk_configuration()
     if is_production_mode():
         get_api_key()
         encryption.startup_check()
@@ -3157,6 +3159,9 @@ def agent_audit_run():
 # 03-#13: 统一相对导入。
 from .platform_api import api_router as platform_api_router  # noqa: E402  # intentional late import isolates optional platform failures
 app.include_router(platform_api_router, prefix='/platform')
+
+from .memory_runtime.sdk_adapter import router as memory_sdk_router  # noqa: E402  # optional dependency is loaded only on explicit opt-in
+app.include_router(memory_sdk_router)
 
 # Issue #91: register modular routers
 app.include_router(system_router)
