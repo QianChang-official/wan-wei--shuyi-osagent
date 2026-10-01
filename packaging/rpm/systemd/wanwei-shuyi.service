@@ -1,0 +1,44 @@
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+[Unit]
+Description=Wanwei Shuyi MemoryOps Console (宛委·枢忆)
+After=network.target
+
+[Service]
+Type=simple
+User=wanwei-shuyi
+Group=wanwei-shuyi
+StateDirectory=wanwei-shuyi
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/wanwei-shuyi
+Environment=WANWEI_DATA_DIR=/var/lib/wanwei-shuyi
+Environment=WANWEI_PLATFORM_DIR=/var/lib/wanwei-shuyi/platform
+Environment=WANWEI_API_KEY_FILE=/var/lib/wanwei-shuyi/api-key
+Environment=WANWEI_DEVICE_GEAR_ENABLED=0
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/wanwei-shuyi/environment
+WorkingDirectory=/opt/apps/wanwei-shuyi/backend
+ExecStart=/opt/apps/wanwei-shuyi/venv/bin/python /opt/apps/wanwei-shuyi/bin/run-server
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

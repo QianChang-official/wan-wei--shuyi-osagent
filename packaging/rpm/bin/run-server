@@ -1,0 +1,64 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 QianChang-official
+#
+# 宛委·枢忆 is licensed under Mulan PSL v2.
+# You can use this software according to the terms of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+# http://license.coscl.org.cn/MulanPSL2
+#
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+"""Non-root RPM service entry point; never attaches to a desktop session."""
+import os
+from pathlib import Path
+import re
+import secrets
+import sys
+
+
+def validate_port(value):
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", value) or int(value) > 65535:
+        raise ValueError("WANWEI_PORT must be a decimal port in 1..65535")
+    return value
+
+
+def prepare_state():
+    for name in ("WANWEI_DATA_DIR", "WANWEI_PLATFORM_DIR", "WANWEI_API_KEY_FILE"):
+        if not Path(os.environ.get(name, "")).is_absolute():
+            raise ValueError(f"{name} must be an absolute path")
+    os.umask(0o077)
+    for name in ("WANWEI_DATA_DIR", "WANWEI_PLATFORM_DIR"):
+        Path(os.environ[name]).mkdir(mode=0o700, parents=True, exist_ok=True)
+    key = Path(os.environ["WANWEI_API_KEY_FILE"])
+    if key.is_symlink():
+        raise ValueError("API key must not be a symlink")
+    try:
+        fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if not key.is_file() or not key.read_text(encoding="utf-8").strip():
+            raise ValueError("Existing API key is invalid; refusing to replace it") from None
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(secrets.token_hex(24) + "\n")
+
+
+def main():
+    if os.geteuid() == 0:
+        raise ValueError("Run as the wanwei-shuyi service account, not root")
+    port = validate_port(os.environ.get("WANWEI_PORT", "8010"))
+    os.environ["WANWEI_DEVICE_GEAR_ENABLED"] = "0"
+    os.environ["WANWEI_HOST"] = "127.0.0.1"
+    prepare_state()
+    os.chdir(Path(__file__).resolve().parents[1] / "backend")
+    os.execv(sys.executable, [sys.executable, "-m", "uvicorn", "app.main:app",
+                             "--host", "127.0.0.1", "--port", port])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as exc:
+        sys.exit(f"wanwei-shuyi: {exc}")
