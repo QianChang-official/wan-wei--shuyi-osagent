@@ -13,6 +13,7 @@
 /* gf 组件内部共享：主题与花瓣偏好的读写（不对外暴露为组件） */
 
 export const GF_THEME_KEY = 'gf-theme'
+export const GF_THEME_EVENT = 'gf-theme-change'
 export const GF_PETALS_KEY = 'gf-petals'
 export const GF_PETALS_EVENT = 'gf-petals-change'
 
@@ -28,6 +29,7 @@ export function getTheme(): GfTheme {
 
 export function applyTheme(t: GfTheme) {
   document.documentElement.dataset.theme = t
+  window.dispatchEvent(new CustomEvent<GfTheme>(GF_THEME_EVENT, { detail: t }))
   try {
     localStorage.setItem(GF_THEME_KEY, t)
   } catch {

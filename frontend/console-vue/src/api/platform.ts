@@ -10,40 +10,11 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
-import { parseApiErrorDetail } from './client'
+import { getApiKey, setApiKey, parseApiErrorDetail } from './client'
 
-// 万枢协作平台 API 薄封装（base: /platform）。
-// client.ts 未导出其内部通用 req，故按其模式新写：
-// 同样的 JSON 头 + X-API-Key 鉴权。密钥状态独立维护，
-// 通过 setPlatformApiKey 注入（与 client.setApiKey 同源调用即可）。
-// 所有请求默认 30s 超时（AbortController），可用可选参数覆盖（09-#13）。
-
-function _loadApiKey(): string {
-  if (import.meta.env.DEV) {
-    return import.meta.env.VITE_WANWEI_DEV_API_KEY || ''
-  }
-  // 桌面端优先通过 preload 提供的受控接口读取，避免明文落入 localStorage
-  try {
-    const desktopKey = (window as any).wanweiDesktop?.getApiKey?.()
-    if (desktopKey) return desktopKey
-  } catch { /* ignore */ }
-  // 向后兼容：旧版 preload 或降级场景回退 localStorage
-  try {
-    return localStorage.getItem('wanwei-desktop-api-key') || ''
-  } catch {
-    return ''
-  }
-}
-
-let apiKey = _loadApiKey()
-
-export function setPlatformApiKey(value: string): void {
-  apiKey = value.trim()
-}
-
-export function clearPlatformApiKey(): void {
-  apiKey = ''
-}
+// 兼容旧视图的请求 API；访问身份与新工作台共享，手机凭证仍按单次请求传递。
+export function setPlatformApiKey(value: string): void { setApiKey(value) }
+export function clearPlatformApiKey(): void { setApiKey('') }
 
 export class PlatformApiError extends Error {
   status: number
@@ -85,6 +56,7 @@ export const DEFAULT_TIMEOUT_MS = 30_000
 async function req<T>(path: string, init?: RequestInit, options?: ReqOptions): Promise<T> {
   const headers = new Headers(init?.headers)
   headers.set('Content-Type', 'application/json')
+  const apiKey = getApiKey()
   const credential = options?.credential ?? apiKey
   if (credential) headers.set('X-API-Key', credential)
   else headers.delete('X-API-Key')

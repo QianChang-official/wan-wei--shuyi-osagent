@@ -14,10 +14,11 @@
 
 <script setup lang="ts">
 /** ThemeToggle — 昼/夜切换：写 <html data-theme> 并持久化 localStorage:gf-theme，默认 day */
-import { onMounted, ref } from 'vue'
-import { applyTheme, getTheme, type GfTheme } from './shared'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { applyTheme, getTheme, GF_THEME_EVENT, type GfTheme } from './shared'
 
 const theme = ref<GfTheme>('day')
+const syncTheme = (event: Event) => { theme.value = (event as CustomEvent<GfTheme>).detail }
 
 function toggle() {
   theme.value = theme.value === 'day' ? 'night' : 'day'
@@ -25,9 +26,11 @@ function toggle() {
 }
 
 onMounted(() => {
+  window.addEventListener(GF_THEME_EVENT, syncTheme)
   theme.value = getTheme()
   applyTheme(theme.value)
 })
+onUnmounted(() => window.removeEventListener(GF_THEME_EVENT, syncTheme))
 </script>
 
 <template>

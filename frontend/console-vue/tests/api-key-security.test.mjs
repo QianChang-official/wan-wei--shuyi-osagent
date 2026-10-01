@@ -18,6 +18,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { runInNewContext } from 'node:vm'
 
 import { createServer } from 'vite'
 
@@ -25,6 +26,21 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const configFile = path.join(root, 'vite.config.ts')
 const developmentApiKey = 'wanwei-dev-key'
 const execFileAsync = promisify(execFile)
+
+test('same-origin early bootstrap applies stored theme and handles unavailable storage', async () => {
+  const source = await readFile(path.join(root, 'public/theme-init.js'), 'utf8')
+  for (const [stored, expected] of [['night', 'night'], ['day', 'day'], [null, 'day'], ['unexpected', 'day']]) {
+    const document = { documentElement: { dataset: {} } }
+    runInNewContext(source, {
+      document,
+      localStorage: { getItem(key) { assert.equal(key, 'gf-theme'); return stored } },
+    })
+    assert.equal(document.documentElement.dataset.theme, expected)
+  }
+  const document = { documentElement: { dataset: {} } }
+  runInNewContext(source, { document, localStorage: { getItem() { throw new Error('storage blocked') } } })
+  assert.equal(document.documentElement.dataset.theme, 'day')
+})
 
 async function readBundleArtifacts(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -60,12 +76,13 @@ test('development transform provides the local API key by default', async (conte
     globalThis.fetch = originalFetch
   })
 
+  await client.api.health()
   await client.api.writeCapsule({ content: { text: 'local development' } })
 
   assert.equal(requestHeaders.get('X-API-Key'), developmentApiKey)
 })
 
-test('production bundle excludes the local API key', async (context) => {
+test('production bundle excludes the local API key and requires only same-origin CSP resources', async (context) => {
   const outDir = await mkdtemp(path.join(os.tmpdir(), 'wanwei-production-bundle-'))
   context.after(() => rm(outDir, { recursive: true, force: true }))
   const viteBin = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js')
@@ -81,6 +98,25 @@ test('production bundle excludes the local API key', async (context) => {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'production' },
   })
+  const html = await readFile(path.join(outDir, 'index.html'), 'utf8')
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+  assert.ok(scripts.length >= 2, 'missing theme bootstrap or app entry')
+  for (const [, attributes, body] of scripts) {
+    assert.equal(body.trim(), '', 'production HTML contains an inline executable script')
+    assert.match(attributes, /\bsrc=["']\/console\/(?!\/)[^"']+["']/, 'script must use the same-origin /console base')
+  }
+  assert.match(html, /<script src="\/console\/theme-init\.js"><\/script>/)
+  assert.ok(html.indexOf('/console/theme-init.js') < html.indexOf('<body>'), 'theme must initialize before first body paint')
+  assert.equal(/\son\w+\s*=/i.test(html), false, 'inline event handlers violate script-src self')
+  assert.equal(html.includes('cdn.jsdelivr.net'), false, 'remote font CDN is forbidden')
+  assert.equal(html.includes('lxgw-wenkai-webfont'), false, 'remote webfont dependency is forbidden')
+  for (const [link] of html.matchAll(/<link\b[^>]*>/gi)) {
+    if (/\brel=["']stylesheet["']/i.test(link)) {
+      assert.match(link, /\bhref=["']\/console\/(?!\/)[^"']+["']/, 'styles must be same-origin')
+    }
+  }
+  assert.equal(await readFile(path.join(outDir, 'theme-init.js'), 'utf8'),
+    await readFile(path.join(root, 'public/theme-init.js'), 'utf8'), 'Vite must copy the exact tested bootstrap asset')
   const chunks = await readBundleArtifacts(outDir)
 
   assert.ok(chunks.length > 0)
