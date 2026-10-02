@@ -73,7 +73,8 @@ git branch recovered-branch archive/consolidation-2026-10/fix/audit-conn-identit
 ## 验证记录（整合工作树）
 
 - 干净基准后端：**1925 passed、11 skipped**。第一次额外强制 native=off 导致 3 个原生配置测试失败；撤去该不适用的全局覆盖后通过，未修改测试来掩盖失败。
-- 当前公开后端（无私有 SDK／无可选工具包）：**2040 passed、15 skipped**。其中新增 skip 包括可选库、私有包与 Windows 无符号链接权限；不是声称这些路径已执行。
+- 当前公开后端（无私有 SDK／无可选工具包）：**2054 passed、15 skipped**。其中新增 skip 包括可选库、私有包与 Windows 无符号链接权限；不是声称这些路径已执行。
+- SDK 审查引出的 JSON `token` 键绕过也在公开基线独立复现：修复前相关 14 例中 3 例失败，修复后全部通过；保留原策略语义，并阻止序列化后的凭据内容落库／入索引。
 - 实际可选 pydantic/OpenAI 库的离线网络替身／临时目录安全与协议回归：Python 3.10、3.11 各 **142 passed**，不调用真实模型或执行宿主命令。
 - 前端：生产构建通过，安全 **3/3**、原契约 **57/57**、真实 Vue/jsdom 交互 **22/22**；干净 npm ci 完成，升级到已修复 Vitest 4.1.11 后 npm audit **0 漏洞**。
 - 新 RPM：**45 passed、2 skipped**；实际源码 payload 解包后的 import、ASGI lifespan、health/readiness、静态控制台和研究案例验证通过。未把此结果冒充 Linux RPM 安装或 systemd 实测。

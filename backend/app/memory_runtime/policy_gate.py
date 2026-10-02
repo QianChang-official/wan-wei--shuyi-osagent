@@ -15,10 +15,12 @@ from typing import Any
 
 # Pre-compile regex patterns for performance
 S3_PATTERNS = [
-    re.compile(r"password\s*[:=：]", re.IGNORECASE),
-    re.compile(r"api[_-]?key\s*[:=：]", re.IGNORECASE),
-    re.compile(r"token\s*[:=：]", re.IGNORECASE),
-    re.compile(r"secret\s*[:=：]", re.IGNORECASE),
+    # Capsule content is JSON-serialized before evaluation; a closing key quote
+    # must not turn token: value into an allowed {"token": "value"} assignment.
+    re.compile(r"password[\"']?\s*[:=：]", re.IGNORECASE),
+    re.compile(r"api[_-]?key[\"']?\s*[:=：]", re.IGNORECASE),
+    re.compile(r"token[\"']?\s*[:=：]", re.IGNORECASE),
+    re.compile(r"secret[\"']?\s*[:=：]", re.IGNORECASE),
     re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----", re.IGNORECASE),
     re.compile(r"\b\d{17}[0-9Xx]\b"),
 ]
