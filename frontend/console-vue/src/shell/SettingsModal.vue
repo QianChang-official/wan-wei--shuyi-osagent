@@ -298,7 +298,7 @@ const appVersion = __APP_VERSION__
           <h2>通用</h2>
           <div class="row column">
             <span class="row-label">控制台访问密钥（X-API-Key）</span>
-            <p class="hint">仅当后端启用了密钥鉴权时才需填写；密钥只保存在本机浏览器。</p>
+            <p class="hint">仅当后端启用了密钥鉴权时才需填写；密钥只保存在本机内存（会话内有效，刷新后需重新输入），明文不落盘。</p>
             <div class="key-row">
               <input
                 v-model="keyDraft" class="txt" type="password" autocomplete="off"

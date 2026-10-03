@@ -112,13 +112,11 @@ export function getApiKey(): string {
   return apiKey
 }
 
-/** 设置访问密钥；生产模式下持久化到 localStorage（与旧版键名一致） */
+/** 设置访问密钥：仅保存在本进程内存（会话内有效）。
+ *  持久化只走桌面端 preload 的原生受控通道；浏览器侧明文落盘
+ *  （localStorage/sessionStorage）一律不做 —— CodeQL 明文存储告警的正式口径。 */
 export function setApiKey(value: string): void {
   apiKey = value.trim()
-  try {
-    if (apiKey) localStorage.setItem(API_KEY_STORAGE, apiKey)
-    else localStorage.removeItem(API_KEY_STORAGE)
-  } catch { /* 隐私模式等场景下静默失败 */ }
 }
 
 export interface ReqOptions {
