@@ -1,0 +1,16 @@
+# Copyright (c) 2026 QianChang-official — 宛委·枢忆 Mulan PSL v2
+[Unit]
+Description=Wanwei Shuyi MemoryOps Console (宛委·枢忆)
+After=network.target
+
+[Service]
+Type=simple
+Environment=WANWEI_DATA_DIR=/var/lib/wanwei-shuyi
+Environment=WANWEI_PORT=8010
+WorkingDirectory=/opt/apps/wanwei-shuyi/backend
+ExecStart=/opt/apps/wanwei-shuyi/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -13,24 +13,29 @@
 -->
 
 <script setup lang="ts">
-/** ScrollProgress — 顶部 3px 阅读进度条：朱砂→胭脂渐变，右端一点梅花 */
+/** ScrollProgress —— 顶部 3px 阅读进度条：朱砂→胭脂渐变，右端一点梅花。
+ *  通过捕获阶段监听文档内所有滚动，进度跟随最近滚动的元素。 */
 import { onMounted, onUnmounted, ref } from 'vue'
 
 const progress = ref(0)
 
-function update() {
-  const el = document.documentElement
+function ratioOf(el: Element): number {
   const max = el.scrollHeight - el.clientHeight
-  progress.value = max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0
+  return max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0
+}
+
+function update(e?: Event) {
+  const target = e?.target
+  progress.value = target instanceof Element ? ratioOf(target) : ratioOf(document.documentElement)
 }
 
 onMounted(() => {
-  update()
-  window.addEventListener('scroll', update, { passive: true })
+  // scroll 事件不冒泡但可捕获；capture 监听即可覆盖所有内部滚动容器
+  document.addEventListener('scroll', update, { capture: true, passive: true })
   window.addEventListener('resize', update, { passive: true })
 })
 onUnmounted(() => {
-  window.removeEventListener('scroll', update)
+  document.removeEventListener('scroll', update, { capture: true })
   window.removeEventListener('resize', update)
 })
 </script>

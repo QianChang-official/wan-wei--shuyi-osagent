@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Wanwei Shuyi Console
+Name[zh_CN]=宛委·枢忆 控制台
+GenericName=MemoryOps Console
+GenericName[zh_CN]=端侧记忆治理控制台
+Comment=Wanwei Shuyi OSAgent memory governance console
+Comment[zh_CN]=宛委·枢忆 OSAgent 端侧记忆治理与多智能体编排控制台
+Exec=/opt/apps/wanwei-shuyi/bin/wanwei-shuyi
+Icon=wanwei-shuyi
+Terminal=false
+Categories=Utility;Development;
