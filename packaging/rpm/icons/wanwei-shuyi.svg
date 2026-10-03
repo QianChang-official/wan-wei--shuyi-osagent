@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- 宛委·枢忆 应用图标：月洞门 + 梅花（与控制台品牌视觉同源） -->
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="#F3C9D6"/>
+      <stop offset="100%" stop-color="#FBF5EA" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D9708E"/>
+      <stop offset="100%" stop-color="#C8453C"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#FBF5EA"/>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#halo)"/>
+  <circle cx="64" cy="64" r="44" fill="none" stroke="#C9A24B" stroke-opacity=".55" stroke-width="3"/>
+  <g fill="url(#seal)">
+    <circle cx="64" cy="40" r="11"/>
+    <circle cx="86.9" cy="56.6" r="11"/>
+    <circle cx="78.1" cy="84.4" r="11"/>
+    <circle cx="49.9" cy="84.4" r="11"/>
+    <circle cx="41.1" cy="56.6" r="11"/>
+  </g>
+  <circle cx="64" cy="64" r="7" fill="#C9A24B"/>
+</svg>
