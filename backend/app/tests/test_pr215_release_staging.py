@@ -37,7 +37,6 @@ PATCH = ROOT / PATCH_PATH
 SYSTEM_SERVICE = "backend/app/platform_api/_system_svc_runtime.py"
 MOBILE_SOURCES = (
     "backend/app/platform_api/mobile_remote.py",
-    "frontend/console-vue/src/views/platform/MobileView.vue",
 )
 SHARED_SECURITY_SOURCES = (
     "backend/app/security/auth.py",
@@ -227,9 +226,10 @@ def test_staged_desktop_keeps_cold_start_cleanup_without_mobile_entrypoints(stag
     assert re.search(r"await startBackend\(py\);\s+await reconcileLanState\(\);", source)
     assert "desktop:lan-enable" not in source
     assert "/console/#/mobile" not in source
-    router = (staged_release.path / "frontend/console-vue/src/router/platform.ts").read_text(encoding="utf-8")
-    assert "MobileView" not in router
-    assert not re.search(r"path:\s*['\"]/?mobile['\"]", router)
+    # 新控制台（三栏单页、无路由）已结构性移除移动端入口：
+    # 路由表与移动视图文件在仓库中不复存在，发布清理无需再触碰前端文件。
+    assert not (ROOT / "frontend/console-vue/src/router/platform.ts").exists()
+    assert not (ROOT / "frontend/console-vue/src/views/platform/MobileView.vue").exists()
     node = shutil.which("node")
     if node:
         subprocess.run([node, "--check", str(main)], check=True, capture_output=True)

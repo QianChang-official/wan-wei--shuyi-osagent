@@ -28,6 +28,10 @@ backend/.pytest-*/
 *.sqlite-wal
 *.sqlite3
 .DS_Store
+# 前端构建产物（发行由打包流程生成）
+frontend/console-vue/dist/
+# 会话级 hook 状态/基线缓存（机器本地，不应入库）
+.mimosa/
 Thumbs.db
 data/runtime/
 data/platform/

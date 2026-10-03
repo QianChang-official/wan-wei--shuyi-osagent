@@ -13,24 +13,18 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 const backend = 'http://127.0.0.1:8010'
+
+// 控制台实际用到的后端前缀（保持最小面）
 const apiPrefixes = [
   '/health',
-  '/arena',
-  '/memory',
   '/audit',
   '/platform',
-  '/model-gateway',
-  '/tool-registry',
-  '/tuning',
-  '/exports',
-  '/research-adoption',
-  '/workflow',
-  '/reproduction',
-  '/deepening',
-  '/soul',
 ]
+
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'))
 
 export default defineConfig(({ command }) => ({
   plugins: [vue()],
@@ -39,6 +33,7 @@ export default defineConfig(({ command }) => ({
     'import.meta.env.VITE_WANWEI_DEV_API_KEY': JSON.stringify(
       command === 'serve' ? 'wanwei-dev-key' : '',
     ),
+    __APP_VERSION__: JSON.stringify(version),
   },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
