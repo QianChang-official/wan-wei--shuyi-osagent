@@ -60,7 +60,7 @@ test('development transform provides the local API key by default', async (conte
     globalThis.fetch = originalFetch
   })
 
-  await client.api.writeCapsule({ content: { text: 'local development' } })
+  await client.api.health()
 
   assert.equal(requestHeaders.get('X-API-Key'), developmentApiKey)
 })

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copyright (c) 2026 QianChang-official — 宛委·枢忆 Mulan PSL v2
+#
+# wanwei-shuyi — 控制台启动器：确保服务运行并打开控制台页面。
+
+set -eu
+
+URL="http://127.0.0.1:8010/console/"
+
+# 服务未运行时尝试启动（有 systemctl 用服务，否则前台进程）
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    if ! systemctl is-active --quiet wanwei-shuyi.service 2>/dev/null; then
+        systemctl start wanwei-shuyi.service 2>/dev/null \
+            || sudo systemctl start wanwei-shuyi.service 2>/dev/null \
+            || true
+    fi
+fi
+
+# 等待端口就绪（至多 10s）
+i=0
+while [ $i -lt 20 ]; do
+    if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:8010/health" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+
+if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL" >/dev/null 2>&1 &
+else
+    printf '请在浏览器打开: %s\n' "$URL"
+fi
