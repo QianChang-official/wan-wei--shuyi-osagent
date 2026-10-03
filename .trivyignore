@@ -5,9 +5,11 @@
 #    使风险透明化，而非新增。
 # 2. 本镜像中 pip 仅在镜像构建期执行；运行时（USER 10001, WANWEI_PRODUCTION=1）
 #    不调用 pip，无不可信数据进入 vendored 代码路径。
-# 3. 上游无修复版可升：pip 26.2.1（当前最新）仍 vendor msgpack 1.1.2 与 setuptools 70.3.0。
+# 3. 上游无修复版可升：pip 26.2.1（当前最新）仍 vendor msgpack 1.1.2、setuptools 70.3.0
+#    与 urllib3 2.7.0（urllib3 独立修复版 2.8.0 已发布，但尚无任何 pip 版本 vendor 它；
+#    仅升级镜像内 pip 无法消除该 vendored 拷贝）。
 #
-# 移除条件: pip 发布 vendor msgpack>=1.2.1 且 setuptools>=78.1.1 的版本后，
+# 移除条件: pip 发布 vendor msgpack>=1.2.1、setuptools>=78.1.1 且 urllib3>=2.8.0 的版本后，
 # 升级 Dockerfile PIP_VERSION 并删除对应豁免条目。
 
 # msgpack 1.1.2 — Unpacker 捕获异常后复用导致越界读/崩溃（仅可用性影响，
@@ -17,3 +19,8 @@ GHSA-6v7p-g79w-8964
 # setuptools 70.3.0 — PackageIndex 路径遍历（触发需使用 legacy easy_install/PackageIndex
 # 路径处理恶意索引；pip 26.x 不使用该代码路径安装包）
 CVE-2025-47273
+
+# urllib3 2.7.0（pip vendored）— HTTPS 代理场景的 TLS 配置覆盖/流量拦截；
+# 触发需 pip 经恶意 HTTPS 代理下载包；本镜像 pip 仅构建期直连 PyPI，运行时不执行 pip。
+CVE-2026-97687
+CVE-2026-97689
