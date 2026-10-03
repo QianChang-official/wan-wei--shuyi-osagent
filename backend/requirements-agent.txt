@@ -1,0 +1,5 @@
+# Optional agent tool loop; the base backend remains usable without this extra.
+# Install after requirements.txt with Python 3.10+.
+# Licenses: pydantic-ai-slim MIT, openai Apache-2.0, psutil BSD-3-Clause.
+pydantic-ai-slim[openai]==2.52.0
+psutil==7.2.2

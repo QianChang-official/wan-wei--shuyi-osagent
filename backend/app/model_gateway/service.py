@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -89,6 +90,54 @@ def active_chat_provider(owner_id: str | None = None) -> dict | None:
 
 
 OPENAI_COMPATIBLE_TIMEOUT_S = 20
+CHAT_PROMPT_MAX_CHARS = 48000
+
+
+@dataclass(frozen=True)
+class _GenerationProfile:
+    prompt_chars: int = 500
+    max_tokens: int = 256
+    reply_chars: int = 600
+    instruction: str = "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。"
+
+
+# Existing probes retain their exact small smoke budgets. Chat opts into a
+# separate request-local profile only while reusing the protocol/SSRF transport;
+# ContextVar + finally reset prevents cross-thread or subsequent-probe leakage.
+_GENERATION_PROFILE: ContextVar[_GenerationProfile] = ContextVar(
+    "gateway_generation_profile", default=_GenerationProfile(),
+)
+_CHAT_PROFILE = _GenerationProfile(
+    prompt_chars=CHAT_PROMPT_MAX_CHARS, max_tokens=4096, reply_chars=16000,
+    instruction="你是宛委枢忆的对话助手。依据当前用户消息和提供的上下文如实回答。",
+)
+
+
+def provider_protocol(provider: str) -> str:
+    """Shared protocol classification, including platform catalog aliases."""
+    return {
+        "anthropic": "anthropic", "gemini": "gemini",
+        "google_ai_studio": "gemini", "aws_bedrock": "bedrock",
+    }.get(provider, "openai_compatible")
+
+
+def _generation_tokens(max_tokens: int) -> int:
+    return max(16, min(max_tokens, _GENERATION_PROFILE.get().max_tokens))
+
+
+def _provider_chat_dispatch(
+    provider: str, api_base: str, api_key: str, model: str, prompt: str, max_tokens: int,
+) -> tuple[str, int, str]:
+    """Chat-safe entrypoint: never silently turn a real conversation into a probe."""
+    if len(prompt) > CHAT_PROMPT_MAX_CHARS:
+        raise ValueError("chat_prompt_too_large")
+    token = _GENERATION_PROFILE.set(_CHAT_PROFILE)
+    try:
+        return _provider_dispatch(provider, api_base, api_key, model, prompt, max_tokens)
+    finally:
+        _GENERATION_PROFILE.reset(token)
+
+
 # Preserve the previous four-request admission ceiling while splitting it into
 # two isolated network workers plus two queued jobs. This avoids increasing the
 # number of request workers waiting for a result during rollout.
@@ -616,11 +665,11 @@ def _openai_compatible_smoke(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。"},
-            {"role": "user", "content": prompt[:500]},
+            {"role": "system", "content": _GENERATION_PROFILE.get().instruction},
+            {"role": "user", "content": prompt[:_GENERATION_PROFILE.get().prompt_chars]},
         ],
         "temperature": 0.2,
-        "max_tokens": max(16, min(max_tokens, 256)),
+        "max_tokens": _generation_tokens(max_tokens),
         "stream": False,
     }
     headers = {"Content-Type": "application/json"}
@@ -642,7 +691,7 @@ def _openai_compatible_smoke(
         # 推理类模型（deepseek-r*/v* 等）可能把全部输出写进 reasoning_content
         # 而 content 留空；此时如实回退推理文本，避免「成功但空回复」。
         text = message.get("reasoning_content", "") or ""
-    return "ok", latency_ms, text[:600]
+    return "ok", latency_ms, text[:_GENERATION_PROFILE.get().reply_chars]
 
 
 def _anthropic_smoke(
@@ -656,9 +705,9 @@ def _anthropic_smoke(
     started = time.perf_counter()
     payload = {
         "model": model,
-        "max_tokens": max(16, min(max_tokens, 256)),
-        "system": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。",
-        "messages": [{"role": "user", "content": prompt[:500]}],
+        "max_tokens": _generation_tokens(max_tokens),
+        "system": _GENERATION_PROFILE.get().instruction,
+        "messages": [{"role": "user", "content": prompt[:_GENERATION_PROFILE.get().prompt_chars]}],
     }
     headers = {
         "Content-Type": "application/json",
@@ -686,7 +735,7 @@ def _anthropic_smoke(
             b.get("thinking", "") for b in blocks
             if isinstance(b, dict) and b.get("type") == "thinking"
         )
-    return "ok", latency_ms, text[:600]
+    return "ok", latency_ms, text[:_GENERATION_PROFILE.get().reply_chars]
 
 
 def _gemini_smoke(
@@ -702,11 +751,11 @@ def _gemini_smoke(
         "contents": [
             {
                 "parts": [
-                    {"text": "你是宛委枢忆项目的本地模型网关 smoke 测试助手。回答要短。\n\n" + prompt[:500]},
+                    {"text": _GENERATION_PROFILE.get().instruction + "\n\n" + prompt[:_GENERATION_PROFILE.get().prompt_chars]},
                 ],
             },
         ],
-        "generationConfig": {"maxOutputTokens": max(16, min(max_tokens, 256))},
+        "generationConfig": {"maxOutputTokens": _generation_tokens(max_tokens)},
     }
     headers = {"Content-Type": "application/json"}
     validated_base, pinned_ip = resolve_external_url(api_base, allowlist=local_llama_allowlist())
@@ -732,7 +781,7 @@ def _gemini_smoke(
         text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
         if not text.strip():
             text = "".join(p.get("text", "") for p in parts)
-    return "ok", latency_ms, text[:600]
+    return "ok", latency_ms, text[:_GENERATION_PROFILE.get().reply_chars]
 
 
 def _sigv4_sha256_hex(data: bytes) -> str:
@@ -840,8 +889,8 @@ def _bedrock_invoke_payload(model: str, prompt: str, max_tokens: int) -> dict:
     - amazon.nova* ：messages-v1 schema（messages + inferenceConfig）；
     - 其他家族     ：如实报 unsupported_model_format，不猜协议。
     """
-    bounded_tokens = max(16, min(max_tokens, 256))
-    bounded_prompt = prompt[:500]
+    bounded_tokens = _generation_tokens(max_tokens)
+    bounded_prompt = prompt[:_GENERATION_PROFILE.get().prompt_chars]
     if model.startswith("meta.llama"):
         return {
             "prompt": bounded_prompt,
@@ -930,7 +979,7 @@ def _bedrock_smoke(
     data = _pinned_json_post(url, pinned_ip, payload, headers, _BEDROCK_TIMEOUT_S)
     latency_ms = int((time.perf_counter() - started) * 1000)
     text = _bedrock_extract_text(data)
-    return "ok", latency_ms, text[:600]
+    return "ok", latency_ms, text[:_GENERATION_PROFILE.get().reply_chars]
 
 
 def _provider_dispatch(
@@ -947,11 +996,12 @@ def _provider_dispatch(
     google_ai_studio 是 Gemini 原生协议的平台目录别名；aws_bedrock 走
     SigV4 手工签名的 InvokeModel 通路。
     """
-    if provider == "anthropic":
+    protocol = provider_protocol(provider)
+    if protocol == "anthropic":
         return _anthropic_smoke(api_base, api_key, model, prompt, max_tokens)
-    if provider in {"gemini", "google_ai_studio"}:
+    if protocol == "gemini":
         return _gemini_smoke(api_base, api_key, model, prompt, max_tokens)
-    if provider == "aws_bedrock":
+    if protocol == "bedrock":
         return _bedrock_smoke(api_base, api_key, model, prompt, max_tokens)
     return _openai_compatible_smoke(api_base, api_key, model, prompt, max_tokens)
 
