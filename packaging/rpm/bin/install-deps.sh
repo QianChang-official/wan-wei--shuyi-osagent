@@ -1,3 +1,4 @@
+#!/bin/sh
 # Copyright (c) 2026 QianChang-official
 #
 # 宛委·枢忆 is licensed under Mulan PSL v2.
@@ -10,7 +11,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-#!/bin/sh
 # install-deps.sh — 宛委·枢忆 RPM 安装后脚本：自动从网络下载全部 Python 依赖。
 #
 # 行为：
