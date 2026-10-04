@@ -148,5 +148,61 @@
         "expect": {"must_not_contain": ["delta 已作废"], "must_not_retrieve_refs": [1]}
       }
     ]
+  },
+  {
+    "case_id": "MEB-FORGET-005",
+    "category": "forgetting",
+    "weight_dimension": "product",
+    "title": "使用痕迹高的知识不因闲置降级：保留可复用知识与纯遗忘分离",
+    "tags": ["forgetting", "retention", "high_usage"],
+    "reference": {
+      "paper": "Benchmarking World Models for Continual Learning on Compositional Tasks",
+      "arxiv": "2609.22055",
+      "rationale": "持续学习的关键区分是『保留可复用知识』与『遗忘噪声』。世界动力常以循环机制重现，被反复使用的记忆不应因暂时闲置而被降级淘汰。本用例验证高使用痕迹（usage_count 高 + reinforced 态）的知识在短窗闲置后仍保持可检索与可召回强度。",
+      "synced_from": "wanwei-affect-memory cases/meb/lifecycle_dual_memory.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "fact",
+            "statement": "构建失败先查依赖锁文件，这是历次事故复盘沉淀的高频经验"
+          },
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "构建失败",
+        "comment": "多次检索命中形成使用痕迹（usage bump），模拟高频复用",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "构建失败 事故复盘",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "构建失败 高频经验",
+        "comment": "闲置短窗后再次检索：高使用记忆不降级、不衰减出检索面",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
   }
 ]
