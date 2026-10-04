@@ -32,7 +32,6 @@ import logging
 
 import asyncio
 import bisect
-import random
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -141,13 +140,6 @@ def _valid_depth(value: str | None, default: str = 'medium') -> str:
 
 def _valid_gear(value: str | None, default: str = 'sandbox') -> str:
     return value if value in WORK_GEARS else default
-
-
-def _depth_steps(depth: str) -> int:
-    """思考深度 → 模拟推理要点条数。"""
-    return {
-        'low': 1, 'medium': 2, 'high': 3, 'xhigh': 3, 'max': 4, 'ultracode': 4,
-    }.get(depth, 2)
 
 
 def _memory_instructions_block() -> tuple[str, str]:
@@ -454,42 +446,6 @@ def _get_agent_or_404(aid: str, owner_id: str | None = None) -> dict:
         audit_safe('agent_access_denied', {'agent_id': aid, 'reason': 'owner_mismatch'})
         raise HTTPException(status_code=404, detail=f'智能体 {aid} 不存在')
     return agent
-
-
-# ---------------------------------------------------------------- 模拟引擎
-
-def _mock_step_detail(run: dict, step: dict) -> str:
-    task = run.get('task', '')
-    depth = run.get('depth', 'medium')
-    n = _depth_steps(depth)
-    kind = step.get('kind')
-    label = THINK_DEPTH_LABELS.get(depth, depth)
-    if kind == 'plan':
-        points = [
-            f'拆解目标「{task[:40]}」的关键约束与交付物',
-            '确定信息收集范围与优先级',
-            '评估可用权限面，划定执行边界',
-            '预设验收标准与回退方案',
-        ][:n]
-        body = '；'.join(f'{i + 1}) {p}' for i, p in enumerate(points))
-        return f'【规划·{label}】{body}。'
-    if kind == 'act':
-        perm = run.get('permissions') or {}
-        granted = [k for k, v in perm.items() if v] or ['（无显式授权）']
-        return (
-            f'【执行·{label}】按规划推进「{task[:40]}」：完成核心动作（模拟），'
-            f'声明权限面 {granted}，未真实触达文件/网络/Shell。'
-        )
-    if kind == 'review':
-        return (
-            f'【审查】关键动作待人工确认：任务「{task[:40]}」的执行产物与权限使用'
-            f'是否符合预期；通过后继续后续步骤。'
-        )
-    # reflect
-    return (
-        f'【复盘·{label}】任务「{task[:40]}」按预期收敛；'
-        f'可改进点：补充真实数据校验、缩短规划-执行回路。'
-    )
 
 
 # ---------------------------------------------------------------- 网关尝试（配置就绪才真实调用）
@@ -841,50 +797,252 @@ async def _finalize_run(rid: str) -> None:
     _touch_floating(rid, 'done')
 
 
+# ---------------------------------------------------------------- 真实执行引擎
+#
+# 本段替换的是「干活」那一步，不是调度骨架。围绕它的状态机本来就是真的：
+# 游标推进、步骤状态流转、needs_review 挂起、取消检查、异常落账都按真实语义
+# 运作。此前每个步骤只是 sleep 一段时间再填一段模板产物，因此：
+#
+#   plan    → 让模型拆解任务（无工具，纯文本）
+#   act     → 走真实工具循环（run_agent_chat），可读写文件、执行命令、调 MCP
+#   reflect → 让模型基于**实际产物**复盘
+#   review  → 保持原语义：执行前挂起等人工审查（这本来就是真的）
+#
+# 降级原则：模型或工具循环不可用时**如实说明未执行**，绝不回退成看起来成功的
+# 模板文本。一个声称完成但什么都没做的步骤，比一个明说失败的步骤有害得多。
+
+# rid → BridgeContext。必须复用：create_context 每次都 mkdtemp 一个新工作目录
+# 并以 run_id 为键注册，重复创建会覆盖旧 ctx 并泄漏上一个工作目录；审批票据也
+# 绑定在 ctx 上（release_context 会连带清理），所以 ctx 生命周期 = run 生命周期。
+_RUN_CONTEXTS: dict[str, Any] = {}
+
+
+def _context_for_run(rid: str, run: dict):
+    from . import agent_bridge as bridge
+    ctx = _RUN_CONTEXTS.get(rid)
+    if ctx is not None:
+        return ctx
+    ctx = bridge.create_context(run)
+    _RUN_CONTEXTS[rid] = ctx
+    return ctx
+
+
+def _release_run_context(rid: str) -> None:
+    from . import agent_bridge as bridge
+    ctx = _RUN_CONTEXTS.pop(rid, None)
+    if ctx is not None:
+        bridge.release_context(ctx)
+
+
+def _pending_review_detail(run: dict, step: dict) -> str:
+    """挂起等审查时展示的说明：讲清这一步**将要**做什么，而不是它的产物。
+
+    审查发生在执行前，所以这里给的是意图与依据，不是结果——否则用户会以为
+    事情已经做完，审批就失去了意义。
+    """
+    title = step.get('title') or step.get('name') or step.get('kind', '')
+    task = (run.get('task') or '')[:80]
+    done = [s for s in run.get('steps', []) if s.get('status') == 'done']
+    tail = (done[-1].get('detail') or '')[:300] if done else ''
+    return (
+        f'【待审查】{title}\n任务：{task}\n'
+        + (f'上一步产物：{tail}\n' if tail else '')
+        + '批准后继续执行；拒绝则终止本次运行。'
+    )
+
+
+async def _step_plan_detail(run: dict) -> str:
+    label = THINK_DEPTH_LABELS.get(run.get('depth', 'medium'), run.get('depth', ''))
+    goal = run.get('goal') or ''
+    prompt = (
+        '你是任务规划器。把下面的任务拆成 3-5 个可执行步骤。\n'
+        '每步一行，写清「做什么」与「完成判据」；不要复述任务本身，不要前言。\n'
+        f'任务：{run.get("task", "")}\n'
+        + (f'目标：{goal}\n' if goal else '')
+    )
+    text, _provider = await _try_gateway(prompt, run, owner_id=run.get('owner_id'))
+    if not text:
+        return f'【规划·{label}】模型网关不可用，本步骤未获得规划结果。'
+    return f'【规划·{label}】{text}'
+
+
+async def _step_act_detail(run: dict, step: dict, ctx) -> tuple[str, bool]:
+    """执行步骤：走真实工具循环。返回 (detail, 是否有待批操作)。"""
+    from . import agent_bridge as bridge
+    target = _resolve_gateway_target(run, owner_id=run.get('owner_id'))
+    if not bridge.bridge_capabilities(target).get('tools_available'):
+        # 缺可选依赖（pydantic-ai）时工具循环不可用。如实说明，不假装执行过。
+        text, _provider = await _try_gateway(
+            f'任务：{run.get("task", "")}\n当前环境未启用本机工具，请给出建议的执行路径。',
+            run, owner_id=run.get('owner_id'),
+        )
+        body = text or '模型网关亦未响应。'
+        return f'【执行】本机工具循环不可用（缺少可选依赖），未真实执行。{body}', False
+
+    agent = _agents.get(run.get('agent_id') or '') or {}
+    if not isinstance(agent, dict):
+        agent = {}
+    system_prompt, _memory = _compose_system_prompt(
+        agent, run.get('depth', 'medium'), run.get('gear', 'sandbox'),
+    )
+    message = step.get('title') or run.get('task', '')
+    try:
+        reply = await bridge.run_agent_chat(system_prompt, message, target, context=ctx)
+    except Exception as exc:  # noqa: BLE001 —— 单步失败不应炸掉整个 run
+        return f'【执行】{type(exc).__name__}：本步骤未完成。', False
+
+    if ctx.pending():
+        # 有操作在等用户批准。如实标注，并把是否需要人工介入交给调度层决定。
+        return f'【执行】{reply}\n（存在待批准的操作，尚未执行）', True
+    return f'【执行】{reply}', False
+
+
+async def _step_reflect_detail(run: dict) -> str:
+    done = [s for s in run.get('steps', []) if s.get('status') == 'done']
+    digest = '\n'.join(
+        f'- {s.get("title") or s.get("name")}：{(s.get("detail") or "")[:200]}'
+        for s in done[-5:]
+    ) or '（无已完成步骤）'
+    prompt = (
+        '你是复盘者。基于已完成步骤的**实际产物**给出简洁复盘：\n'
+        '1) 实际完成了什么 2) 哪些未完成或存疑 3) 下一步建议\n'
+        f'任务：{run.get("task", "")}\n已完成：\n{digest}\n只写要点。'
+    )
+    text, _provider = await _try_gateway(prompt, run, owner_id=run.get('owner_id'))
+    if not text:
+        return '【复盘】模型网关不可用，未获得复盘结果。'
+    return f'【复盘】{text}'
+
+
+async def _execute_step(rid: str, run: dict, step: dict, ctx) -> tuple[str, bool]:
+    """执行单个步骤。返回 (detail, 是否有待批操作)。"""
+    kind = step.get('kind')
+    if kind == 'plan':
+        return await _step_plan_detail(run), False
+    if kind == 'act':
+        return await _step_act_detail(run, step, ctx)
+    if kind == 'reflect':
+        return await _step_reflect_detail(run), False
+    return f'【{step.get("title") or kind}】该步骤类型暂无执行器。', False
+
+
+async def _run_parallel_group(rid: str, run: dict, ctx, indexes: list[int]) -> None:
+    """并发执行一组 act 步骤——parallel 编排的真实语义。
+
+    并发约束（来自 ctx 的既有设计）：所有分支共享同一个 ctx（它绑定 run 与工作
+    目录），因此也共享 ctx.tasks 与 _MAX_PENDING=32 的审批额度。分支同时申请审批
+    时可能撞上额度上限，那一步会如实失败而不影响其他分支——这是可接受的降级，
+    比串行执行更能暴露额度瓶颈。
+    """
+    async def one(i: int) -> tuple[int, str, bool]:
+        step = run['steps'][i]
+        step['status'] = 'running'
+        step['started_at'] = _now()
+        detail, pending = await _step_act_detail(run, step, ctx)
+        return i, detail, pending
+
+    run['updated_at'] = _now()
+    _runs.set(rid, run)
+    _touch_floating(rid, 'running')
+
+    results = await asyncio.gather(*(one(i) for i in indexes), return_exceptions=True)
+
+    run = _runs.get(rid)
+    if not run or run.get('status') == 'cancelled':
+        return
+    pending_any = False
+    for outcome in results:
+        if isinstance(outcome, BaseException):
+            continue
+        i, detail, pending = outcome
+        step = run['steps'][i]
+        step['detail'] = detail
+        step['finished_at'] = _now()
+        step['status'] = 'done'
+        pending_any = pending_any or pending
+    run['cursor'] = indexes[-1] + 1
+    run['updated_at'] = _now()
+    _runs.set(rid, run)
+    if pending_any:
+        # 组内有待批操作：不静默继续，让用户看到并处理。
+        run['status'] = 'awaiting_review'
+        _runs.set(rid, run)
+        _touch_floating(rid, 'awaiting_review')
+
+
 async def _drive_run(rid: str) -> None:
-    """后台推进 run：逐步 running→done；人工审查档位在关键步骤挂起。"""
+    """后台推进 run：逐步真实执行；人工审查档位在关键步骤挂起。
+
+    骨架（游标、状态流转、挂起、取消、异常落账）保持不变，只把原先的
+    sleep + 模板产物换成真实执行。
+    """
     try:
         while True:
             run = _runs.get(rid)
-            if not run or run.get('status') in ('done', 'failed', 'cancelled', 'awaiting_review'):
+            if not run or run.get('status') in ('done', 'failed', 'cancelled', 'awaiting_review', 'rejected'):
                 return
             idx = run.get('cursor', 0)
             steps = run.get('steps', [])
             if idx >= len(steps):
                 await _finalize_run(rid)
+                _release_run_context(rid)
                 return
             if run.get('status') == 'queued':
                 run['status'] = 'running'
+
             step = steps[idx]
-            step['status'] = 'running'
-            step['started_at'] = _now()
-            run['updated_at'] = _now()
-            _runs.set(rid, run)
-            _touch_floating(rid, 'running')
-
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-
-            run = _runs.get(rid)  # sleep 期间可能被取消
-            if not run or run.get('status') == 'cancelled':
-                return
-            step = run['steps'][idx]
+            # 审查在执行前发生：先挂起让人看清这一步要做什么，批准后才执行。
             if step.get('needs_review'):
                 step['status'] = 'awaiting_review'
                 if not step.get('detail'):
-                    step['detail'] = _mock_step_detail(run, step)
+                    step['detail'] = _pending_review_detail(run, step)
                 run['status'] = 'awaiting_review'
                 run['cursor'] = idx
                 run['updated_at'] = _now()
                 _runs.set(rid, run)
                 _touch_floating(rid, 'awaiting_review')
                 return  # 等待 approve 重新唤起
+
+            ctx = _context_for_run(rid, run)
+
+            # parallel 编排：把紧随其后的连续 act 步骤并发执行，而不是逐个串行。
+            if run.get('orchestration') == 'parallel' and step.get('kind') == 'act':
+                group: list[int] = []
+                j = idx
+                while (j < len(steps) and steps[j].get('kind') == 'act'
+                       and not steps[j].get('needs_review')):
+                    group.append(j)
+                    j += 1
+                if len(group) > 1:
+                    await _run_parallel_group(rid, run, ctx, group)
+                    continue
+
+            step['status'] = 'running'
+            step['started_at'] = _now()
+            run['updated_at'] = _now()
+            _runs.set(rid, run)
+            _touch_floating(rid, 'running')
+
+            detail, pending = await _execute_step(rid, run, step, ctx)
+
+            run = _runs.get(rid)  # 执行期间可能被取消或改动
+            if not run or run.get('status') == 'cancelled':
+                return
+            step = run['steps'][idx]
             step['status'] = 'done'
-            step['detail'] = _mock_step_detail(run, step)
+            step['detail'] = detail
             step['finished_at'] = _now()
             run['cursor'] = idx + 1
             run['updated_at'] = _now()
+            if pending:
+                # 该步产生了待批操作：停下来让用户处理，不继续往下跑。
+                run['status'] = 'awaiting_review'
+                _runs.set(rid, run)
+                _touch_floating(rid, 'awaiting_review')
+                return
             _runs.set(rid, run)
     except Exception as exc:  # noqa: BLE001 —— 任何异常都落账为 failed
+        _release_run_context(rid)
         run = _runs.get(rid)
         if run:
             run['status'] = 'failed'
