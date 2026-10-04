@@ -546,8 +546,9 @@ async def execute_approved_call(ticket: Any) -> dict[str, Any]:
     try:
         # 执行前最后一次确认：被封存的参数必须与用户当初批准的摘要一致。
         # 密文槽不参与指纹计算（否则批准对象就变成了不可读的东西），所以这层
-        # 一致性检查是唯一保证「执行的就是批准的」的手段。
-        encoded = json.dumps(arguments, ensure_ascii=False)
+        # 一致性检查是唯一保证「执行的就是批准的」的手段。json.dumps 本身即
+        # 序列化校验：不可序列化的参数会在这里抛错，结果被显式丢弃。
+        json.dumps(arguments, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
         raise McpBridgeFailure('arguments_not_serializable') from exc
     if _argument_digest(arguments) != payload.get('args_digest'):
