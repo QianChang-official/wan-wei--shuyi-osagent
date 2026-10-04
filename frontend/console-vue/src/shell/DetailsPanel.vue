@@ -93,6 +93,7 @@ const PERMISSION_LABELS: Record<string, string> = {
       <!-- 档案卡 -->
       <GfCard title="智能体档案" :seal="selectedAgent.name.charAt(0)">
         <dl class="profile">
+          <div><dt>名称</dt><dd>{{ selectedAgent.name }}</dd></div>
           <div><dt>角色</dt><dd>{{ selectedAgent.role || '—' }}</dd></div>
           <div><dt>人格</dt><dd>{{ selectedAgent.persona || '—' }}</dd></div>
           <div><dt>目标</dt><dd class="goal">{{ selectedAgent.goal || '—' }}</dd></div>

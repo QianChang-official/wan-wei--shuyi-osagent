@@ -9,6 +9,7 @@
     "build": "vue-tsc -b && vite build",
     "test:security": "node --test tests/api-key-security.test.mjs",
     "test:contracts": "node --test tests/markdown-sanitize.test.mjs",
+    "test:behavior": "vitest run --environment jsdom tests/shell-behavior.test.ts",
     "preview": "vite preview"
   },
   "engines": {
@@ -20,8 +21,11 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^26.1.0",
     "typescript": "~5.7.2",
     "vite": "^6.0.7",
+    "vitest": "^4.1.11",
     "vue-tsc": "^3.3.8"
   }
 }
