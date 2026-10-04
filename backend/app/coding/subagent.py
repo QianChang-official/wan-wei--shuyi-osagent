@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ from typing import Any
 
 from . import constants
 from .tools import ToolContext, invoke
+
+logger = logging.getLogger(__name__)
 
 # 角色 → (中文名, 默认工具集, 是否只读)
 ROLES: dict[str, dict[str, Any]] = {
@@ -227,8 +230,11 @@ def run(spec: SubagentSpec, ctx: ToolContext) -> SubagentSpec:
         spec.findings = runner(sub_ctx, spec)
         spec.status = 'done'
     except Exception as exc:  # noqa: BLE001 —— 子智能体失败不拖垮父级
+        # 异常文本可能携带堆栈与内部路径，只落服务端日志；对外只暴露异常类型名，
+        # 避免栈信息经 spec.public() 流入 API 响应（CodeQL py/stack-trace-exposure）。
+        logger.warning('[coding.subagent] 子智能体 %s 执行失败：%r', spec.role, exc)
         spec.status = 'failed'
-        spec.error = str(exc)
+        spec.error = type(exc).__name__
     return spec
 
 

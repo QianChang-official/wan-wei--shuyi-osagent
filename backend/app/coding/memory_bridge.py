@@ -81,7 +81,8 @@ def remember(
     try:
         from ..memory_runtime.capsule_store import write_capsule
     except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': 'memory_unavailable', 'message': f'记忆模块不可用：{exc}'}
+        logger.warning('[coding.memory] 记忆模块不可用：%r', exc)
+        return {'ok': False, 'error': 'memory_unavailable', 'message': '记忆模块不可用'}
 
     content = {
         'title': title or MEMORY_KIND_LABELS.get(kind, kind),
@@ -104,7 +105,6 @@ def remember(
             owner_id=owner_id,
         )
     except Exception as exc:  # noqa: BLE001 —— 记忆写入失败不阻断编码流程，但如实上报
-        logger.warning('[coding.memory] 写入失败：%r', exc)
         logger.warning('[coding.memory] 写入失败：%r', exc)
         return {'ok': False, 'error': 'write_failed', 'message': '记忆写入失败，详见服务端日志'}
 
