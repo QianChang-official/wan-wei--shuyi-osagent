@@ -10,4 +10,4 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from .intake import intake_perception
+from .intake import intake_perception as intake_perception
