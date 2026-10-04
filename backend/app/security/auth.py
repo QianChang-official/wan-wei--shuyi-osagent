@@ -918,10 +918,11 @@ def _origin_is_allowed(origin: str | None) -> bool:
     - ``None``：非浏览器客户端（curl / Electron / TestClient），放行；
       CSRF 与 rebinding 都只在浏览器上下文发生。
     - ``"null"``：sandboxed iframe / file:// 页面 / 重定向链脱敏后的占位。
-      在回环免密部署下，``null`` origin 无法与「本地受信前端」区分，
       一律拒绝（fail-closed）；生产模式本就要求显式 key，不受影响。
-    - 其他：必须命中回环白名单、显式 CORS 来源，或是当前端口上由
-      ``WANWEI_ALLOWED_HOSTS`` 明确列出的本机 LAN 地址。
+    - 回环来源（``127.0.0.1`` / ``localhost`` / ``::1``）：命中本机监听端口白名单
+      即放行；**非生产模式下端口不作要求**（见下方说明）。
+    - 其他：必须命中显式 CORS 来源，或是当前端口上由 ``WANWEI_ALLOWED_HOSTS``
+      明确列出的主机。
     """
     if origin is None:
         return True
@@ -943,16 +944,35 @@ def _origin_is_allowed(origin: str | None) -> bool:
         expected_port = int(_effective_port())
     except (ValueError, TypeError):
         return False
-    return (
+    # 结构性校验：回环来源不做端口匹配，但其余条件与下面完全一致——Origin 里
+    # 带凭据/路径/查询串的一律不接受，避免用它们伪装成纯来源。
+    wellformed = (
         parsed.scheme in {"http", "https"}
         and parsed.hostname is not None
-        and parsed.hostname.lower() in _allowed_hostnames()
-        and parsed_port == expected_port
         and not parsed.username
         and not parsed.password
         and not parsed.path
         and not parsed.query
         and not parsed.fragment
+    )
+    if not wellformed:
+        return False
+    hostname = parsed.hostname.lower()
+    # 开发期放宽：前后端分端口运行（Vite dev server 通常 5173、后端 8010）时，
+    # 同机浏览器发出的 Origin 端口必然与后端不同。此前口径会让
+    # ``run_dev`` 启动的每一次写操作都被 403，而这不是任何攻击面。
+    #
+    # 安全性论证：Origin 由浏览器强制设置为**发起页的来源**，远程恶意页面
+    # 的 Origin 只能是它自己的域名，无法伪装成 127.0.0.1。DNS rebinding 下
+    # 攻击页面的 Origin 是恶意域名而非回环地址，同样落在下面的严格分支。
+    # 因此「hostname 是回环」已足以排除远程来源，端口不构成信任分级。
+    # 仅在**非生产模式**放宽：生产部署可能有多个真实前端来源，端口差异
+    # 代表不同信任级别，必须显式列举。
+    if hostname in {"127.0.0.1", "localhost", "::1"} and not is_production_mode():
+        return True
+    return (
+        hostname in _allowed_hostnames()
+        and parsed_port == expected_port
     )
 
 
