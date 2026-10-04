@@ -230,7 +230,9 @@ class TestLoopbackOriginDevPort:
         monkeypatch.delenv("WANWEI_PORT", raising=False)
         monkeypatch.setenv("WANWEI_ALLOWED_HOSTS", "lan.example.test")
         monkeypatch.setattr(
-            sys, "argv", ["uvicorn", "--host", "0.0.0.0", "--port", "8000", "app:app"],
+            sys, "argv",
+            # 仅向解析器提供 argv，不启动任何服务器或套接字；与上文第 127 行同口径。
+            ["uvicorn", "--host", "0.0.0.0", "--port", "8000", "app:app"],  # nosec B104
         )
         assert auth._origin_is_allowed("http://lan.example.test:8000") is True
         assert auth._origin_is_allowed("http://lan.example.test:8010") is False
