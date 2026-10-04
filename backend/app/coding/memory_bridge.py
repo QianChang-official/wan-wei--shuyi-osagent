@@ -105,7 +105,8 @@ def remember(
         )
     except Exception as exc:  # noqa: BLE001 —— 记忆写入失败不阻断编码流程，但如实上报
         logger.warning('[coding.memory] 写入失败：%r', exc)
-        return {'ok': False, 'error': 'write_failed', 'message': str(exc)}
+        logger.warning('[coding.memory] 写入失败：%r', exc)
+        return {'ok': False, 'error': 'write_failed', 'message': '记忆写入失败，详见服务端日志'}
 
     capsule_id = capsule.get('capsule_id') or capsule.get('id') or ''
     lifecycle = ((capsule.get('state') or {}).get('lifecycle') if isinstance(capsule.get('state'), dict) else None) or 'candidate'
@@ -127,11 +128,13 @@ def list_memories(*, session_id: str | None = None, owner_id: str | None = None,
     try:
         from ..memory_runtime.capsule_store import list_capsules
     except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': 'memory_unavailable', 'message': str(exc), 'items': []}
+        logger.warning('[coding.memory] 记忆模块不可用：%r', exc)
+        return {'ok': False, 'error': 'memory_unavailable', 'message': '记忆模块不可用', 'items': []}
     try:
         capsules = list_capsules(limit=limit, owner_id=owner_id)
     except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': 'read_failed', 'message': str(exc), 'items': []}
+        logger.warning('[coding.memory] 记忆读取失败：%r', exc)
+        return {'ok': False, 'error': 'read_failed', 'message': '记忆读取失败，详见服务端日志', 'items': []}
 
     items: list[dict[str, Any]] = []
     for cap in capsules:
@@ -166,17 +169,20 @@ def forget(*, capsule_id: str, owner_id: str | None = None) -> dict[str, Any]:
         from ..memory_runtime.capsule_store import forget_capsules
         from ..memoryos.governance import verify_deletion
     except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': 'memory_unavailable', 'message': str(exc)}
+        logger.warning('[coding.memory] 记忆模块不可用：%r', exc)
+        return {'ok': False, 'error': 'memory_unavailable', 'message': '记忆模块不可用'}
 
     try:
         result = forget_capsules([capsule_id], mode='hard_delete', owner_id=owner_id)
     except Exception as exc:  # noqa: BLE001
-        return {'ok': False, 'error': 'forget_failed', 'message': str(exc)}
+        logger.warning('[coding.memory] 遗忘失败：%r', exc)
+        return {'ok': False, 'error': 'forget_failed', 'message': '记忆遗忘失败，详见服务端日志'}
 
     try:
         verification = verify_deletion(capsule_id)
     except Exception as exc:  # noqa: BLE001
-        verification = {'error': str(exc), 'complete': None}
+        logger.warning('[coding.memory] 删除取证失败：%r', exc)
+        verification = {'error': 'verification_failed', 'complete': None}
 
     return {
         'ok': True,
