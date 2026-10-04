@@ -1,0 +1,46 @@
+{
+  "case_id": "demo_memory_flow_office_week",
+  "title": "演示：一周办公场景的记忆流转",
+  "description": "演示赛题功能(4)：工作流记忆从 working 写入、复用召回、反思晋升 short_term 的完整流转。",
+  "sessions": [
+    {
+      "session_id": "w1_capture_workflow",
+      "write_capsules": [
+        {
+          "memory_class": "experience",
+          "content": {
+            "task_id": "task_demo_week01",
+            "goal": "整理周一例会纪要并分派行动项",
+            "outcome": "success",
+            "lessons": "例会纪要按'结论/风险/行动项'三段组织，行动项直接@负责人效率最高"
+          },
+          "source_type": "tool_result",
+          "scene": "office",
+          "task_type": "execution"
+        }
+      ],
+      "expect_lifecycle": "active"
+    },
+    {
+      "session_id": "w2_reuse_in_new_task",
+      "command_goal": "把周三评审会的记录整理成纪要",
+      "expect_memory_classes": [
+        "experience"
+      ],
+      "expect_evidence_cards": true,
+      "description": "类似工作流到来，复用周一的组织模板"
+    },
+    {
+      "session_id": "w3_reflect_promote",
+      "reflect": {
+        "task_id": "task_demo_week02",
+        "goal_achieved": true,
+        "helpful_memories": [],
+        "misleading_memories": [],
+        "new_risks": []
+      },
+      "expect_tier_promotion": true,
+      "description": "反思确认后记忆晋升 short_term 层"
+    }
+  ]
+}
