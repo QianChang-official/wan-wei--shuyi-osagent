@@ -351,6 +351,9 @@ def verify_deletion(capsule_id: str, *, conn=None) -> dict[str, Any]:
                          通配符会误匹配。
     ``vector_refs``      仍处于 allocated/indexing/indexed/index_failed 的引用。
     ``legacy_*``         v0.2 遗留的 ``memory_capsules`` / ``memory_event_capsules``。
+    ``visual_assets``    视觉资产 BLOB（``memory_visual_assets``）必须 0 行。
+    ``visual_vectors``   视觉语义向量（``memory_visual_vectors``）必须 0 行。
+                         两张表不存在（老库）均按 0 处理，与 purge 口径一致。
     ==================  ==========================================================
 
     ``complete`` 要求上述全部为 0 **且**没有 ``delete_pending`` 向量。
@@ -394,6 +397,35 @@ def verify_deletion(capsule_id: str, *, conn=None) -> dict[str, Any]:
         "SELECT COUNT(*) FROM memory_event_capsules WHERE capsule_id=?",
         (capsule_id,),
     ).fetchone()[0]
+
+    # 第六处：视觉资产。老库可能还没建表（init_db 之外的极简 schema），
+    # 按 0 处理而不是让整个验证炸掉。
+    visual_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='memory_visual_assets'"
+    ).fetchone()
+    checks["visual_assets"] = (
+        conn.execute(
+            "SELECT COUNT(*) FROM memory_visual_assets WHERE capsule_id=?",
+            (capsule_id,),
+        ).fetchone()[0]
+        if visual_table
+        else 0
+    )
+
+    # 第七处：视觉语义向量。资产字节和它的检索入口是两处独立残留面。
+    vector_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='memory_visual_vectors'"
+    ).fetchone()
+    checks["visual_vectors"] = (
+        conn.execute(
+            "SELECT COUNT(*) FROM memory_visual_vectors WHERE capsule_id=?",
+            (capsule_id,),
+        ).fetchone()[0]
+        if vector_table
+        else 0
+    )
 
     vector_pending = conn.execute(
         "SELECT COUNT(*) FROM memory_vector_refs WHERE capsule_id=? AND status='delete_pending'",

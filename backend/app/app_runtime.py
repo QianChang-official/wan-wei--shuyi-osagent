@@ -12,6 +12,8 @@
 
 import logging
 import os
+import base64
+import binascii
 import json
 import re
 import uuid
@@ -39,6 +41,8 @@ from .schemas import (
     SoulPersonaUpdateIn, SoulDreamIn, TierTransitionIn, TierAutoFlowIn,
     LifecycleTransitionIn, LifecycleConfirmIn, LifecycleResolveConflictIn,
     LifecycleScanStaleIn, MemoryIncidentIn, MemoryHealthSnapshotIn,
+    VisualWriteIn, VisualInspectIn, VisualReadPixelsIn, VisualSearchIn,
+    PerceptionImageIn, PerceptionAudioIn, PerceptionVideoIn, PerceptionSensorIn,
     PreferenceEvolutionIn, PreferenceActiveSuggestIn,
     PreferenceCascadeForgetIn, PreferenceRerankIn,
     KnowledgeConflictDetectIn, KnowledgeEvolutionIn,
@@ -2429,7 +2433,7 @@ def governance_verify_deletion(
     soul_id: str | None = None,
     request: Request = None,
 ):
-    """删除完整性验证：主表 / FTS / 图边 / 向量引用 / legacy 五处逐项证据。
+    """删除完整性验证：主表 / FTS / 图边 / 向量引用 / legacy / 视觉资产 / 视觉向量七处逐项证据。
 
     授权来源是**账本**而不是主表：硬删后主表已无行，用 get_capsule 鉴权会让
     「验证一条已被彻底删除的记忆」永远 404——而那恰恰是最需要验证的情形。
@@ -2455,7 +2459,7 @@ def governance_verify_deletion_certificate(
     soul_id: str | None = None,
     request: Request = None,
 ):
-    """删除证明 PDF 证书：把 verify-deletion 的五处取证渲染为可下载凭证。
+    """删除证明 PDF 证书：把 verify-deletion 的七处取证渲染为可下载凭证。
 
     授权口径与 verify-deletion 一致（账本锚定，硬删后主表无行也可验证）。
     证书纯内存生成，不落临时文件；审计编号由最近 delete 账目 id + 验证
@@ -2486,6 +2490,349 @@ def governance_verify_deletion_certificate(
             ),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# v0.14 视觉记忆端点（VISTA 启发的无损视觉记忆，实现见 memory_visual/）
+#
+# 写入复用既有策略闸门（caption 过 evaluate_policy，字节校验在 store 层）；
+# 回看（inspect/read-pixels）是只读操作，不计 usage、不触发召回记账。
+# 鉴权口径与 lifecycle 端点一致：_scope_of + _require_visible_capsule。
+# ---------------------------------------------------------------------------
+
+
+@memory_router.post('/memory/visual/write')
+def visual_write(req: VisualWriteIn, request: Request = None):
+    """写入一条视觉记忆：图片无损入库（sha256 锚定），caption 进 FTS 检索。
+
+    派生图（kind=derived）必须署名 derived_from 来源资产；闸门 reject 时
+    不落资产行，只留 reject 账目（与文本写入语义一致）。
+    """
+    from .memory_visual import store as visual_store
+
+    scope = _scope_of(request, req.soul_id)
+    try:
+        data = base64.b64decode(req.data_base64, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'invalid_base64'}
+        ) from exc
+    try:
+        return visual_store.write_visual_capsule(
+            data=data,
+            caption=req.caption,
+            kind=req.kind,
+            derived_from=req.derived_from,
+            source_type=req.source_type,
+            scene=req.scene,
+            task_type=req.task_type,
+            risk_class=req.risk_class,
+            owner_id=scope.owner_id if scope else None,
+            soul_id=scope.soul_id if scope else req.soul_id,
+        )
+    except visual_store.VisualValidationError as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'visual_validation_failed', 'reason': str(exc)}
+        ) from exc
+
+
+@memory_router.get('/memory/visual/{capsule_id}/assets')
+def visual_assets(
+    capsule_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """列出一个胶囊的全部视觉资产清单（sha256/尺寸/派生链，不含字节）。"""
+    from .memory_visual import store as visual_store
+
+    scope = _scope_of(request, soul_id)
+    _require_visible_capsule(capsule_id, scope)
+    return {'capsule_id': capsule_id, 'assets': visual_store.list_assets(capsule_id)}
+
+
+def _require_visible_asset(asset_id: str, scope: SoulScope | None) -> None:
+    """资产级鉴权：资产 → 胶囊 → 调用方作用域，任一环节不可见即 404。"""
+    from .memory_visual import store as visual_store
+
+    asset = visual_store.get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    _require_visible_capsule(asset['capsule_id'], scope)
+
+
+@memory_router.post('/memory/visual/inspect')
+def visual_inspect(req: VisualInspectIn, request: Request = None):
+    """回看归档视觉资产：可选矩形区域，裁剪后最近邻放大（VISTA 算法移植）。
+
+    坐标为源图像素坐标；region 缺省为全图。只读，不改任何记忆状态。
+    """
+    from .memory_visual import inspect as visual_inspect_mod
+
+    scope = _scope_of(request, req.soul_id)
+    for view in req.views:
+        _require_visible_asset(view.asset_id, scope)
+    try:
+        return visual_inspect_mod.inspect_views(
+            question=req.question,
+            views=[v.model_dump() for v in req.views],
+            display_size=req.display_size,
+        )
+    except visual_inspect_mod.InspectionError as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'inspection_failed', 'reason': str(exc)}
+        ) from exc
+
+
+@memory_router.post('/memory/visual/read-pixels')
+def visual_read_pixels(req: VisualReadPixelsIn, request: Request = None):
+    """像素采样：region 等分 rows x columns 网格取中心色，返回符号调色板。
+
+    模型无需视觉通道也能对颜色做精确比对（VISTA read_pixels 移植）。
+    单次调用至多 64 视图 / 4096 采样点。只读。
+    """
+    from .memory_visual import inspect as visual_inspect_mod
+
+    scope = _scope_of(request, req.soul_id)
+    for view in req.views:
+        _require_visible_asset(view.asset_id, scope)
+    try:
+        return visual_inspect_mod.read_pixels(
+            question=req.question,
+            views=[v.model_dump() for v in req.views],
+        )
+    except visual_inspect_mod.InspectionError as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'inspection_failed', 'reason': str(exc)}
+        ) from exc
+
+
+@memory_router.post('/memory/visual/search')
+def visual_search(req: VisualSearchIn, request: Request = None):
+    """以图搜图：167 维感知嵌入 + 暴力余弦，只命中可检索且闸门放行的记忆。
+
+    查询图（data_base64）与库内资产（query_asset_id）二选一。响应自带
+    latency_ms / scanned / index 口径——延迟是宣称值就必须可复核。
+    感知相似（颜色/布局/结构），非 CLIP 级语义，边界见设计文档。
+    """
+    from .memory_visual import embedding as visual_embedding
+    from .memory_visual import store as visual_store
+
+    scope = _scope_of(request, req.soul_id)
+    if req.query_asset_id is None and req.data_base64 is None:
+        raise HTTPException(
+            status_code=422, detail={'error': 'query_required'}
+        )
+    query_data = None
+    if req.query_asset_id is not None:
+        _require_visible_asset(req.query_asset_id, scope)
+    else:
+        try:
+            query_data = base64.b64decode(req.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(
+                status_code=422, detail={'error': 'invalid_base64'}
+            ) from exc
+        try:
+            visual_store._validate_visual_bytes(query_data)
+        except visual_store.VisualValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={'error': 'visual_validation_failed', 'reason': str(exc)},
+            ) from exc
+    return visual_embedding.search_similar(
+        query_data=query_data,
+        query_asset_id=req.query_asset_id,
+        top_k=req.top_k,
+        min_score=req.min_score,
+        owner_id=scope.owner_id if scope else None,
+        soul_id=scope.soul_id if scope else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# v0.15 多模态感知端点（perception/pipeline 编排：适配器 → 状态机 → 记忆）
+#
+# 四模态共用状态机反馈：begin → capturing → understanding → responding → idle，
+# 故障走 fault → error → recover。反馈事件随每次响应返回（feedback 字段）。
+# 传感器读数本体不入库，只有报警/突变事件级信号进记忆——高频遥测不该
+# 淹没记忆库。固定路径 /memory/perception/session/{id} 在参数路径之后注册。
+# ---------------------------------------------------------------------------
+
+
+def _decode_b64(raw: str, field: str) -> bytes:
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'invalid_base64', 'field': field}
+        ) from exc
+
+
+@memory_router.post('/memory/perception/image')
+def perception_image(req: PerceptionImageIn, request: Request = None):
+    """图片感知：接入视觉记忆子系统（无损入库 + 语义索引）。"""
+    from .perception import pipeline as perception_pipeline
+
+    scope = _scope_of(request, req.soul_id)
+    owner_id = scope.owner_id if scope else None
+    soul_id = scope.soul_id if scope else req.soul_id
+    session = perception_pipeline.get_or_create_session(
+        req.session_id, soul_id=soul_id, owner_id=owner_id
+    )
+    return perception_pipeline.ingest_image(
+        session,
+        image_bytes=_decode_b64(req.data_base64, 'data_base64'),
+        caption=req.caption, kind=req.kind, derived_from=req.derived_from,
+        soul_id=soul_id, owner_id=owner_id,
+    )
+
+
+@memory_router.post('/memory/perception/audio')
+def perception_audio(req: PerceptionAudioIn, request: Request = None):
+    """语音感知：WAV → VAD 切段 →（可选 sherpa-onnx ASR）→ 语音记忆。"""
+    from .perception import pipeline as perception_pipeline
+
+    scope = _scope_of(request, req.soul_id)
+    owner_id = scope.owner_id if scope else None
+    soul_id = scope.soul_id if scope else req.soul_id
+    session = perception_pipeline.get_or_create_session(
+        req.session_id, soul_id=soul_id, owner_id=owner_id
+    )
+    return perception_pipeline.ingest_audio(
+        session,
+        wav_bytes=_decode_b64(req.data_base64, 'data_base64'),
+        transcribe=req.transcribe, soul_id=soul_id, owner_id=owner_id,
+    )
+
+
+@memory_router.post('/memory/perception/video')
+def perception_video(req: PerceptionVideoIn, request: Request = None):
+    """视频感知：关键帧抽取（复用视觉嵌入算场景切换）→ 视觉记忆链。"""
+    from .perception import pipeline as perception_pipeline
+
+    scope = _scope_of(request, req.soul_id)
+    owner_id = scope.owner_id if scope else None
+    soul_id = scope.soul_id if scope else req.soul_id
+    session = perception_pipeline.get_or_create_session(
+        req.session_id, soul_id=soul_id, owner_id=owner_id
+    )
+    frames = (
+        [_decode_b64(item, 'frames_base64') for item in req.frames_base64]
+        if req.frames_base64 is not None else None
+    )
+    video_bytes = (
+        _decode_b64(req.video_base64, 'video_base64')
+        if req.video_base64 is not None else None
+    )
+    if frames is None and video_bytes is None:
+        raise HTTPException(status_code=422, detail={'error': 'frames_or_video_required'})
+    return perception_pipeline.ingest_video(
+        session, frames=frames, video_bytes=video_bytes,
+        caption=req.caption, threshold=req.threshold,
+        soul_id=soul_id, owner_id=owner_id,
+    )
+
+
+@memory_router.post('/memory/perception/sensor')
+def perception_sensor(req: PerceptionSensorIn, request: Request = None):
+    """传感器感知：串口帧流解析 → 迟滞报警/突变检测 → 事件级记忆。"""
+    from .perception import pipeline as perception_pipeline
+    from .perception.adapters import sensor as sensor_adapter
+
+    scope = _scope_of(request, req.soul_id)
+    owner_id = scope.owner_id if scope else None
+    soul_id = scope.soul_id if scope else req.soul_id
+    session = perception_pipeline.get_or_create_session(
+        req.session_id, soul_id=soul_id, owner_id=owner_id
+    )
+    watcher = sensor_adapter.SensorWatcher()
+    for rule in req.alarms:
+        watcher.set_alarm(rule.channel, high=rule.high, hysteresis=rule.hysteresis)
+    return perception_pipeline.ingest_sensor_stream(
+        session,
+        stream_bytes=_decode_b64(req.stream_base64, 'stream_base64'),
+        watcher=watcher, soul_id=soul_id, owner_id=owner_id,
+    )
+
+
+@memory_router.get('/memory/perception/session/{session_id}')
+def perception_session_state(
+    session_id: str = ApiPath(min_length=1, max_length=64),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """感知会话状态与最近反馈历史。会话是运行时对象，不存在即 404。"""
+    from .perception import pipeline as perception_pipeline
+
+    scope = _scope_of(request, soul_id)
+    session = perception_pipeline.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    if scope is not None and session.owner_id not in {None, scope.owner_id}:
+        raise HTTPException(status_code=404, detail={'error': 'not_found'})
+    return session.snapshot()
+
+
+@memory_router.get('/memory/perception/policy')
+def perception_sandbox_policy(request: Request = None):
+    """当前沙箱模式 × 审批策略（二维准入），借鉴 Codex 机制、自研实现。
+
+    语义不变量：**``never`` 只关闭审批提示，不扩大沙箱权限**。
+    """
+    from .platform_api import sandbox_policy
+
+    return sandbox_policy.policy_from_env()
+
+
+@memory_router.post('/memory/perception/policy/decide')
+def perception_policy_decide(req: dict, request: Request = None):
+    """对一次候选操作做准入裁决（allow / approval / retryable / terminal）。"""
+    from .platform_api import sandbox_policy
+
+    try:
+        decision = sandbox_policy.decide(
+            capability=str(req.get('capability')),
+            sandbox_mode=str(req.get('sandbox_mode') or 'workspace_write'),
+            approval_policy=str(req.get('approval_policy') or 'on_request'),
+            relative_path=req.get('relative_path'),
+            in_workspace=bool(req.get('in_workspace', True)),
+            network_enabled=bool(req.get('network_enabled', False)),
+        )
+    except sandbox_policy.SandboxPolicyError as exc:
+        raise HTTPException(
+            status_code=422, detail={'error': 'invalid_policy_request', 'reason': str(exc)}
+        ) from exc
+    return decision.manifest()
+
+
+@memory_router.get('/memory/audit/rollout/{thread_id}')
+def audit_rollout_list(
+    thread_id: str = ApiPath(min_length=1, max_length=128),
+    limit: int = Query(default=200, ge=1, le=1000),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """执行轨迹（哈希链 append-only）：某线程的全部执行条目。"""
+    from .audit.rollout import list_rollout
+
+    scope = _scope_of(request, soul_id)
+    entries = list_rollout(
+        thread_id, owner_id=scope.owner_id if scope else None, limit=limit
+    )
+    return {'thread_id': thread_id, 'count': len(entries), 'entries': entries}
+
+
+@memory_router.get('/memory/audit/rollout/{thread_id}/verify')
+def audit_rollout_verify(
+    thread_id: str = ApiPath(min_length=1, max_length=128),
+    soul_id: str | None = None,
+    request: Request = None,
+):
+    """轨迹完整性校验：逐条重算哈希链，返回第一处断裂位置。"""
+    from .audit.rollout import verify_chain
+
+    scope = _scope_of(request, soul_id)
+    return verify_chain(thread_id, owner_id=scope.owner_id if scope else None)
 
 
 @memory_router.get('/memory/accounting/summary')

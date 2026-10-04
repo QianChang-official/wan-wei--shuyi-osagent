@@ -619,6 +619,11 @@ def forget_capsules_in_transaction(
         from .local_embedding import delete_vector
 
         delete_vector(capsule_id, conn=conn)
+        # 视觉资产同步清除（删除取证第六处）：图片字节必须随胶囊一起消失，
+        # 账本里的 sha256 是删除后唯一留存的内容锚点。
+        from ..memory_visual.store import purge_assets_in_transaction
+
+        purge_assets_in_transaction(conn, [capsule_id])
         provenance = loads(row["provenance"], {}) or {}
         ledger_entries.append({
             "op_type": "delete",

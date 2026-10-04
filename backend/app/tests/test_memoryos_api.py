@@ -309,7 +309,7 @@ def test_verify_deletion_endpoint_after_hard_delete(client):
 
 
 def test_deletion_certificate_endpoint_after_hard_delete(client):
-    """删除证明 PDF 端点：硬删后生成证书，含审计编号与五处取证。"""
+    """删除证明 PDF 端点：硬删后生成证书，含审计编号与七处取证。"""
     capsule_id = _write(client, "证书端点验证 memory")
     preview = client.post(
         "/memory/forget/preview", headers=_headers(), json={"instruction": "memory"},
