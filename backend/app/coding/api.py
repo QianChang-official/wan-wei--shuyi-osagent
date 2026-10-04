@@ -285,7 +285,8 @@ def confirm_plan_endpoint(session_id: str, payload: PlanConfirmIn, request: Requ
     try:
         result = orchestrator.confirm(session, approved=payload.approved)
     except orchestrator.OrchestratorError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        logger.warning('[coding.api] 确认计划被拒：%r', exc)
+        raise HTTPException(status_code=409, detail='plan_confirm_rejected') from exc
     return result
 
 
@@ -360,7 +361,8 @@ def invoke_tool(session_id: str, payload: ToolInvokeIn, request: Request) -> dic
     try:
         return orchestrator.run_tool_direct(session, payload.tool_id, payload.params, owner_id=_owner(request))
     except (SandboxViolation, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning('[coding.api] 工具调用被拒：%r', exc)
+        raise HTTPException(status_code=422, detail='tool_invoke_rejected') from exc
 
 
 @router.post('/sessions/{session_id}/approvals/{approval_id}')
@@ -370,9 +372,11 @@ def resolve_approval(session_id: str, approval_id: str, payload: ApprovalResolve
         return orchestrator.resolve_approval(session, approval_id, approved=payload.approved,
                                              note=payload.note, owner_id=_owner(request))
     except orchestrator.OrchestratorError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        logger.warning('[coding.api] 审批处理被拒：%r', exc)
+        raise HTTPException(status_code=409, detail='approval_resolve_rejected') from exc
     except SandboxViolation as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning('[coding.api] 审批执行越界：%r', exc)
+        raise HTTPException(status_code=422, detail='approval_execution_rejected') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +403,8 @@ def update_todo(session_id: str, todo_id: str, payload: TodoUpdateIn, request: R
     try:
         set_todo_state(todos, todo_id, payload.state, note=payload.note)
     except PlanError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning('[coding.api] 待办状态转移非法：%r', exc)
+        raise HTTPException(status_code=422, detail='todo_transition_rejected') from exc
     merged = [t.public() for t in todos]
     store.update_session(session_id, {'todos': merged})
     return {'todos': merged}
@@ -416,7 +421,8 @@ def run_subagent(session_id: str, payload: SubagentRunIn, request: Request) -> d
     try:
         spec = subagent.spawn(role=payload.role, task=payload.task, parent_depth=0)
     except subagent.SubagentError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning('[coding.api] 子智能体委派被拒：%r', exc)
+        raise HTTPException(status_code=422, detail='subagent_spawn_rejected') from exc
     workspace = _open_workspace_or_403(session.get('workspace', ''))
     ctx = tools.ToolContext(workspace=workspace, policy_mode='readonly')
     store.append_event(session_id, 'subagent_spawned', {'subagent': spec.public()})
@@ -494,7 +500,8 @@ def run_workflow(session_id: str, payload: WorkflowRunIn, request: Request) -> d
     try:
         outcome = workflow.run(nodes, executor=_executor, concurrency=payload.concurrency)
     except workflow.WorkflowError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning('[coding.api] 工作流定义非法：%r', exc)
+        raise HTTPException(status_code=422, detail='workflow_definition_invalid') from exc
     store.append_event(session_id, 'workflow_finished',
                        {'ok': outcome['ok'], 'succeeded': outcome['succeeded'],
                         'failed': outcome['failed'], 'blocked': outcome['blocked']})
