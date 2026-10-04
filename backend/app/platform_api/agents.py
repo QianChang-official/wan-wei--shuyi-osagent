@@ -70,6 +70,10 @@ SUBAGENT_MAX_DEPTH = 2
 # None 表示尚未初始化，首次 retention 触发时惰性构建。
 _runs_agent_index: dict[str, list[tuple[str, str]]] | None = None
 
+# 删除「自动兜底智能体」的墓碑标记，值为 {'owners': [owner_id, ...]}。
+# 没有它，用户删掉默认智能体后下一次 list_agents 又会凭空造一个。
+_DEFAULT_AGENT_DELETED = '_default_agent_deleted'
+
 
 # ---------------------------------------------------------------- 工具
 
@@ -896,10 +900,71 @@ async def _drive_run(rid: str) -> None:
 
 # ---------------------------------------------------------------- 智能体 CRUD
 
+#: 首次进入时自动创建的兜底智能体名。用户删掉它之后不会再被重建
+#: （见 _ensure_default_agent 的 created_at 之外的判据），避免用户被动"复活"。
+DEFAULT_AGENT_NAME = '枢忆'
+
+
+def _ensure_default_agent(owner_id: str) -> dict[str, Any] | None:
+    """仅在「全系统一个智能体都没有」时，为当前 owner 建一个默认的。
+
+    为什么需要：空列表时前端只能显示「＋ 新智能体」，用户必须先创建才能开始用，
+    这道无谓的门槛已经被明确反馈为易用性问题。
+
+    为什么必须限定为全局而非 per-owner：
+    per-owner 版本会给每个新身份都造一个智能体，等于凭空扩大了数据面，
+    并且破坏了「某身份名下为空就是为空」的既有语义（owner 隔离测试会红）。
+    真正要解决的只是**全新安装的第一次使用**，那正是全局为空的状态。
+
+    约束：
+    - **全局为空才触发**：任何智能体存在都不干预，不覆盖既有配置。
+    - **幂等**：造完就不是空的了，第二次进来不会重复造。
+    - **不复活**：用户删掉它之后留下墓碑，不再重建。
+    - **per-owner 归属**：建出来的记录绑定当前 owner_id，不做全局共享。
+    - **失败不阻断**：建不出来（存储异常等）只返回 None，列表仍按原样返回空列表。
+    """
+    if not owner_id:
+        return None
+    if _agents_map():
+        # 系统里已经有智能体（含别的身份的）：这不是「首次使用」，不介入。
+        return None
+    tombstone = _agents.get(_DEFAULT_AGENT_DELETED)
+    if isinstance(tombstone, dict) and owner_id in (tombstone.get('owners') or []):
+        return None
+    try:
+        agent = {
+            'id': _new_id('ag'),
+            'name': DEFAULT_AGENT_NAME,
+            'role': '通用助理',
+            'persona': '',
+            'depth': 'medium',
+            'gear': 'sandbox',
+            'permissions': Permissions().model_dump(),
+            # provider_pid 留空：执行时走端点回退链（自定义兼容端点 → 网关），
+            # 这样后建好的 provider 配置无需重建智能体即可生效。
+            'provider_pid': '',
+            'model': '',
+            'goal': '',
+            'owner_id': owner_id,
+            'created_at': _now(),
+            'is_default': True,
+        }
+        _agents.set(agent['id'], agent)
+        return agent
+    except Exception as exc:  # noqa: BLE001 —— 兜底逻辑不得拖垮列表接口
+        audit_safe('agent_default_bootstrap_failed', {'owner_id': owner_id, 'error': type(exc).__name__})
+        return None
+
+
 @router.get('')
 def list_agents(request: Request):
     owner_id = _actor_id(request)
     items = [a for a in _agents_map().values() if _agent_visible(a, owner_id)]
+    if not items:
+        # 空列表时给一个可直接使用的起点，避免"必须先新建才能用"
+        seeded = _ensure_default_agent(owner_id)
+        if seeded is not None:
+            items = [seeded]
     items = sorted(items, key=lambda a: a.get('created_at', ''), reverse=True)
     return {'items': [_public_agent(a) for a in items], 'total': len(items)}
 
@@ -1625,11 +1690,20 @@ def update_agent(aid: str, body: AgentUpdate, request: Request):
 
 @router.delete('/{aid}')
 def delete_agent(aid: str, request: Request):
-    _get_agent_or_404(aid, _actor_id(request))
+    owner_id = _actor_id(request)
+    agent = _get_agent_or_404(aid, owner_id)
     # JsonStore 无单键删除 API：持锁整库回写，同事务内删 agent + 修团队
     with _agents._lock:  # noqa: SLF001
         store = _agents._read()  # noqa: SLF001
         store.pop(aid, None)
+        if agent.get('is_default'):
+            # 记墓碑：否则列表为空时会被 _ensure_default_agent 再次造出来，
+            # 用户「删掉它」这个动作就变得无效了。
+            tombstone = store.get(_DEFAULT_AGENT_DELETED)
+            owners = list(tombstone.get('owners') or []) if isinstance(tombstone, dict) else []
+            if owner_id not in owners:
+                owners.append(owner_id)
+            store[_DEFAULT_AGENT_DELETED] = {'owners': owners}
         teams = store.get(_TEAMS_KEY)
         if isinstance(teams, dict):
             for t in teams.values():

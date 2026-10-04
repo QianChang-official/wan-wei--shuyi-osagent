@@ -42,6 +42,8 @@ export interface Agent {
   model: string
   goal: string
   created_at: string
+  /** 后端在「该身份下一个智能体都没有」时自动创建的兜底智能体 */
+  is_default?: boolean
 }
 
 export interface AgentInput {
