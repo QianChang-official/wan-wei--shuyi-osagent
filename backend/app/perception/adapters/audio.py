@@ -154,12 +154,18 @@ def vad_split(
                 if quiet_run >= hangover:
                     seg_end = idx - hangover + 1
                     if seg_end - seg_start >= MIN_SPEECH_FRAMES:
+                        # hangover 窗口内的静音帧不计入段能量均值；
+                        # 段长不足 hangover 时退回整段均值（分子分母须一致）。
+                        speech_energies = (
+                            seg_energies[:-hangover]
+                            if len(seg_energies) > hangover
+                            else seg_energies
+                        )
                         segments.append((
                             seg_start * frame_ms,
                             seg_end * frame_ms,
                             b"".join(frames[seg_start:seg_end]),
-                            sum(seg_energies[:-hangover] or seg_energies)
-                            / max(len(seg_energies) - hangover, 1),
+                            sum(speech_energies) / len(speech_energies),
                         ))
                     in_speech = False
                     quiet_run = 0

@@ -26,6 +26,7 @@ recover → idle``。反馈事件随响应返回（drain），调用方/控制�
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -40,6 +41,13 @@ from .session import PerceptionSession
 #: 需要跨进程持久的是记忆，不是会话）。
 _sessions: dict[str, PerceptionSession] = {}
 _sessions_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
+
+#: 单次传感器请求允许写入记忆的事件上限。 watcher 对异常流可能逐帧
+#: 报警，没有上限时一次请求就能把记忆库灌满；超出部分如实计数返回，
+#: 不静默丢弃也不中断解析（帧统计仍完整）。
+MAX_SENSOR_EVENTS_PER_REQUEST = 64
 
 
 def get_or_create_session(
@@ -64,8 +72,9 @@ def get_session(session_id: str) -> PerceptionSession | None:
 def _record_rollout(session: PerceptionSession, item_type: str, payload: dict) -> None:
     """执行轨迹落链（Codex rollout 思路）：感知动作全部可事后校验。
 
-    轨迹失败**不得**反噬感知结果本身——审计辅助设施不该让主流程失败，
-    因此这里吞掉异常（审计缺失会在轨迹里表现为链短一节，可被 verify 发现）。
+    轨迹失败**不得**反噬感知结果本身——审计辅助设施不该让主流程失败。
+    但完全静默会让「链短一节」无从排查：异常降级为日志，链条缺口仍可被
+    verify 发现，日志里也能对上原因。
     """
     try:
         from ..audit.rollout import append_rollout
@@ -76,8 +85,8 @@ def _record_rollout(session: PerceptionSession, item_type: str, payload: dict) -
             item=payload,
             owner_id=session.owner_id,
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - 审计设施故障不反噬主流程，但必须留痕
+        logger.warning('[perception.pipeline] rollout 落链失败（%s）：%r', item_type, exc)
 
 
 def _finish(session: PerceptionSession, result: dict[str, Any]) -> dict[str, Any]:
@@ -280,8 +289,14 @@ def ingest_sensor_stream(
             "frames": len(frames), "crc_errors": parser.crc_errors,
         })
         detected: list[dict[str, Any]] = []
+        events_dropped = 0
         for frame in frames:
             for event in watcher.observe(frame):
+                if len(detected) >= MAX_SENSOR_EVENTS_PER_REQUEST:
+                    # 超出上限：事件计数但不入记忆、不进返回清单，
+                    # 防止异常流把记忆库和响应体同时灌爆。
+                    events_dropped += 1
+                    continue
                 detected.append(event)
                 write_capsule(
                     memory_class="episodic",
@@ -303,6 +318,7 @@ def ingest_sensor_stream(
             "frames_parsed": len(frames),
             "crc_errors": parser.crc_errors,
             "events": detected,
+            "events_dropped": events_dropped,
         })
     except Exception as exc:
         return _fail(session, exc)

@@ -99,11 +99,16 @@ def _decode_with_cv2(video_bytes: bytes, *, sample_every: int = 15) -> list[byte
         raise VideoValidationError(
             "video decode requires opencv-python (not installed)"
         ) from exc
+    import os
     import tempfile
     from pathlib import Path
 
     # OpenCV VideoCapture 只认文件路径，临时文件用完即删。
-    tmp = Path(tempfile.mkstemp(suffix=".video")[1])
+    # mkstemp 返回的 fd 必须显式关闭——只取路径而丢弃 fd 会泄漏句柄，
+    # 且在 Windows 上占用句柄会导致后续写文件失败。
+    fd, tmp_name = tempfile.mkstemp(suffix=".video")
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
         tmp.write_bytes(video_bytes)
         capture = cv2.VideoCapture(str(tmp))

@@ -106,7 +106,9 @@ class Decision:
 def _is_protected(relative_path: str) -> str | None:
     """路径是否落在受保护子目录（.git/.agents/.codex，递归）。"""
     parts = [p for p in str(relative_path).replace("\\", "/").split("/") if p]
-    for part in parts[:-1] if parts else []:
+    # 逐段检查（含最后一段）：".git" 本身或 "x/.git" 直接指向受保护目录时
+    # 同样是禁区，不能只保护其下级路径。
+    for part in parts:
         if part in PROTECTED_SUBPATHS:
             return part
     return None

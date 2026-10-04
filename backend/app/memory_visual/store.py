@@ -166,6 +166,9 @@ def write_visual_capsule(
         provenance=provenance,
         soul_id=soul_id,
         owner_id=owner_id,
+        # 视觉记忆的语义内容是 caption；asset_sha256 是机器指纹，进入闸门只会
+        # 被 PII 模式随机误伤（哈希不可能是手机号/身份证，也不可能是凭据原文）。
+        policy_text=caption.strip(),
     )
     capsule_id = result["capsule_id"]
     if (result.get("governance") or {}).get("policy_result") == "reject":

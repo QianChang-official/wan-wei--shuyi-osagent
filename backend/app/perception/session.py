@@ -46,9 +46,16 @@ class IllegalPerceptionTransition(ValueError):
         super().__init__(f"illegal perception transition: {from_state} -> {to_state}")
 
 
+#: 会话历史的内存上限：snapshot 只暴露最近 50 条，但缓冲本身也必须有界——
+#: 长会话不间断转移会让 list 无限增长（感知会话是常驻内存对象，不进 SQLite）。
+_HISTORY_CAP = 200
+
+
 #: 状态转移表：当前状态 → 允许的下一状态集合。
 TRANSITIONS: dict[str, frozenset[str]] = {
-    "idle": frozenset({"capturing"}),
+    # idle 也必须允许入 error：TRIGGERS 的 fault 语义是「任意状态可入故障」，
+    # 缺了 idle→error，空闲期发生的故障会被当成非法转移抛错，故障面反而不可达。
+    "idle": frozenset({"capturing", "error"}),
     "capturing": frozenset({"understanding", "error", "idle"}),
     "understanding": frozenset({"responding", "error", "idle"}),
     "responding": frozenset({"idle", "error"}),
@@ -125,6 +132,8 @@ class PerceptionSession:
             }
             self._feedback.append(event)
             self._history.append(event)
+            if len(self._history) > _HISTORY_CAP:
+                del self._history[:-_HISTORY_CAP]
             return event
 
     def fire(self, trigger: str, *, detail: str = "", meta: dict | None = None) -> dict:
