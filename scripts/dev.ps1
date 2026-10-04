@@ -144,7 +144,8 @@ function Stop-Children {
                 & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null
             }
         } catch {
-            # 进程可能已自行退出，忽略
+            # 进程可能已自行退出：记入 Verbose 而非静默吞掉，排查端口占用时可见
+            Write-Verbose "Stop-Children: 进程 $($proc.Id) 终止失败或已退出：$_"
         }
     }
     $started.Clear()
