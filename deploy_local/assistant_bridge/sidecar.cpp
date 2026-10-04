@@ -199,6 +199,16 @@ int main() {
     // 演示现场手机 H5 刷新/断连是常态,必须忽略交由 errno 处理。
     std::signal(SIGPIPE, SIG_IGN);
 
+    // 端口可用环境变量覆盖（同一台机器并行演示多套时避免 8021 冲突）
+    int port = 8021;
+    if (const char* envPort = std::getenv("WANWEI_SIDECAR_PORT"); envPort && *envPort) {
+        port = std::atoi(envPort);
+        if (port < 1 || port > 65535) {
+            std::cerr << "{\"fatal\":\"WANWEI_SIDECAR_PORT out of range (1-65535)\"}" << std::endl;
+            return 1;
+        }
+    }
+
     // assistant init on main thread (glib context)
     g_assistant = new OsAssistant();
     Error err = g_assistant->init();
@@ -218,13 +228,13 @@ int main() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    addr.sin_port = htons(8021);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
     if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "{\"fatal\":\"bind 8021 failed\"}" << std::endl;
+        std::cerr << "{\"fatal\":\"bind failed\",\"port\":" << port << "}" << std::endl;
         return 1;
     }
     listen(server, 8);
-    std::cerr << "{\"listening\":8021}" << std::endl;
+    std::cerr << "{\"listening\":" << port << "}" << std::endl;
 
     while (true) {
         int client = accept(server, nullptr, nullptr);
@@ -232,18 +242,23 @@ int main() {
         std::thread([client]() {
             std::string req;
             std::string resp_body;
+            const char* status = "200 OK";
             if (!http_read_request(client, req)) {
                 resp_body = "{\"error\":\"malformed request\"}";
+                status = "400 Bad Request";
             } else if (req.find("GET /health") == 0) {
                 resp_body = "{\"ok\":true}";
             } else if (req.find("POST /chat") == 0) {
                 size_t pos = req.find("\r\n\r\n");
                 std::string body = pos == std::string::npos ? "" : req.substr(pos + 4);
                 resp_body = handle_chat(body);
+                // handle_chat 的参数错误（如缺 text）以 400 如实返回
+                if (resp_body.rfind("{\"error\"", 0) == 0) status = "400 Bad Request";
             } else {
                 resp_body = "{\"error\":\"not found\"}";
+                status = "404 Not Found";
             }
-            std::string http = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+            std::string http = std::string("HTTP/1.1 ") + status + "\r\nContent-Type: application/json\r\nContent-Length: "
                 + std::to_string(resp_body.size()) + "\r\nConnection: close\r\n\r\n" + resp_body;
             send(client, http.c_str(), http.size(), 0);
             close(client);

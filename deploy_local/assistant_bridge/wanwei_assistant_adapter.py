@@ -17,9 +17,11 @@ sidecar: POST http://127.0.0.1:8021/chat
 """
 import http.client
 import json
+import os
 
 _SIDECAR_HOST = "127.0.0.1"
-_SIDECAR_PORT = 8021
+# 与 sidecar 的 WANWEI_SIDECAR_PORT 对齐；默认 8021
+_SIDECAR_PORT = int(os.environ.get("WANWEI_SIDECAR_PORT", "8021"))
 
 
 def _request(method: str, path: str, body: bytes | None, timeout: int) -> bytes:
