@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -90,8 +91,14 @@ def test_workspace_blocks_path_escape(coding_env):
     ws = open_workspace(str(coding_env["workspace"]))
     with pytest.raises(SandboxViolation):
         ws.resolve("../../etc/passwd")
-    with pytest.raises(SandboxViolation):
-        ws.resolve("..\\..\\windows\\system32")
+    # 反斜杠仅是 Windows 路径分隔符；POSIX 上它是合法文件名字符，
+    # 不构成逃逸（realpath 后仍在工作区内），故按平台分别断言。
+    if os.name == "nt":
+        with pytest.raises(SandboxViolation):
+            ws.resolve("..\\..\\windows\\system32")
+    else:
+        resolved = ws.resolve("..\\..\\windows\\system32")
+        assert resolved.is_relative_to(ws.root)
 
 
 def test_workspace_rejects_absolute_outside_path(coding_env):
