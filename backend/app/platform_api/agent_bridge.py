@@ -725,7 +725,9 @@ def _device_info(kind: str) -> dict[str, Any]:
         raise BridgeFailure('device_metrics_unavailable') from exc
     import platform
     if kind == 'system':
-        return {'os': f'{platform.system()} {platform.release()} ({platform.machine()})',
+        from .os_description import os_description, os_facts
+        return {'os': os_description(),
+                **os_facts(),
                 'hostname': platform.node(), 'cpu_cores': psutil.cpu_count(),
                 'uptime_s': int(time.time() - psutil.boot_time())}
     if kind == 'cpu':
