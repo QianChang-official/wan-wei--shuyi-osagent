@@ -71,6 +71,19 @@ def test_protected_paths_recursively_read_only():
     ).outcome == "allow"
 
 
+def test_protected_direct_path_and_case_insensitive():
+    """负测试：直达受保护目录本身、大小写变体同样被拦截。
+
+    Windows/macOS 文件系统大小写不敏感，".GIT" 与 ".git" 同指一个目录；
+    末段保护若区分大小写或只看下级路径，都会被绕过。
+    """
+    for path in (".git", "x/.git", ".GIT/HEAD", ".Git/config", "sub/.CODEX/x"):
+        decision = sp.decide(
+            capability="git", sandbox_mode="workspace_write", relative_path=path
+        )
+        assert decision.outcome == "retryable", path
+
+
 def test_outside_workspace_approval_vs_never():
     approval = sp.decide(
         capability="fs_write", approval_policy="on_request", in_workspace=False
