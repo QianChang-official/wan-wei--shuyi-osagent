@@ -301,9 +301,17 @@ def _sync_fts(
     if to_state in RETRIEVABLE_STATES and policy in INDEXABLE_POLICIES:
         # issue #119：与 capsule_store 写路径同口径——索引列存 CJK 逐字插空格
         # 副本，主表 content 保持原文。
+        text = _capsule_text(cap)
+        if policy == "redact":
+            # 与 write_capsule 索引面同口径：redact 胶囊的 FTS 不落明文弱标识符。
+            # 缺了这一步，任何一次生命周期转移（确认/恢复/强化）都会把明文写回
+            # 索引，写路径的脱敏被绕过，标识符探测的存在性 oracle 原样复活。
+            from ..memory_runtime.policy_gate import redact_weak_identifiers_in_text
+
+            text = redact_weak_identifiers_in_text(text)
         conn.execute(
             "INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)",
-            (capsule_id, cjk_space(_capsule_text(cap))),
+            (capsule_id, cjk_space(text)),
         )
         return "indexed"
     return "removed"
