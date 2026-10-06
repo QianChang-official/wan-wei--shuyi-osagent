@@ -35,7 +35,7 @@ const {
   bootstrap, selectSession, createSession, deleteSession,
   generatePlan, confirmPlan, run, resume,
   invokeTool, resolveApproval, addTodos, updateTodo, runSubagent,
-  writeMemory, forgetMemory, stopStream, clearError,
+  writeMemory, forgetMemory, lastForgetEvidence, stopStream, clearError,
 } = useCoding()
 
 const dialogOpen = ref(false)
@@ -125,6 +125,7 @@ async function onInvoke(toolId: string, params: Record<string, unknown>) {
         @run-subagent="runSubagent"
         @write-memory="writeMemory"
         @forget-memory="forgetMemory"
+        :forget-evidence="lastForgetEvidence"
       />
     </div>
 

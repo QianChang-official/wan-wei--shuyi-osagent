@@ -57,6 +57,8 @@ const busy = reactive<Record<string, boolean>>({})
 const error = ref('')
 /** 最近一次工具调用的结果（工具台展示用） */
 const toolResult = ref<{ status: string; summary: string; output: unknown } | null>(null)
+/** 最近一次遗忘操作的删除取证（memory 面板展示用） */
+const lastForgetEvidence = ref<Record<string, unknown> | null>(null)
 
 let streamAbort: AbortController | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -297,6 +299,7 @@ async function forgetMemory(capsuleId: string) {
   clearError()
   try {
     const res = await codingApi.forgetMemory(activeId.value, capsuleId)
+    lastForgetEvidence.value = res?.deletion_verification ?? null
     await loadMemory()
     await refreshDetail()
     return res
@@ -395,7 +398,7 @@ export function useCoding() {
     invokeTool, resolveApproval,
     addTodos, updateTodo,
     runSubagent,
-    loadMemory, writeMemory, forgetMemory,
+    loadMemory, writeMemory, forgetMemory, lastForgetEvidence,
     loadTree, startStream, stopStream,
     clearError,
   }

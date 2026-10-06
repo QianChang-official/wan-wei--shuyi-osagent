@@ -29,6 +29,8 @@ const props = defineProps<{
   overview: CodingOverview | null
   busy: Record<string, boolean>
   toolResult: { status: string; summary: string; output: unknown } | null
+  /** 最近一次遗忘操作的删除取证，由 useCoding 提供 */
+  forgetEvidence?: Record<string, unknown> | null
 }>()
 
 const emit = defineEmits<{
@@ -101,7 +103,6 @@ function submitTodos() {
 const memKind = ref('decision')
 const memTitle = ref('')
 const memText = ref('')
-const forgetEvidence = ref<Record<string, unknown> | null>(null)
 function submitMemory() {
   if (!memText.value.trim()) return
   emit('write-memory', memKind.value, memTitle.value, memText.value)
@@ -109,7 +110,6 @@ function submitMemory() {
   memText.value = ''
 }
 function doForget(id: string) {
-  forgetEvidence.value = null
   emit('forget-memory', id)
 }
 
