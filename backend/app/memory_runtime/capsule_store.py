@@ -101,11 +101,16 @@ def write_capsule(
     relation_edges: list[dict[str, Any]] | None = None,
     soul_id: str | None = None,
     owner_id: str | None = None,
+    policy_text: str | None = None,
 ) -> dict[str, Any]:
     init_runtime_schema()
     text = _content_text(content)
+    # 策略闸门的评估对象应是**用户语义文本**。content 序列化后可能带有机器生成
+    # 字段（如 asset_sha256 这类十六进制指纹）：哈希片段里的数字串会被手机号/身份证
+    # 模式误命中，把合法写入随机打成 reject（#259 CI 实测 300 条视觉写入被误拒 2 条）。
+    # 调用方可用 policy_text 显式指定语义文本；缺省维持全量序列化的旧口径。
     governance = evaluate_policy(
-        text=text,
+        text=policy_text if policy_text is not None else text,
         source_type=source_type,
         write_intent=write_intent,
         affects_future_behavior=affects_future_behavior,
@@ -619,6 +624,11 @@ def forget_capsules_in_transaction(
         from .local_embedding import delete_vector
 
         delete_vector(capsule_id, conn=conn)
+        # 视觉资产同步清除（删除取证第六处）：图片字节必须随胶囊一起消失，
+        # 账本里的 sha256 是删除后唯一留存的内容锚点。
+        from ..memory_visual.store import purge_assets_in_transaction
+
+        purge_assets_in_transaction(conn, [capsule_id])
         provenance = loads(row["provenance"], {}) or {}
         ledger_entries.append({
             "op_type": "delete",

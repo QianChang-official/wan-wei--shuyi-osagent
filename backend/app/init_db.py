@@ -300,6 +300,50 @@ def main():
         updated_at TEXT
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_capsules_v2_fts USING fts5(capsule_id, text);
+    -- 视觉记忆资产（VISTA 启发的无损视觉记忆）：图片原始字节 BLOB，
+    -- 与 memory_capsules_v2 以 capsule_id 关联；删除取证的第六处。
+    CREATE TABLE IF NOT EXISTS memory_visual_assets(
+        asset_id TEXT PRIMARY KEY,
+        capsule_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        mime_type TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        derived_from TEXT NOT NULL,
+        data BLOB NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_visual_assets_capsule
+        ON memory_visual_assets(capsule_id);
+    -- 视觉语义索引：167 维感知嵌入（见 memory_visual/embedding.py），
+    -- 与记忆同生死，删除取证的第七处。
+    CREATE TABLE IF NOT EXISTS memory_visual_vectors(
+        asset_id TEXT PRIMARY KEY,
+        capsule_id TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        dim INTEGER NOT NULL,
+        owner_id TEXT,
+        soul_id TEXT,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_visual_vectors_capsule
+        ON memory_visual_vectors(capsule_id);
+    -- 执行轨迹（Codex rollout 思路借鉴）：哈希链 append-only，
+    -- 记录 Agent/感知层的执行动作，可校验、可 resume。
+    CREATE TABLE IF NOT EXISTS agent_rollouts(
+        entry_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id    TEXT NOT NULL,
+        turn_index   INTEGER NOT NULL,
+        item_type    TEXT NOT NULL,
+        item         TEXT NOT NULL,
+        prev_sha256  TEXT NOT NULL,
+        entry_sha256 TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        owner_id     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_rollouts_thread
+        ON agent_rollouts(thread_id, entry_id);
     CREATE TABLE IF NOT EXISTS memory_vector_refs(
         vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
         capsule_id TEXT NOT NULL UNIQUE,

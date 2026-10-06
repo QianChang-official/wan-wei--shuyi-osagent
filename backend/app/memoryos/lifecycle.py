@@ -305,7 +305,22 @@ def _sync_fts(
             "INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)",
             (capsule_id, cjk_space(_capsule_text(cap))),
         )
+        # 视觉语义索引与 FTS 同口径：确认/放行转可检索时补写视觉向量，
+        # 否则视觉记忆「确认后即可文本检索、却永远以图搜不到」。
+        from ..memory_visual.embedding import index_capsule_assets_in_transaction
+
+        index_capsule_assets_in_transaction(
+            conn,
+            capsule_id,
+            owner_id=(cap.get("provenance") or {}).get("owner_id"),
+            soul_id=(cap.get("provenance") or {}).get("soul_id"),
+            ts=now(),
+        )
         return "indexed"
+    # 转为不可检索态时同步摘除视觉向量，与 FTS DELETE 同口径。
+    from ..memory_visual.embedding import purge_vectors_in_transaction
+
+    purge_vectors_in_transaction(conn, [capsule_id])
     return "removed"
 
 

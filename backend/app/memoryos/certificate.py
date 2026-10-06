@@ -12,7 +12,7 @@
 
 """Memory Governance Certificate —— 删除证明 PDF 生成。
 
-把 ``verify_deletion`` 的五处逐项取证结果渲染为一份可下载的 PDF 证书，
+把 ``verify_deletion`` 的七处逐项取证结果渲染为一份可下载的 PDF 证书，
 让「真的删干净了吗」从一句 API JSON 变成一份可归档、可出示的凭证。
 
 设计决策
@@ -47,7 +47,7 @@ try:
 except Exception:  # pragma: no cover - 重复注册或环境缺失时静默降级
     _FONT = "Helvetica"
 
-#: 五处取证项的中文标签（与 verify_deletion 的 checks 键一一对应）。
+#: 七处取证项的中文标签（与 verify_deletion 的 checks 键一一对应）。
 _CHECK_LABELS = {
     "capsules": "主表残留",
     "fts": "全文索引残留",
@@ -55,6 +55,8 @@ _CHECK_LABELS = {
     "vector_refs": "向量索引引用",
     "legacy_capsules": "遗留主表残留",
     "legacy_event_links": "遗留事件关联",
+    "visual_assets": "视觉资产残留",
+    "visual_vectors": "视觉向量残留",
 }
 
 #: 证书页边距与行距（mm）。
@@ -99,7 +101,7 @@ def generate_deletion_certificate(
 
     Args:
         capsule_id: 被删除的记忆 id。
-        verification: ``verify_deletion`` 的返回（五处逐项计数 + complete 标志）。
+        verification: ``verify_deletion`` 的返回（七处逐项计数 + complete 标志）。
         capsule: 当前胶囊快照（硬删后为 None，此时证书如实标注「主表无行」）。
 
     Returns:

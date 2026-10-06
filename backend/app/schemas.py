@@ -10,7 +10,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Literal
 
 class MemoryEventIn(BaseModel):
@@ -165,6 +165,119 @@ class MemoryHealthSnapshotIn(BaseModel):
     # 但仍然限长，避免把趋势表当日志用。
     source: str = Field(default='manual', min_length=1, max_length=64)
     soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+# v0.14 视觉记忆 schemas（VISTA 启发的无损视觉记忆，见 memory_visual/）
+#
+# 图片字节走 base64 JSON 而不是 multipart：与既有端点保持同一种请求形态，
+# 8MiB 字节上限在 store 层校验（base64 解码后计），这里的 12M 字符上限
+# 只是传输层粗闸（base64 膨胀率 4/3）。
+
+
+class VisualWriteIn(BaseModel):
+    data_base64: str = Field(min_length=1, max_length=12 * 1024 * 1024)
+    caption: str = Field(min_length=1, max_length=4096)
+    # current=当前观察 / historical=历史归档 / derived=派生产物（必须署名来源）。
+    kind: Literal['current', 'historical', 'derived'] = 'current'
+    derived_from: list[str] = Field(default_factory=list, max_length=64)
+    source_type: str = Field(default='user_input', max_length=64)
+    scene: str = Field(default='general', max_length=64)
+    task_type: str = Field(default='planning', max_length=64)
+    risk_class: Literal['low', 'medium', 'high'] = 'low'
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class VisualRegion(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+
+
+class VisualInspectView(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    label: str = Field(min_length=1, max_length=128)
+    asset_id: str = Field(min_length=1, max_length=64)
+    region: VisualRegion | None = None
+
+
+class VisualInspectIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1024)
+    views: list[VisualInspectView] = Field(min_length=1, max_length=16)
+    display_size: int = Field(default=1024, ge=1, le=4096)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class VisualPixelView(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    label: str = Field(min_length=1, max_length=128)
+    asset_id: str = Field(min_length=1, max_length=64)
+    region: VisualRegion | None = None
+    rows: int = Field(ge=1, le=4096)
+    columns: int = Field(ge=1, le=4096)
+
+
+class VisualReadPixelsIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1024)
+    views: list[VisualPixelView] = Field(min_length=1, max_length=64)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class VisualSearchIn(BaseModel):
+    """以图搜图：查询图（base64）或库内资产二选一，都填以 query_asset_id 为准。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    data_base64: str | None = Field(default=None, min_length=1, max_length=12 * 1024 * 1024)
+    query_asset_id: str | None = Field(default=None, min_length=1, max_length=64)
+    top_k: int = Field(default=20, ge=1, le=100)
+    min_score: float = Field(default=0.0, ge=-1.0, le=1.0)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+# v0.15 多模态感知层 schemas（perception/adapters + pipeline）
+
+
+class PerceptionBase(BaseModel):
+    session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    soul_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class PerceptionImageIn(PerceptionBase):
+    data_base64: str = Field(min_length=1, max_length=12 * 1024 * 1024)
+    caption: str = Field(min_length=1, max_length=4096)
+    kind: Literal['current', 'historical', 'derived'] = 'current'
+    derived_from: list[str] = Field(default_factory=list, max_length=64)
+
+
+class PerceptionAudioIn(PerceptionBase):
+    data_base64: str = Field(min_length=1, max_length=48 * 1024 * 1024)
+    transcribe: bool = True
+
+
+class PerceptionVideoIn(PerceptionBase):
+    # 两路二选一：上游已解码的 PNG 帧序列，或视频文件字节（需 OpenCV）。
+    frames_base64: list[str] | None = Field(default=None, max_length=10000)
+    video_base64: str | None = Field(default=None, min_length=1, max_length=128 * 1024 * 1024)
+    caption: str = Field(default='视频关键帧', min_length=1, max_length=1024)
+    threshold: float = Field(default=0.18, ge=0.0, le=1.0)
+
+
+class SensorAlarmRule(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    channel: int = Field(ge=0, le=255)
+    high: float
+    hysteresis: float = Field(default=1.0, ge=0.0)
+
+
+class PerceptionSensorIn(PerceptionBase):
+    stream_base64: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    alarms: list[SensorAlarmRule] = Field(default_factory=list, max_length=64)
 
 
 
