@@ -77,7 +77,9 @@ def _open_workspace_or_403(path: str):
     try:
         return open_workspace(path)
     except (SandboxViolation, ValueError) as exc:
-        raise HTTPException(status_code=403, detail=f'工作区不可用：{exc}') from exc
+        # 异常文本可能带解析后的真实路径等内部布局信息，不外泄到响应体。
+        logger.warning('[coding.api] 工作区打开被拒：%r', exc)
+        raise HTTPException(status_code=403, detail='工作区不可用或不在允许范围内') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +302,8 @@ async def run_session(session_id: str, request: Request) -> dict[str, Any]:
     session = _require_session(session_id, _owner(request))
     if session.get('state') == 'paused':
         raise HTTPException(status_code=409, detail='会话因审批暂停，请先处理审批再续跑')
+    if session.get('state') in {'done', 'failed', 'cancelled'}:
+        raise HTTPException(status_code=409, detail=f"会话已终结（{session['state']}），不能再次执行")
     if not (session.get('plan') or {}).get('confirmed'):
         raise HTTPException(status_code=409, detail='计划未经确认，拒绝执行')
     with _running_lock:

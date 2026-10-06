@@ -69,7 +69,9 @@ def complete(
             label, api_base, api_key, model, text, max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 —— 上游故障不外泄堆栈
-        return {'ok': False, 'error': 'upstream_error', 'message': str(exc)}
+        # 异常文本可能含内部主机/路径/凭据片段，只进日志不进返回值。
+        logger.warning('[coding.llm] 上游调用失败：%r', exc)
+        return {'ok': False, 'error': 'upstream_error', 'message': '上游调用失败，详见服务端日志'}
     output = (output or '').strip()
     if status != 'ok' or not output:
         return {'ok': False, 'error': 'upstream_error',

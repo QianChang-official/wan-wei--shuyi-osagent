@@ -155,7 +155,7 @@ class Orchestrator:
                         'approval': approval,
                         'guard': self.guard.snapshot(),
                     }
-                final_state = 'done' if outcome.get('status') == 'ok' else 'failed'
+                final_state = 'done' if outcome.get('status') in ('ok', 'skipped') else 'failed'
                 set_step_state(self.plan, step.id, final_state, result=outcome.get('summary', ''))
                 self.emit('step_started', {'step': step.public(), 'finished': True})
                 if final_state == 'failed':
@@ -303,7 +303,7 @@ class Orchestrator:
         ok = len(written) > 0
         summary = (f'已沉淀 {len(written)} 条可审计记忆' if ok
                    else '记忆库不可用或无可沉淀内容（未写入）')
-        return {'status': 'ok' if ok else 'ok', 'summary': summary,
+        return {'status': 'ok' if ok else 'skipped', 'summary': summary,
                 'output': {'written': written, 'memory_available': ok}}
 
     # ---- 审批 ----------------------------------------------------------
