@@ -44,6 +44,7 @@ from typing import Any, Callable, Mapping
 
 import anyio
 import httpx
+from cryptography.fernet import Fernet
 
 from .guards import audit_safe, require_gear, validate_root_path
 
@@ -69,6 +70,7 @@ _RUN_OUTPUT_TRUNCATE = 8192
 _REQUEST_LIMITS = {'low': 4, 'medium': 6, 'high': 8, 'xhigh': 10, 'max': 12, 'ultracode': 12}
 _TERMINAL = {'done', 'failed', 'cancelled'}
 _REGISTRY_LOCK = threading.RLock()
+_APPROVAL_FERNET: 'Fernet | None' = None  # lazily created; seals die with the process
 _CONTEXTS: dict[str, 'BridgeContext'] = {}
 _PENDING_COMMANDS: dict[str, 'Approval'] = {}  # historical name, now all operation types
 
@@ -94,6 +96,13 @@ class Approval:
     fingerprint: str
     expires: float
     expires_at: str
+    # Opaque, never rendered by ``public()``. Holds the material a side-effecting
+    # operation needs at execution time but must not echo to the approval screen
+    # (MCP tool arguments may carry user secrets). Excluded from the fingerprint on
+    # purpose: the fingerprint attests what the user *saw and approved*, which is
+    # the redacted ``payload``; tampering with this slot cannot widen the approved
+    # action, it can only supply different arguments to an already-approved one.
+    sealed: bytes = b''
 
     def public(self) -> dict[str, Any]:
         return {
@@ -103,6 +112,13 @@ class Approval:
             **({'bytes': len(self.payload['content'].encode('utf-8')),
                 'content_preview': self.payload['content'][:2000]}
                if self.operation == 'write_file' else {}),
+            # MCP approvals surface the endpoint and the redacted argument summary
+            # so the user can judge what they are authorizing.
+            **({'server': self.payload.get('server'), 'tool': self.payload.get('tool'),
+                'qualified': self.payload.get('qualified'),
+                'arguments': self.payload.get('args'),
+                'arguments_sha256': self.payload.get('args_digest')}
+               if self.operation == 'mcp_tool_call' else {}),
         }
 
 
@@ -290,6 +306,9 @@ def expire_pending() -> None:
         for token, ticket in list(_PENDING_COMMANDS.items()):
             if ticket.expires <= time.monotonic():
                 _PENDING_COMMANDS.pop(token, None)
+                # 票据到期即销毁其封存的执行期参数。否则被拒或过期的审批会让
+                # 明文材料在内存里一直留到进程结束，而不是随 TTL 一起消失。
+                ticket.sealed = b''
                 ticket.context.failed = True
                 expired[ticket.context.run_id] = ticket.context
     for ctx in expired.values():
@@ -317,6 +336,12 @@ def _permission(ctx: BridgeContext, operation: str) -> None:
         raise BridgeFailure('approval_ui_unavailable')
     needed = {'read_file': ('fs_read',), 'device_read': ('fs_read',),
               'write_file': ('fs_write',),
+              # An MCP tool is third-party code whose real effect surface is
+              # unknowable from here: any remote tool can read, write, shell out
+              # or exfiltrate. Until OS-level isolation exists for the calling
+              # process, partial grants cannot constrain it, so it demands the
+              # same full set as a native process.
+              'mcp_tool_call': ('shell', 'fs_read', 'fs_write', 'network', 'git'),
               # A native process or opener can read/write/exfiltrate and run git.
               # Until OS isolation exists, partial grants cannot constrain it.
               'run_command': ('shell', 'fs_read', 'fs_write', 'network', 'git'),
@@ -327,7 +352,7 @@ def _permission(ctx: BridgeContext, operation: str) -> None:
         raise BridgeFailure('invalid_gear')
     if require_gear(ctx.gear, action='agent_tool', context={'run_id': ctx.run_id, 'operation': operation}):
         raise BridgeFailure('device_gear_disabled')
-    if operation in {'run_command', 'open_path'} and ctx.gear != 'device':
+    if operation in {'run_command', 'open_path', 'mcp_tool_call'} and ctx.gear != 'device':
         raise BridgeFailure('process_sandbox_unavailable')
 
 
@@ -385,7 +410,41 @@ def _fingerprint(operation: str, payload: dict) -> str:
     return hashlib.sha256(json.dumps([operation, payload], sort_keys=True).encode()).hexdigest()
 
 
-def _queue_operation(ctx: BridgeContext, operation: str, payload: dict) -> dict[str, Any]:
+def _seal(obj: Any) -> bytes:
+    """Encrypt execution-only material so it never rests in plaintext on a ticket.
+
+    Approval tickets are kept in a module-level dict and are re-serialisable through
+    the approval API; anything sensitive to the *execution* (MCP arguments may carry
+    user credentials) belongs here rather than in the rendered payload.
+    """
+    blob = json.dumps(obj, ensure_ascii=False, default=str).encode('utf-8')
+    return _approval_cipher().encrypt(blob)
+
+
+def _unseal(sealed: bytes) -> dict[str, Any]:
+    if not sealed:
+        return {}
+    try:
+        return json.loads(_approval_cipher().decrypt(sealed).decode('utf-8'))
+    except Exception as exc:  # noqa: BLE001 - a broken seal must not echo material
+        raise BridgeFailure('approval_seal_broken') from exc
+
+
+def _approval_cipher() -> 'Fernet':
+    """Process-scoped Fernet for approval seals; key lives only in memory.
+
+    Restart already invalidates every ticket (approval state is deliberately
+    ephemeral), so an in-memory key costs nothing and keeps sealed arguments
+    unreadable from a core dump or a serialized snapshot.
+    """
+    global _APPROVAL_FERNET
+    if _APPROVAL_FERNET is None:
+        _APPROVAL_FERNET = Fernet(Fernet.generate_key())
+    return _APPROVAL_FERNET
+
+
+def _queue_operation(ctx: BridgeContext, operation: str, payload: dict,
+                     sealed: bytes = b'') -> dict[str, Any]:
     _permission(ctx, operation)
     expire_pending()
     fingerprint = _fingerprint(operation, payload)
@@ -401,6 +460,7 @@ def _queue_operation(ctx: BridgeContext, operation: str, payload: dict) -> dict[
             token, ctx, operation, dict(payload), fingerprint,
             time.monotonic() + _APPROVAL_TTL_S,
             datetime.fromtimestamp(time.time() + _APPROVAL_TTL_S, timezone.utc).isoformat(),
+            sealed,
         )
         _PENDING_COMMANDS[token] = ticket
     audit_safe('agent_operation_pending', {'run_id': ctx.run_id, 'operation': operation,
@@ -551,6 +611,13 @@ async def _execute_operation(ticket: Approval) -> dict[str, Any]:
     _permission(ctx, ticket.operation)  # re-check device gate immediately before effect
     if ticket.fingerprint != _fingerprint(ticket.operation, payload):
         raise BridgeFailure('approval_operation_changed')
+    if ticket.operation == 'mcp_tool_call':
+        # MCP never falls through the file/proc branches below: an approved MCP
+        # call is dispatched by the bridge module that owns the transport, and it
+        # re-validates the endpoint and re-checks the gate before egress.
+        from .mcp_bridge import execute_approved_call
+        ctx.effects_started = True
+        return await execute_approved_call(ticket)
     if ticket.operation == 'run_command':
         _reject_links(ctx.workdir)
         ctx.effects_started = True
@@ -603,6 +670,8 @@ async def resolve_pending_command(token: str, approved: bool, owner_id: str) -> 
         if not approved:
             result = {'ok': False, 'denied': True, 'error': 'approval_denied',
                       'note': '用户拒绝，未执行。'}
+            # 拒绝后立即销毁封存参数：用户已经明确否决，这次调用不会再被执行。
+            ticket.sealed = b''
         else:
             try:
                 result = await _execute_operation(ticket)
@@ -804,6 +873,23 @@ def _registered_tools(ctx: BridgeContext) -> list[Callable]:
     return tools
 
 
+async def _optional_mcp_tools(ctx: BridgeContext) -> tuple[list[Callable], str]:
+    """接入 MCP 服务器发现的工具；不可用时返回空列表与空目录，绝不影响内嵌工具对话。
+
+    MCP 是可选能力：未配置服务器、未启用、发现超时或桥接层自身出错时都应退化为
+    "只有内嵌工具"的标准会话，而不是抛错中断。返回的工具闭包之外还返回一段目录
+    文本，由调用方注入 instructions——工具不注册就等于不存在，而工具描述是让模型
+    知道"能做什么"的唯一途径。
+    """
+    try:
+        from .mcp_bridge import _Budget, build_mcp_tools
+        tools, catalog = await build_mcp_tools(ctx, _Budget(), ctx.owner_id)
+    except Exception as exc:  # noqa: BLE001 - 可选能力失败不得阻断主流程
+        logger.info('MCP tools unavailable for run=%s: %s', ctx.run_id, type(exc).__name__)
+        return [], ''
+    return list(tools), catalog
+
+
 async def run_agent_chat(
     system_prompt: str, user_message: str, target: tuple[str, str, str, str],
     *, context: BridgeContext, history: list[dict] | None = None,
@@ -827,9 +913,14 @@ async def run_agent_chat(
     from pydantic_ai.usage import UsageLimits
     messages = [ModelRequest(parts=[UserPromptPart(m['content'])]) if m['role'] == 'user'
                 else ModelResponse(parts=[TextPart(m['content'])]) for m in (history or [])]
+    mcp_tools, mcp_catalog = await _optional_mcp_tools(context)
+    instructions = [system_prompt, _TOOL_USE_POLICY]
+    if mcp_catalog:
+        instructions.append(mcp_catalog)
     agent = Agent(
         OpenAIChatModel(model, provider=OpenAIProvider(openai_client=client)),
-        instructions=[system_prompt, _TOOL_USE_POLICY], tools=_registered_tools(context),
+        instructions=instructions,
+        tools=_registered_tools(context) + mcp_tools,
     )
     try:
         with anyio.fail_after(180):
