@@ -107,7 +107,7 @@ defineExpose({ scrollEl })
         </svg>
       </div>
       <h1 class="hero-title">宛委·枢忆</h1>
-      <p class="hero-sub">月下梅影，纸上花朝 —— 选择左侧智能体开始对话，或创建一位新的</p>
+      <p class="hero-sub">月下梅影，纸上花朝 —— 直接开始对话，或从左侧选择其他智能体</p>
       <button class="hero-cta" type="button" @click="emit('new-agent')">
         <span>＋</span> 新智能体
       </button>

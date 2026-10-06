@@ -104,7 +104,7 @@ python scripts/demo_governance.py --api-key <key>
 | 入口 | 适合谁 | 形态 |
 |------|--------|------|
 | **A · 一键证据演示** | 评审 / 围观者 | `scripts/demo_governance.py`，五步证据链现场复刻 |
-| **B · 源码自起** | 开发者 | setup → run_dev → 控制台 |
+| **B · 源码自起** | 开发者 | setup → `scripts/dev` → 控制台 |
 | **C · 麒麟 deb 安装** | 政企 / 信创环境 | Electron deb/rpm + 可选 systemd 用户服务 |
 | **D · 嵌入式 API** | 集成方 | REST 治理端点（见[技术深水区](#技术深水区)端点表） |
 
@@ -122,16 +122,39 @@ python scripts/demo_governance.py --api-key <key>
 前置条件：Python 3.10+；前端与 Electron 源码构建需要 Node.js 22.12+、npm 10+，终端用户安装 deb/rpm 包不需要 Node.js。
 
 ```bash
-# Windows
-powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1
-
-# Linux / 麒麟 OS
-bash scripts/setup.sh
-bash scripts/run_dev.sh
+# 一次性安装环境
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1   # Windows
+bash scripts/setup.sh                                          # Linux / 麒麟 OS
 ```
 
-控制台入口：**http://127.0.0.1:8010/console/**
+日常开发用 `dev` 脚本，它会**同时**拉起后端(8010) 与前端(5173)：
+
+```bash
+# Windows（PowerShell）
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1
+
+# Linux / macOS / 麒麟 OS
+bash scripts/dev.sh
+```
+
+> 这两个脚本在**任意目录**执行都可以，仓库根目录由脚本自身位置推导，不需要先 `cd`。
+> Python 解释器按 `.venv-agent` → `backend\.venv` → `.venv` → PATH 顺序自动探测，
+> 并校验依赖是否装齐；端口被占用或依赖缺失时会直接说明原因，不会静默半启动。
+
+开发态控制台：**http://127.0.0.1:5173/console/**（前端热更新）
+单端口访问（后端直出已构建的控制台）：**http://127.0.0.1:8010/console/**
+
+| 变体 | 作用 |
+|------|------|
+| `-BackendOnly` / `--backend` | 只起后端 |
+| `-FrontendOnly` / `--frontend` | 只起前端 |
+| `-BackendPort 8021` / `BACKEND_PORT=8021` | 换端口（改后端端口需同步改 `vite.config.ts` 的 `backend` 常量） |
+
+首次进入控制台时会自动获得一个可直接对话的默认智能体，无需先手动新建；
+删掉它之后不会再被自动重建。
+
+> 判定 Windows 版本请用 `app.platform_api.os_description`（依据 build 号，≥22000 为 Win11），
+> 不要用 `platform.release()` —— Win11 沿用 10.0 内核号，该值在 Python 3.11 下会返回 `'10'`。
 
 启动后三步走：
 
