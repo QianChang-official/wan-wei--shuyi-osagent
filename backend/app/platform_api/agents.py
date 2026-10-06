@@ -951,8 +951,17 @@ async def _run_parallel_group(rid: str, run: dict, ctx, indexes: list[int]) -> N
     if not run or run.get('status') == 'cancelled':
         return
     pending_any = False
-    for outcome in results:
+    failed_exc: BaseException | None = None
+    for k, outcome in enumerate(results):
         if isinstance(outcome, BaseException):
+            # 分支抛异常不能静默跳过：否则该步永卡 running、游标却已前移，
+            # run 会在后续步骤上莫名其妙地继续或死锁。如实落账并终止 run。
+            i = indexes[k]
+            step = run['steps'][i]
+            step['detail'] = f'并发执行异常：{type(outcome).__name__}: {outcome}'
+            step['finished_at'] = _now()
+            step['status'] = 'failed'
+            failed_exc = failed_exc or outcome
             continue
         i, detail, pending = outcome
         step = run['steps'][i]
@@ -963,6 +972,14 @@ async def _run_parallel_group(rid: str, run: dict, ctx, indexes: list[int]) -> N
     run['cursor'] = indexes[-1] + 1
     run['updated_at'] = _now()
     _runs.set(rid, run)
+    if failed_exc is not None:
+        run['status'] = 'failed'
+        run['error'] = f'并发步骤异常：{type(failed_exc).__name__}: {failed_exc}'
+        run['finished_at'] = _now()
+        _runs.set(rid, run)
+        _release_run_context(rid)
+        _touch_floating(rid, 'failed')
+        return
     if pending_any:
         # 组内有待批操作：不静默继续，让用户看到并处理。
         run['status'] = 'awaiting_review'
@@ -1030,7 +1047,7 @@ async def _drive_run(rid: str) -> None:
                 return
             step = run['steps'][idx]
             step['status'] = 'done'
-            step['detail'] = detail
+            step['detail'] = (detail or '') + step.pop('review_suffix', '')
             step['finished_at'] = _now()
             run['cursor'] = idx + 1
             run['updated_at'] = _now()
@@ -1225,25 +1242,37 @@ async def approve_run(rid: str, request: Request, body: ApproveIn | None = None)
         # 拒绝分支：终止运行，不再继续驱动
         if idx < len(run.get('steps', [])):
             step = run['steps'][idx]
-            step['status'] = 'rejected'
             suffix = f'\n【人工审查】拒绝。{("备注：" + note) if note else ""}'.rstrip()
-            step['detail'] = (step.get('detail') or '') + suffix
-            step['finished_at'] = _now()
+            if step.get('status') == 'awaiting_review':
+                # 执行前挂起的步骤被拒绝：从未执行，标 rejected
+                step['status'] = 'rejected'
+                step['detail'] = (step.get('detail') or '') + suffix
+                step['finished_at'] = _now()
+            elif step.get('status') == 'pending':
+                # 执行后挂起（游标已前移）：游标处是尚未启动的下一步，标 skipped 更诚实
+                step['status'] = 'skipped'
+                step['detail'] = (step.get('detail') or '') + suffix
         run['status'] = 'rejected'
         run['error'] = '人工审查拒绝'
         run['updated_at'] = _now()
         run['finished_at'] = _now()
         _runs.set(rid, run)
+        _release_run_context(rid)
         _touch_floating(rid, 'rejected')
         return run
 
     if idx < len(run.get('steps', [])):
         step = run['steps'][idx]
-        step['status'] = 'done'
-        suffix = f'\n【人工审查】通过。{("备注：" + note) if note else ""}'.rstrip()
-        step['detail'] = (step.get('detail') or '') + suffix
-        step['finished_at'] = _now()
-    run['cursor'] = idx + 1
+        if step.get('status') == 'awaiting_review':
+            # 执行前挂起的步骤：批准 ≠ 完成。清除审查标记并复位状态，
+            # 让驱动循环从当前游标真正执行该步；审批备注在执行后并入 detail。
+            step['needs_review'] = False
+            step['status'] = 'pending'
+            step['review_suffix'] = (
+                f'\n【人工审查】通过。{("备注：" + note) if note else ""}'.rstrip()
+            )
+        # 执行后挂起（待批操作已随步骤落账、游标已前移）：不改动任何步骤，
+        # 直接续跑——把游标处步骤标 done 会静默跳过一步真实工作。
     run['status'] = 'running'
     run['updated_at'] = _now()
     _runs.set(rid, run)
@@ -1274,6 +1303,7 @@ async def cancel_run(rid: str, request: Request):
     audit_safe('run_cancelled', {'run_id': rid})
     from .agent_bridge import cancel_context
     await cancel_context(rid)
+    _release_run_context(rid)
     task = _CHAT_TASKS.get(rid)
     if task is not None and task is not asyncio.current_task():
         task.cancel()
