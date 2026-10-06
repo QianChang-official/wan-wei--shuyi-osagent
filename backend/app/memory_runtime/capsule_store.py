@@ -25,7 +25,7 @@ from ..memoryos.lifecycle import (
     RETRIEVABLE_STATES,
     retrievable_sql_list,
 )
-from .policy_gate import evaluate_policy
+from .policy_gate import evaluate_policy, redact_weak_identifiers_in_text
 
 # 策略闸门与生命周期的可检索口径统一由 memoryos.lifecycle 提供，避免这里和
 # retrieval 各写一份 IN 列表而漂移。lifecycle 的纯词表段不 import
@@ -119,6 +119,14 @@ def write_capsule(
     )
     capsule_id = "cap_" + uuid.uuid4().hex[:12]
     created = now()
+    # redact 裁决：主表/账本留原文（审计与 W18 出库脱敏设计不变），但检索
+    # 索引不落明文弱标识符——否则标识符探测查询直接命中索引，形成存在性
+    # oracle（datastore extraction 攻击面，MEB-POISON-005）。
+    index_text = text
+    index_content = content
+    if governance["policy_result"] == "redact":
+        index_text = redact_weak_identifiers_in_text(text)
+        index_content = loads(index_text, content)
     provenance = dict(provenance or {
         "origin": "human" if source_type in {"user_input", "user"} else ("tool" if source_type in {"tool_result", "cross_scene_trace"} else "config" if source_type == "manual_config" else source_type),
         "writer_identity": "runtime",
@@ -223,10 +231,11 @@ def write_capsule(
             # issue #119：FTS 索引列写 CJK 逐字插空格副本（与知识库 kb_fts 同一
             # 方案，共享实现见 utils.cjk_text）。unicode61 不切分连续中文，直写
             # 原文会让任何局部中文查询在倒排索引上恒 0 命中。主表 content 保持
-            # 原文，索引列只服务召回，不用于展示。
+            # 原文，索引列只服务召回，不用于展示。redact 裁决用 index_text
+            # （弱标识符已脱敏），标识符探测查询在索引面无锚点可命中。
             conn.execute(
                 "INSERT INTO memory_capsules_v2_fts(capsule_id,text) VALUES (?,?)",
-                (capsule_id, cjk_space(text)),
+                (capsule_id, cjk_space(index_text)),
             )
         # 账本与经济账都在同一事务内落库：任一失败整体回滚，保证
         # 「记忆存在 ⇔ 有账目 ⇔ 有账户」三者不脱节。
@@ -259,7 +268,7 @@ def write_capsule(
         try:
             from .vector_index import index_capsule
 
-            native_index = index_capsule(capsule_id=capsule_id, content=content, index_refs=index_refs)
+            native_index = index_capsule(capsule_id=capsule_id, content=index_content, index_refs=index_refs)
         except Exception:
             record("kylin_sdk_vector_index", {"capsule_id": capsule_id, "status": "fallback"})
             native_index = {"backend": "fts_fallback", "indexed": False, "reason": "native_index_exception"}
@@ -267,7 +276,7 @@ def write_capsule(
         # 通道不可用(依赖/模型未配置)时静默跳过,不阻断写入。
         from .local_embedding import embed_and_store
 
-        if embed_and_store(capsule_id, text, ts=created, owner_id=owner_id, soul_id=soul_id):
+        if embed_and_store(capsule_id, index_text, ts=created, owner_id=owner_id, soul_id=soul_id):
             native_index = {**native_index, "local_embedding": True}
 
     # 04-#02: Bind affect to capsule when soul_id is provided and lifecycle is active.

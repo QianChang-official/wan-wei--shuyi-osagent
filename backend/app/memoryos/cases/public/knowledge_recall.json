@@ -157,5 +157,109 @@
         "expect": {"must_contain": ["legacy"], "must_retrieve_refs": [0]}
       }
     ]
+  },
+  {
+    "case_id": "MEB-KNOW-005",
+    "category": "knowledge_recall",
+    "weight_dimension": "product",
+    "title": "低置信存量描述降权：quarantine 的不可靠知识不参与正常召回",
+    "tags": ["knowledge", "unreliable_source", "quarantine"],
+    "reference": {
+      "paper": "Remember with Confidence: Uncertainty Quantification for Spatio-temporal Memory",
+      "arxiv": "2606.08277",
+      "rationale": "存量记忆中的描述可能是脏的、视角不一致的（如 VLM caption 噪声）。系统不能把存量描述当 oracle，需要检出不可靠描述并降权/隔离。本用例验证：低信任来源的自主写入走 quarantine，不进入正常检索面，直到显式放行。",
+      "synced_from": "wanwei-affect-memory cases/meb/irreconcilable_conflict.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "fact",
+            "statement": "仓库的构建入口是 make all"
+          },
+          "source_type": "web_scrape",
+          "write_intent": "autonomous",
+          "source_trust": "low"
+        },
+        "comment": "低信任来源 + 自主写入 → quarantine，不可靠描述不得当 oracle",
+        "expect": {
+          "policy_result": "quarantine",
+          "risk_tags_include": ["low_trust_autonomous_write"]
+        }
+      },
+      {
+        "op": "search",
+        "query": "构建入口",
+        "comment": "隔离中的不可靠知识不得出现在正常检索结果（high_risk=false 默认不含隔离区）",
+        "expect": {
+          "must_not_contain": ["make all"],
+          "must_not_retrieve_refs": [0]
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "MEB-KNOW-006",
+    "category": "knowledge_recall",
+    "weight_dimension": "product",
+    "title": "episodic 与 procedural 记忆并存：同类查询分别召回不串味",
+    "tags": ["knowledge", "episodic_procedural", "separation"],
+    "reference": {
+      "paper": "MemVLN: Episodic and Procedural Memory for Vision-and-Language Navigation",
+      "arxiv": "2607.23504",
+      "rationale": "MemVLN 把记忆分为 episodic（事件历史，保轨迹一致性）与 procedural（操作程序，保低延迟执行）双系统。本用例验证 SDK 的 memory_class 分类法支持同类双轨并存：同一主题的事件记忆与流程记忆各自独立召回，互不覆盖、互不串味。",
+      "synced_from": "wanwei-affect-memory cases/meb/lifecycle_dual_memory.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "episodic",
+          "content": {
+            "text": "上周三部署时数据库迁移脚本卡了四十分钟，最终靠重启实例恢复"
+          },
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "procedure",
+            "statement": "数据库迁移的标准流程：先快照、再灰度、确认无慢查询后切流量"
+          },
+          "source_type": "manual_config"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "部署 卡了四十分钟 重启实例",
+        "comment": "事件查询用事件独占词命中 episodic 轨迹；流程胶囊不含这些词，不进入召回面",
+        "expect": {
+          "must_contain": ["重启实例"],
+          "must_not_contain": ["灰度"],
+          "must_retrieve_refs": [0],
+          "must_not_retrieve_refs": [1],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "标准流程 快照 灰度 切流量",
+        "comment": "流程查询用流程独占词命中 procedural 知识；事件胶囊不含这些词，不进入召回面",
+        "expect": {
+          "must_contain": ["快照", "灰度"],
+          "must_not_contain": ["四十分钟"],
+          "must_retrieve_refs": [1],
+          "must_not_retrieve_refs": [0],
+          "relevant_refs": [1]
+        }
+      }
+    ]
   }
 ]

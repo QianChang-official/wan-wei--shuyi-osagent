@@ -155,5 +155,47 @@
         "expect": {"must_contain": ["简体中文"], "must_retrieve_refs": [0]}
       }
     ]
+  },
+  {
+    "case_id": "MEB-PREF-005",
+    "category": "preference_extraction",
+    "weight_dimension": "ux",
+    "title": "缺证据偏好走问询而非推断：quarantine 路径不进入检索",
+    "tags": ["preference", "elicitation", "quarantine"],
+    "reference": {
+      "paper": "KnowU-Bench: Towards Interactive, Proactive, and Personalized Mobile Agent Evaluation",
+      "arxiv": "2604.08455",
+      "rationale": "现有基准只测『从静态历史恢复偏好』或『从固定上下文预测意图』，不测 agent 能否通过交互主动问出缺失偏好、能否判断何时该问。本用例验证：证据不足时写入的偏好走隔离/确认路径（对应 elicitation 语义），而不是被当成已确立偏好参与检索。",
+      "synced_from": "wanwei-affect-memory cases/meb/irreconcilable_conflict.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {
+            "preference_type": "report_format",
+            "statement": "用户偏好报告用英文撰写",
+            "strength": "weak"
+          },
+          "source_type": "tool_result",
+          "write_intent": "inferred",
+          "affects_future_behavior": true
+        },
+        "expect": {
+          "policy_result": "require_confirmation",
+          "lifecycle": "candidate"
+        }
+      },
+      {
+        "op": "search",
+        "query": "报告 语言",
+        "comment": "证据不足的偏好未经确认不可检索——系统应转向问询（elicitation），而非静默使用",
+        "expect": {
+          "must_not_contain": ["英文"],
+          "must_not_retrieve_refs": [0]
+        }
+      }
+    ]
   }
 ]

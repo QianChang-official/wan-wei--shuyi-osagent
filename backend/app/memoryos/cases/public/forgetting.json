@@ -148,5 +148,61 @@
         "expect": {"must_not_contain": ["delta 已作废"], "must_not_retrieve_refs": [1]}
       }
     ]
+  },
+  {
+    "case_id": "MEB-FORGET-005",
+    "category": "forgetting",
+    "weight_dimension": "product",
+    "title": "使用痕迹高的知识保持可召回：保留可复用知识与纯遗忘分离",
+    "tags": ["forgetting", "retention", "high_usage"],
+    "reference": {
+      "paper": "Benchmarking World Models for Continual Learning on Compositional Tasks",
+      "arxiv": "2609.22055",
+      "rationale": "持续学习的关键区分是『保留可复用知识』与『遗忘噪声』。世界动力常以循环机制重现，被反复使用的记忆不应因暂时闲置而被降级淘汰。本用例验证高使用痕迹（多次检索命中形成 usage bump）的知识持续可检索、可召回强度不随复用下降。诚实边界：harness 的 op 集没有时间推进（tick），三个检索步在同一时间窗内连续执行，『闲置短窗后不降级』这一半命题当前无法被本用例失败化，待 harness 支持时间推进后补充。",
+      "synced_from": "wanwei-affect-memory cases/meb/lifecycle_dual_memory.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "knowledge",
+          "content": {
+            "knowledge_type": "fact",
+            "statement": "构建失败先查依赖锁文件，这是历次事故复盘沉淀的高频经验"
+          },
+          "source_type": "user_input"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "search",
+        "query": "构建失败",
+        "comment": "多次检索命中形成使用痕迹（usage bump），模拟高频复用",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "构建失败 事故复盘",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      },
+      {
+        "op": "search",
+        "query": "构建失败 高频经验",
+        "comment": "第三次检索：高使用记忆不因复用而衰减出检索面（注：harness 无时间推进 op，闲置维度见 rationale 诚实边界）",
+        "expect": {
+          "must_contain": ["依赖锁文件"],
+          "must_retrieve_refs": [0],
+          "relevant_refs": [0]
+        }
+      }
+    ]
   }
 ]

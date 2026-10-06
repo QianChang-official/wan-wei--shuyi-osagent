@@ -202,5 +202,72 @@
         "expect": {"must_retrieve_refs": [0]}
       }
     ]
+  },
+  {
+    "case_id": "MEB-CONF-005",
+    "category": "conflict_update",
+    "weight_dimension": "product",
+    "title": "不可调和冲突：缺上下文时禁止自动裁决，两侧均保持 conflicted 可召回",
+    "tags": ["conflict", "irreconcilable", "no_auto_resolution"],
+    "reference": {
+      "paper": "When Personal Memory Has No Single Answer: Evaluating LLM Agents under Irreconcilable Conflicts",
+      "arxiv": "2608.13921",
+      "rationale": "偏好依赖上下文、行为会演化、来源会冲突。当查询缺少时间/上下文/来源权威足以消解冲突时，把单条记忆当确定答案会把未解决冲突变成过度自信的错误动作。系统必须能区分『不可调和冲突』与『可消解冲突』，前者保持双侧可召回且标记冲突，绝不自动裁决。",
+      "synced_from": "wanwei-affect-memory cases/meb/irreconcilable_conflict.json"
+    },
+    "steps": [
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {
+            "preference_type": "food",
+            "statement": "用户表示晚餐想吃辣",
+            "strength": "strong"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "write",
+        "capsule": {
+          "memory_class": "preference",
+          "content": {
+            "preference_type": "food",
+            "statement": "用户表示最近胃不舒服，饮食要清淡",
+            "strength": "strong"
+          },
+          "source_type": "user_input",
+          "write_intent": "explicit"
+        },
+        "expect": {"policy_result": "allow"}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 0,
+        "to_state": "conflicted",
+        "reason": "irreconcilable_food_preference_context_missing",
+        "expect": {"to_state": "conflicted"}
+      },
+      {
+        "op": "transition",
+        "capsule_ref": 1,
+        "to_state": "conflicted",
+        "reason": "irreconcilable_food_preference_context_missing",
+        "expect": {"to_state": "conflicted"}
+      },
+      {
+        "op": "search",
+        "query": "晚餐 吃辣 清淡",
+        "comment": "不可调和冲突两侧都必须可召回（RETRIEVABLE_STATES 含 conflicted），让上层 agent/人看到完整冲突面，而不是系统偷偷选边",
+        "expect": {
+          "must_contain": ["辣", "清淡"],
+          "must_retrieve_refs": [0, 1],
+          "relevant_refs": [0, 1]
+        }
+      }
+    ]
   }
 ]

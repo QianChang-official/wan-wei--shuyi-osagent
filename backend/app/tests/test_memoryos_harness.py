@@ -74,7 +74,7 @@ def test_mini_suite_is_a_subset_covering_all_dimensions():
     # 套件规模是评测口径契约的一部分：加用例 / 丢 mini 标签都会让这里失配，
     # 与 run_suite 的 manifest 漂移守卫同源（见 PUBLIC_SUITE_EXPECTED_CASES）。
     assert len(mini) == harness.PUBLIC_SUITE_EXPECTED_CASES["mini"] == 14
-    assert len(full) == harness.PUBLIC_SUITE_EXPECTED_CASES["full"] == 20
+    assert len(full) == harness.PUBLIC_SUITE_EXPECTED_CASES["full"] == 26
 
 
 def test_redteam_suite_is_safety_only():
@@ -176,7 +176,7 @@ def test_mini_meb_all_pass(isolated_db):
 
 def test_full_public_suite_all_pass(isolated_db):
     report = harness.run_suite(suite="full", write_report=False)
-    assert report["summary"]["total_cases"] == harness.PUBLIC_SUITE_EXPECTED_CASES["full"] == 20
+    assert report["summary"]["total_cases"] == harness.PUBLIC_SUITE_EXPECTED_CASES["full"] == 26
     assert report["summary"]["hidden_cases"] == 0
     assert not report["failures"], f"公开集有失败用例: {report['failures']}"
 

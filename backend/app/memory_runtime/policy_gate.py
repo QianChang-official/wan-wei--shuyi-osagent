@@ -273,6 +273,20 @@ def evaluate_policy(
         "requires_confirmation": False, "hits": [],
     }
 
+
+def redact_weak_identifiers_in_text(text: str) -> str:
+    """redact 裁决的索引面脱敏：弱标识符（手机号/邮箱）替换为占位符。
+
+    主表与账本保留原文（W18：存储保原文、出库统一脱敏的设计不变），
+    但检索索引若含明文锚点，攻击者可用标识符探测查询确认其存在——
+    存在性本身就是泄漏（datastore extraction 的存在性 oracle，
+    MEB-POISON-005 / arXiv:2610.01871）。FTS 索引列与向量入库前过本函数，
+    召回面不含明文锚点；出库边界仍由 security.redaction 兜底。
+    """
+    redacted = WEAK_IDENTIFIER_PATTERNS[0].sub("[REDACTED_PHONE]", text)
+    return WEAK_IDENTIFIER_PATTERNS[1].sub("[REDACTED_EMAIL]", redacted)
+
+
 def evaluate_preference_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     text = f"{candidate.get('subject', '')} {candidate.get('predicate', '')} {candidate.get('object', '')}"
     result = evaluate_policy(text=text, write_intent="inferred", affects_future_behavior=True)

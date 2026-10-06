@@ -168,6 +168,10 @@ def _substring_rows(
     terms = _zh_terms(q)
     if not terms:
         return []
+    # 本通道用 LIKE 直扫主表 content（原文）。redact 胶囊的明文弱标识符只在
+    # 主表/账本保留、索引面已脱敏；若 LIKE 通道覆盖 redact 胶囊，标识符探测
+    # 查询会绕过索引面脱敏直接命中原文，存在性 oracle 经此复活。redact 胶囊
+    # 的召回由（已脱敏的）FTS/向量通道服务，本通道只放 allow。
     clauses = " OR ".join(["content LIKE ?" for _ in terms])
     failed_join = ""
     params: list[Any] = []
@@ -189,7 +193,7 @@ def _substring_rows(
         {failed_join}
         WHERE ({clauses})
           AND json_extract(capsule.state,'$.lifecycle') IN ({_RETRIEVABLE_SQL})
-          AND json_extract(capsule.governance,'$.policy_result') IN ('allow','redact')
+          AND json_extract(capsule.governance,'$.policy_result') IN ('allow')
           {scope_clause}
         ORDER BY capsule.updated_at DESC LIMIT ?
         """,

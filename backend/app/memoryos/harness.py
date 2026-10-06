@@ -93,7 +93,7 @@ REPORTS_DIR = _HERE.parents[2] / "reports"
 
 #: 公开用例集契约。套件规模与 runner 一起版本化，CI / 报告 / 前端共读这一处，
 #: 防止加用例或丢 ``mini`` 标签时静默漂移（见 run_suite 的 manifest 漂移守卫）。
-PUBLIC_SUITE_EXPECTED_CASES: dict[str, int] = {"mini": 14, "full": 20}
+PUBLIC_SUITE_EXPECTED_CASES: dict[str, int] = {"mini": 14, "full": 26}
 RUNNER_VERSION = "meb-harness-1.1"
 
 #: 隐藏集目录。仓库内**不含**隐藏用例（否则就不隐藏了），通过环境变量指向
@@ -217,12 +217,18 @@ class InProcessHarness:
 
     def search(self, query: str, *, top_k: int = 5, high_risk: bool = False) -> dict[str, Any]:
         from ..memory_runtime.retrieval import search_capsules_with_status
+        from ..security.redaction import redact_capsule_for_output
 
         results, status = search_capsules_with_status(
             query, top_k=top_k, high_risk=high_risk,
             owner_id=self.owner_id, soul_id=self.soul_id,
             with_trace=True,
         )
+        # 出库脱敏边界（W18）：存储保原文、所有对外出口统一 redact_capsule_for_output。
+        # 评测断言的对象是「攻击者/用户经检索接口实际看到的文本」，不是库内原文，
+        # 因此 harness 必须与 API 同边界测量——否则测的是一个现实中不存在暴露面
+        # 的读取路径，既误报泄漏也掩盖真正的出库漏洞。
+        results = [redact_capsule_for_output(item) for item in results]
         return {"results": results, "status": status, "trace": status.get("trace")}
 
     def forget(self, capsule_id: str, *, mode: str = "soft_delete") -> dict[str, Any]:
