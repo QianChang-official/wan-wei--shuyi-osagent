@@ -165,3 +165,74 @@ class TestGuardOrdering:
             json={"text": "x"},
         )
         assert r.status_code == 401
+
+
+class TestLoopbackOriginDevPort:
+    """开发期前后端分端口（Vite 5173 / 后端 8010）不应被 Origin 守卫 403。
+
+    这是 ``run_dev`` 的默认形态：浏览器 Origin 的端口必然不同于后端监听端口。
+    此前口径让每一次写操作都 403，实测会把「自定义端点保存」等常规操作挡死。
+    """
+
+    def test_dev_front_port_allowed_non_production(self, monkeypatch):
+        """非生产模式：回环来源的任意端口都放行。"""
+        from backend.app.security import auth
+
+        monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+        for origin in (
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "https://127.0.0.1:5173",
+        ):
+            assert auth._origin_is_allowed(origin) is True, origin
+
+    def test_production_keeps_strict_port_matching(self, monkeypatch):
+        """生产模式：回环来源仍必须命中监听端口，不得因本次修复而放宽。"""
+        from backend.app.security import auth
+
+        monkeypatch.setenv("WANWEI_PRODUCTION", "1")
+        monkeypatch.delenv("WANWEI_CORS_ORIGINS", raising=False)
+        assert auth._origin_is_allowed("http://127.0.0.1:5173") is False
+        # 监听端口本身仍然放行
+        assert auth._origin_is_allowed("http://127.0.0.1:8010") is True
+
+    def test_remote_origin_still_rejected(self, monkeypatch):
+        """远程来源在任何模式下都拒绝——这是反 CSRF 的核心，不受影响。"""
+        from backend.app.security import auth
+
+        monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+        monkeypatch.delenv("WANWEI_CORS_ORIGINS", raising=False)
+        assert auth._origin_is_allowed("https://evil.example.com") is False
+        assert auth._origin_is_allowed("http://evil.example.com:5173") is False
+
+    def test_null_origin_still_rejected(self, monkeypatch):
+        """``Origin: null``（sandboxed iframe / file://）维持 fail-closed。"""
+        from backend.app.security import auth
+
+        monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+        assert auth._origin_is_allowed("null") is False
+
+    def test_loopback_origin_with_credentials_or_path_rejected(self, monkeypatch):
+        """回环也不豁免结构校验：带凭据或路径的 Origin 必须被拒。"""
+        from backend.app.security import auth
+
+        monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+        assert auth._origin_is_allowed("http://user:pw@127.0.0.1:5173") is False
+        assert auth._origin_is_allowed("http://127.0.0.1:5173/evil") is False
+        assert auth._origin_is_allowed("ftp://127.0.0.1:5173") is False
+
+    def test_lan_host_port_still_enforced(self, monkeypatch):
+        """非回环主机仍须端口匹配——本次修复不得波及 LAN 部署。"""
+        from backend.app.security import auth
+
+        monkeypatch.delenv("WANWEI_PRODUCTION", raising=False)
+        monkeypatch.delenv("WANWEI_PORT", raising=False)
+        monkeypatch.setenv("WANWEI_ALLOWED_HOSTS", "lan.example.test")
+        monkeypatch.setattr(
+            sys, "argv",
+            # 仅向解析器提供 argv，不启动任何服务器或套接字；与上文第 127 行同口径。
+            ["uvicorn", "--host", "0.0.0.0", "--port", "8000", "app:app"],  # nosec B104
+        )
+        assert auth._origin_is_allowed("http://lan.example.test:8000") is True
+        assert auth._origin_is_allowed("http://lan.example.test:8010") is False
