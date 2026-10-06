@@ -205,6 +205,8 @@ if (-not $FrontendOnly) {
 # ---------------------------------------------------------------- 启动前端
 if (-not $BackendOnly) {
     if (-not (Test-Path -LiteralPath $frontendDir)) {
+        # 后端可能已经启动：先清理子进程再退出，避免留下孤儿 uvicorn 占端口
+        Stop-Children
         throw "找不到前端目录：$frontendDir"
     }
     # Windows 上真正的可执行体是 npm.cmd；Get-Command npm 在不同shell 下

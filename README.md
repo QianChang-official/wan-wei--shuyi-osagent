@@ -131,7 +131,7 @@ bash scripts/setup.sh                                          # Linux / 麒麟 
 
 ```bash
 # Windows（PowerShell）
-pwsh -File .\scripts\dev.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 
 # Linux / macOS / 麒麟 OS
 bash scripts/dev.sh
